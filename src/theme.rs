@@ -75,7 +75,7 @@ impl Theme {
 mod tests {
     use super::*;
 
-    /// Verifies that default_dark provides 16 distinct ANSI colors with contrast against background.
+    /// Verifies that `default_dark` provides 16 distinct ANSI colors with contrast against background.
     #[test]
     fn default_dark_ansi_palette_usable() {
         let theme = Theme::default_dark();
