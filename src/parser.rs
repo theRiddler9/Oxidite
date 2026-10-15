@@ -152,6 +152,31 @@ impl vte::Perform for Dispatcher<'_> {
                     };
                     self.handler.set_scroll_region(top, bottom);
                 }
+                // ICH — Insert Blank Characters (CSI Ps @)
+                '@' => {
+                    let count = usize::from(param_or(params, 0, 1));
+                    self.handler.insert_blank_chars(count);
+                }
+                // IL — Insert Lines (CSI Ps L)
+                'L' => {
+                    let count = usize::from(param_or(params, 0, 1));
+                    self.handler.insert_lines(count);
+                }
+                // DL — Delete Lines (CSI Ps M)
+                'M' => {
+                    let count = usize::from(param_or(params, 0, 1));
+                    self.handler.delete_lines(count);
+                }
+                // DCH — Delete Characters (CSI Ps P)
+                'P' => {
+                    let count = usize::from(param_or(params, 0, 1));
+                    self.handler.delete_chars(count);
+                }
+                // ECH — Erase Characters (CSI Ps X)
+                'X' => {
+                    let count = usize::from(param_or(params, 0, 1));
+                    self.handler.erase_chars(count);
+                }
                 _ => {}
             }
         } else if intermediates == b"?" {
@@ -421,6 +446,26 @@ impl Handler for LoggingHandler {
     fn reverse_index(&mut self) {
         self.events.push("reverse_index".into());
     }
+
+    fn insert_lines(&mut self, count: usize) {
+        self.events.push(format!("insert_lines({count})"));
+    }
+
+    fn delete_lines(&mut self, count: usize) {
+        self.events.push(format!("delete_lines({count})"));
+    }
+
+    fn insert_blank_chars(&mut self, count: usize) {
+        self.events.push(format!("insert_blank_chars({count})"));
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        self.events.push(format!("delete_chars({count})"));
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        self.events.push(format!("erase_chars({count})"));
+    }
 }
 
 #[cfg(test)]
@@ -657,6 +702,39 @@ mod tests {
         assert_eq!(
             handler.events,
             vec!["save_cursor", "reverse_index", "restore_cursor",]
+        );
+    }
+
+    #[test]
+    fn parser_handles_insert_delete_line_and_character() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // ICH (@): default (1), explicit (4)
+        parser.advance(&mut handler, b"\x1b[@\x1b[4@");
+        // IL (L): default (1), explicit (2)
+        parser.advance(&mut handler, b"\x1b[L\x1b[2L");
+        // DL (M): default (1), explicit (3)
+        parser.advance(&mut handler, b"\x1b[M\x1b[3M");
+        // DCH (P): default (1), explicit (5)
+        parser.advance(&mut handler, b"\x1b[P\x1b[5P");
+        // ECH (X): default (1), explicit (6)
+        parser.advance(&mut handler, b"\x1b[X\x1b[6X");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "insert_blank_chars(1)",
+                "insert_blank_chars(4)",
+                "insert_lines(1)",
+                "insert_lines(2)",
+                "delete_lines(1)",
+                "delete_lines(3)",
+                "delete_chars(1)",
+                "delete_chars(5)",
+                "erase_chars(1)",
+                "erase_chars(6)",
+            ]
         );
     }
 }

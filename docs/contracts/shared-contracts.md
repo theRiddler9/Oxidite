@@ -32,6 +32,11 @@ pub trait Handler {
     fn save_cursor(&mut self);
     fn restore_cursor(&mut self);
     fn reverse_index(&mut self);
+    fn insert_lines(&mut self, count: usize);
+    fn delete_lines(&mut self, count: usize);
+    fn insert_blank_chars(&mut self, count: usize);
+    fn delete_chars(&mut self, count: usize);
+    fn erase_chars(&mut self, count: usize);
     // extend as sequences are implemented
 }
 ```

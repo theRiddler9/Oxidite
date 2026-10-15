@@ -123,4 +123,19 @@ pub trait Handler {
 
     /// Performs a reverse index / reverse linefeed (`ESC M`, RI).
     fn reverse_index(&mut self) {}
+
+    /// Inserts `count` blank lines at the cursor (`CSI Ps L`, IL).
+    fn insert_lines(&mut self, _count: usize) {}
+
+    /// Deletes `count` lines starting at the cursor (`CSI Ps M`, DL).
+    fn delete_lines(&mut self, _count: usize) {}
+
+    /// Inserts `count` blank characters at the cursor (`CSI Ps @`, ICH).
+    fn insert_blank_chars(&mut self, _count: usize) {}
+
+    /// Deletes `count` characters starting at the cursor (`CSI Ps P`, DCH).
+    fn delete_chars(&mut self, _count: usize) {}
+
+    /// Erases `count` characters starting at the cursor (`CSI Ps X`, ECH).
+    fn erase_chars(&mut self, _count: usize) {}
 }
