@@ -29,6 +29,14 @@ pub trait Handler {
     fn set_mode(&mut self, mode: Mode, enabled: bool);
     fn set_scroll_region(&mut self, top: usize, bottom: usize);
     fn set_title(&mut self, title: String);
+    fn save_cursor(&mut self);
+    fn restore_cursor(&mut self);
+    fn reverse_index(&mut self);
+    fn insert_lines(&mut self, count: usize);
+    fn delete_lines(&mut self, count: usize);
+    fn insert_blank_chars(&mut self, count: usize);
+    fn delete_chars(&mut self, count: usize);
+    fn erase_chars(&mut self, count: usize);
     // extend as sequences are implemented
 }
 ```

@@ -53,15 +53,15 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 - [x] Headless passthrough mode
 - [x] PTY tests
 - [x] `docs/learn/phase-1.md`
-- [ ] Tag: `phase-1-pty`
+- [x] Tag: `phase-1-pty`
 
 ### Phase 2 — Parser
 
-- [ ] `vte` dependency
-- [ ] Parser wrapper + logging Handler
-- [ ] Print, C0, CSI, SGR, DECSET/DECRST, OSC, ESC
-- [ ] Fixture tests (including split reads)
-- [ ] `docs/learn/phase-2.md`
+- [x] `vte` dependency
+- [x] Parser wrapper + logging Handler
+- [x] Print, C0, CSI, SGR, DECSET/DECRST, OSC, ESC
+- [x] Fixture tests (including split reads)
+- [x] `docs/learn/phase-2.md`
 - [ ] Tag: `phase-2-parser`
 
 ### Phase 3 — Terminal state (still headless)

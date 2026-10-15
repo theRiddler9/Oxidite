@@ -1,35 +1,123 @@
 # Oxidite
 
-A cross-platform terminal emulator written in Rust. Oxidite is the host window
-itself (like Windows Terminal or Ghostty): it spawns a real shell over a PTY,
-parses VT/ANSI, maintains a grid, and renders with a GPU-backed window.
+A fast, cross-platform terminal emulator written entirely in Rust.
 
-Phase 0 is scaffold only (docs, contracts, stubs). Headless PTY passthrough
-lands in Phase 1. See `AGENTS.md` and `docs/plan.md` for the build plan.
+Oxidite is the **host window itself** (similar to Windows Terminal, Ghostty, or Alacritty). It is not a TUI application running inside an existing terminal, nor a wrapper around webviews or third-party terminal crates. It spawns a real shell over a PTY, parses the raw VT/ANSI byte stream, maintains its own terminal grid and scrollback, renders that grid in a GPU-accelerated window, and encodes user input back to the shell process.
 
-## Build and run
+---
+
+## Architecture
+
+The PTY -> Parser -> Grid -> Renderer pipeline is strictly modular and decoupled:
+
+```
+Shell process
+  │
+  ▼
+PTY Master (portable-pty)
+  │
+  ▼ (raw byte stream)
+Reader Thread
+  │
+  ▼ (chunks over channel)
+VT Parser (vte::Perform)
+  │
+  ▼ (Handler trait calls)
+Terminal State (Grid, Cursor, Modes, Scrollback)
+  │
+  ▼ (damage-tracked cell matrix)
+Renderer (wgpu + glyphon)
+  │
+  ▼
+Window (winit)
+```
+
+Input and window events follow the reverse path:
+
+```
+Window Events (Keyboard / Mouse / Resize / Paste)
+  │
+  ▼
+Input Encoder (KeyEvent + Modes -> ANSI bytes)
+  │
+  ▼
+PTY Writer
+  │
+  ▼
+Shell process
+```
+
+---
+
+## Build Phases & Roadmap
+
+Oxidite is built in eight structured, verifiable phases:
+
+| Phase | Milestone | Status | Description |
+|---|---|:---:|---|
+| **Phase 0** | Scaffold & Contracts | **Done** | Module boundaries, shared contracts (`Handler`), CI workflow, design docs |
+| **Phase 1** | PTY Subsystem | **Done** | Shell detection, ConPTY/Unix spawn, non-blocking I/O, headless passthrough |
+| **Phase 2** | VT/ANSI Parser | **In Progress** | `vte` wrapper, C0 controls, CSI cursor/erase, SGR colors, DEC modes |
+| **Phase 3** | Terminal State | Planned | 2D cell grid, cursor clamping, scrollback ring buffer, alternate screen |
+| **Phase 4** | Window & GPU Renderer | Planned | `winit` event loop, `wgpu` surface, `glyphon` text layout, GUI window |
+| **Phase 5** | Input Encoding | Planned | Keyboard translation, application cursor keys, mouse reporting, clipboard |
+| **Phase 6** | Rendering Polish | Planned | Glyph caching, bold/italic, underline/strikethrough, HiDPI, truecolor |
+| **Phase 7** | Config & Themes | Planned | TOML configuration, live hot-reloading (`notify`), theme switching |
+| **Phase 8** | Release & Hardening | Planned | Cross-platform verification, fuzzing, golden demo validation |
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (edition 2024, version 1.85+)
+- Windows 10+ (ConPTY), Linux (X11/Wayland), or macOS
+
+### Build & Run
+
+Run with the default system shell (`pwsh.exe` / `powershell.exe` / `cmd.exe` on Windows, `$SHELL` on Unix):
 
 ```bash
 cargo run
 ```
 
-Release build (needed for the golden demo in later phases):
+Run a specific command through the PTY:
+
+```bash
+cargo run -- -- cmd.exe /c echo "Hello from Oxidite!"
+```
+
+Display CLI options and help:
+
+```bash
+cargo run -- --help
+```
+
+Build optimized release binary:
 
 ```bash
 cargo run --release
 ```
 
-## Writing a theme
+Run unit tests and verification checks:
 
-Theme **loading from TOML is not implemented in Phase 0** — that arrives in
-Phase 7. The on-disk format below is the planned contract so you can draft
-files under `themes/` early.
+```bash
+cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+```
 
-Each theme is a TOML file with a name, UI colors, and a 16-color ANSI palette
-(`ansi_0` … `ansi_15`, or a single `ansi` array of 16 `"#RRGGBB"` strings):
+---
+
+## Writing a Theme
+
+Oxidite uses standard TOML files for color theme definitions. Built-in presets (Dracula, Solarized, Gruvbox, Nord, One Dark) land in Phase 7, alongside user theme loading from the configuration directory.
+
+Each theme specifies core UI colors (foreground, background, cursor, selection) and a complete 16-color ANSI palette:
 
 ```toml
-name = "example-dark"
+name = "oxidite-dark"
 
 foreground   = "#E8E8ED"
 background   = "#0A0A0C"
@@ -37,28 +125,44 @@ cursor       = "#E8E8ED"
 selection_bg = "#2A2A3D"
 
 ansi = [
-  "#1C1C22", # 0 black
-  "#FF5C7A", # 1 red
-  "#3DDC97", # 2 green
-  "#F5C542", # 3 yellow
-  "#6EA8FF", # 4 blue
-  "#C792EA", # 5 magenta
-  "#64D2E8", # 6 cyan
-  "#E8E8ED", # 7 white
-  "#5A5A66", # 8 bright black
-  "#FF7A94", # 9 bright red
-  "#5AEBB0", # 10 bright green
-  "#FFD56A", # 11 bright yellow
-  "#8FC0FF", # 12 bright blue
-  "#D9A8FF", # 13 bright magenta
-  "#8AE0F0", # 14 bright cyan
-  "#FFFFFF", # 15 bright white
+  "#1C1C22", #  0: Black
+  "#FF5C7A", #  1: Red
+  "#3DDC97", #  2: Green
+  "#F5C542", #  3: Yellow
+  "#6EA8FF", #  4: Blue
+  "#C792EA", #  5: Magenta
+  "#64D2E8", #  6: Cyan
+  "#E8E8ED", #  7: White
+  "#5A5A66", #  8: Bright Black
+  "#FF7A94", #  9: Bright Red
+  "#5AEBB0", # 10: Bright Green
+  "#FFD56A", # 11: Bright Yellow
+  "#8FC0FF", # 12: Bright Blue
+  "#D9A8FF", # 13: Bright Magenta
+  "#8AE0F0", # 14: Bright Cyan
+  "#FFFFFF", # 15: Bright White
 ]
 ```
 
-Until Phase 7, the in-memory default is `Theme::default_dark()` in
-`src/theme.rs`.
+---
+
+## Tech Stack
+
+| Component | Technology / Crate |
+|---|---|
+| **PTY** | `portable-pty` |
+| **VT Tokenizer** | `vte` |
+| **Windowing & Events** | `winit` |
+| **GPU Rendering** | `wgpu` |
+| **Text Layout & Glyphs** | `glyphon` |
+| **Unicode Width** | `unicode-width` |
+| **Config & Themes** | `toml`, `serde` |
+| **Hot Reload** | `notify` |
+| **Clipboard** | `arboard` |
+| **Error Handling** | `thiserror` (internal), `anyhow` (application boundary) |
+
+---
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE).
