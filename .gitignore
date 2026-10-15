@@ -1,1 +1,14 @@
-/target
+/target/
+**/*.rs.bk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.code-workspace
+.cargo-cache/
