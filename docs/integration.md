@@ -4,7 +4,9 @@ Track merge status, blockers, and cross-module contract issues here.
 
 ## Current phase
 
-**Phase 0 — Scaffold, docs, contracts** (in progress)
+**Phase 0 — Scaffold, docs, contracts** (complete on `chore/phase-0-scaffold`)
+
+Next: **Phase 1 — PTY** on a new `feat/pty-*` branch after this branch merges to `main`.
 
 ## Blockers
 

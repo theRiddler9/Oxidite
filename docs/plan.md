@@ -34,16 +34,16 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 0 — Scaffold, docs, contracts
 
-- [ ] Repo builds (`cargo check`)
-- [ ] `.gitignore`, `rustfmt.toml`, clippy settings
-- [ ] `AGENTS.md`
-- [ ] `docs/plan.md` (this file)
-- [ ] `docs/contracts/shared-contracts.md`
-- [ ] `docs/plans/{pty,parser,grid,renderer,input,config}.md`
-- [ ] Handler trait and shared type stubs in `src/`
-- [ ] GitHub Actions CI (fmt, clippy, test)
-- [ ] `docs/runbooks/demo.md`
-- [ ] Tag: *(none for phase 0; first tag is `phase-1-pty`)*
+- [x] Repo builds (`cargo check`)
+- [x] `.gitignore`, `rustfmt.toml`, clippy settings
+- [x] `AGENTS.md`
+- [x] `docs/plan.md` (this file)
+- [x] `docs/contracts/shared-contracts.md`
+- [x] `docs/plans/{pty,parser,grid,renderer,input,config}.md`
+- [x] Handler trait and shared type stubs in `src/`
+- [x] GitHub Actions CI (fmt, clippy, test)
+- [x] `docs/runbooks/demo.md`
+- [x] Tag: *(none for phase 0; first tag is `phase-1-pty`)*
 
 ### Phase 1 — PTY (headless, no GUI)
 
