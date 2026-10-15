@@ -177,7 +177,16 @@ impl vte::Perform for Dispatcher<'_> {
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if intermediates.is_empty() {
+            match byte {
+                b'7' => self.handler.save_cursor(),
+                b'8' => self.handler.restore_cursor(),
+                b'M' => self.handler.reverse_index(),
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Dispatcher<'_> {
@@ -399,6 +408,18 @@ impl Handler for LoggingHandler {
 
     fn set_title(&mut self, title: String) {
         self.events.push(format!("set_title({title:?})"));
+    }
+
+    fn save_cursor(&mut self) {
+        self.events.push("save_cursor".into());
+    }
+
+    fn restore_cursor(&mut self) {
+        self.events.push("restore_cursor".into());
+    }
+
+    fn reverse_index(&mut self) {
+        self.events.push("reverse_index".into());
     }
 }
 
@@ -622,6 +643,20 @@ mod tests {
                 "set_title(\"Oxidite Shell\")",
                 "set_title(\"Project - Oxidite; v1\")",
             ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_esc_sequences() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // ESC 7 (DECSC save cursor), ESC M (RI reverse index), ESC 8 (DECRC restore cursor)
+        parser.advance(&mut handler, b"\x1b7\x1bM\x1b8");
+
+        assert_eq!(
+            handler.events,
+            vec!["save_cursor", "reverse_index", "restore_cursor",]
         );
     }
 }

@@ -29,6 +29,9 @@ pub trait Handler {
     fn set_mode(&mut self, mode: Mode, enabled: bool);
     fn set_scroll_region(&mut self, top: usize, bottom: usize);
     fn set_title(&mut self, title: String);
+    fn save_cursor(&mut self);
+    fn restore_cursor(&mut self);
+    fn reverse_index(&mut self);
     // extend as sequences are implemented
 }
 ```

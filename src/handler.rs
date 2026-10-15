@@ -114,4 +114,13 @@ pub trait Handler {
 
     /// Sets the window title (OSC 0 / 2).
     fn set_title(&mut self, title: String);
+
+    /// Saves the cursor position and attributes (`ESC 7`, DECSC).
+    fn save_cursor(&mut self) {}
+
+    /// Restores the cursor position and attributes (`ESC 8`, DECRC).
+    fn restore_cursor(&mut self) {}
+
+    /// Performs a reverse index / reverse linefeed (`ESC M`, RI).
+    fn reverse_index(&mut self) {}
 }
