@@ -35,9 +35,20 @@ struct Dispatcher<'a> {
 }
 
 impl vte::Perform for Dispatcher<'_> {
-    fn print(&mut self, _c: char) {}
+    fn print(&mut self, c: char) {
+        self.handler.print(c);
+    }
 
-    fn execute(&mut self, _byte: u8) {}
+    fn execute(&mut self, byte: u8) {
+        match byte {
+            0x07 => self.handler.bell(),
+            0x08 => self.handler.backspace(),
+            0x09 => self.handler.tab(),
+            0x0A..=0x0C => self.handler.linefeed(),
+            0x0D => self.handler.carriage_return(),
+            _ => {}
+        }
+    }
 
     fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
     }
@@ -153,5 +164,25 @@ mod tests {
         assert_eq!(handler.events, vec!["bell", "carriage_return", "linefeed"]);
         handler.clear();
         assert_eq!(handler.events, Vec::<String>::new());
+    }
+
+    #[test]
+    fn parser_handles_print_and_c0() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        parser.advance(&mut handler, b"Hi\r\n\t\x08\x07");
+        assert_eq!(
+            handler.events,
+            vec![
+                "print('H')",
+                "print('i')",
+                "carriage_return",
+                "linefeed",
+                "tab",
+                "backspace",
+                "bell",
+            ]
+        );
     }
 }
