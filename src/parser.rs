@@ -737,4 +737,201 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn fixture_c0_and_print() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/c0_print.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "print('H')",
+                "print('i')",
+                "carriage_return",
+                "linefeed",
+                "tab",
+                "backspace",
+                "bell",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_csi_cursor() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/csi_cursor.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "move_cursor_by(-1, 0)",
+                "move_cursor_by(3, 0)",
+                "move_cursor_by(0, 5)",
+                "move_cursor_by(0, -2)",
+                "move_cursor_to(0, 0)",
+                "move_cursor_to(9, 19)",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_csi_erase() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/csi_erase.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "erase_in_display(ToEnd)",
+                "erase_in_display(ToStart)",
+                "erase_in_display(All)",
+                "erase_in_display(AllIncludingScrollback)",
+                "erase_in_line(ToEnd)",
+                "erase_in_line(ToStart)",
+                "erase_in_line(All)",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_sgr_colors() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/sgr_colors.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_sgr(Foreground(Indexed(1)))",
+                "set_sgr(Background(Indexed(2)))",
+                "set_sgr(Foreground(Indexed(11)))",
+                "set_sgr(Background(Indexed(12)))",
+                "set_sgr(Foreground(Indexed(123)))",
+                "set_sgr(Background(Indexed(42)))",
+                "set_sgr(Foreground(Rgb(255, 100, 0)))",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_sgr_styles() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/sgr_styles.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_sgr(Bold)",
+                "set_sgr(Italic)",
+                "set_sgr(Underline)",
+                "set_sgr(Inverse)",
+                "set_sgr(Strikethrough)",
+                "set_sgr(NormalIntensity)",
+                "set_sgr(NotItalic)",
+                "set_sgr(NotUnderline)",
+                "set_sgr(NotInverse)",
+                "set_sgr(NotStrikethrough)",
+                "set_sgr(Reset)",
+                "set_sgr(Reset)",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_decset_modes() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/decset_modes.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_mode(Autowrap, true)",
+                "set_mode(CursorVisible, true)",
+                "set_mode(AlternateScreen, true)",
+                "set_mode(BracketedPaste, true)",
+                "set_mode(ApplicationCursorKeys, false)",
+                "set_mode(MouseReporting, false)",
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_scroll_region() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/scroll_region.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec!["set_scroll_region(0, 0)", "set_scroll_region(4, 19)",]
+        );
+    }
+
+    #[test]
+    fn fixture_osc_title() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/osc_title.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec!["set_title(\"Oxidite\")", "set_title(\"Terminal\")",]
+        );
+    }
+
+    #[test]
+    fn fixture_esc_sequences() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/esc_sequences.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec!["save_cursor", "reverse_index", "restore_cursor",]
+        );
+    }
+
+    #[test]
+    fn fixture_insert_delete() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+        parser.advance(
+            &mut handler,
+            include_bytes!("../tests/fixtures/insert_delete.bin"),
+        );
+        assert_eq!(
+            handler.events,
+            vec![
+                "insert_blank_chars(2)",
+                "insert_lines(3)",
+                "delete_lines(1)",
+                "delete_chars(4)",
+                "erase_chars(5)",
+            ]
+        );
+    }
 }
