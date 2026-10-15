@@ -145,7 +145,8 @@ impl Dispatcher<'_> {
             return;
         }
 
-        for subparams in params {
+        let mut iter = params.into_iter();
+        while let Some(subparams) = iter.next() {
             let code = subparams.first().copied().unwrap_or(0);
             match code {
                 // 16-color standard foreground (30–37)
@@ -154,6 +155,13 @@ impl Dispatcher<'_> {
                     self.handler.set_sgr(crate::handler::SgrAttr::Foreground(
                         crate::grid::Color::Indexed(idx),
                     ));
+                }
+                // Extended foreground (256-color / truecolor)
+                38 => {
+                    if let Some(color) = parse_extended_color(subparams, &mut iter) {
+                        self.handler
+                            .set_sgr(crate::handler::SgrAttr::Foreground(color));
+                    }
                 }
                 // Default foreground (39)
                 39 => {
@@ -167,6 +175,13 @@ impl Dispatcher<'_> {
                     self.handler.set_sgr(crate::handler::SgrAttr::Background(
                         crate::grid::Color::Indexed(idx),
                     ));
+                }
+                // Extended background (256-color / truecolor)
+                48 => {
+                    if let Some(color) = parse_extended_color(subparams, &mut iter) {
+                        self.handler
+                            .set_sgr(crate::handler::SgrAttr::Background(color));
+                    }
                 }
                 // Default background (49)
                 49 => {
@@ -190,6 +205,59 @@ impl Dispatcher<'_> {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// Parses extended 256-color or 24-bit truecolor from semicolon or colon subparameters.
+fn parse_extended_color<'a, I>(subparams: &[u16], iter: &mut I) -> Option<crate::grid::Color>
+where
+    I: Iterator<Item = &'a [u16]>,
+{
+    if subparams.len() > 1 {
+        // Colon-delimited format (e.g. 38:5:123 or 38:2::r:g:b or 38:2:r:g:b)
+        let mode = subparams.get(1).copied()?;
+        match mode {
+            5 => {
+                let idx = u8::try_from(*subparams.get(2)?).ok()?;
+                Some(crate::grid::Color::Indexed(idx))
+            }
+            2 => {
+                if subparams.len() >= 6 {
+                    let r = u8::try_from(subparams[3]).ok()?;
+                    let g = u8::try_from(subparams[4]).ok()?;
+                    let b = u8::try_from(subparams[5]).ok()?;
+                    Some(crate::grid::Color::Rgb(r, g, b))
+                } else if subparams.len() >= 5 {
+                    let r = u8::try_from(subparams[2]).ok()?;
+                    let g = u8::try_from(subparams[3]).ok()?;
+                    let b = u8::try_from(subparams[4]).ok()?;
+                    Some(crate::grid::Color::Rgb(r, g, b))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        // Semicolon-delimited format: subsequent tokens are consumed from `iter`.
+        let mode = iter.next()?.first().copied()?;
+        match mode {
+            5 => {
+                let idx_val = iter.next()?.first().copied()?;
+                let idx = u8::try_from(idx_val).ok()?;
+                Some(crate::grid::Color::Indexed(idx))
+            }
+            2 => {
+                let r_val = iter.next()?.first().copied()?;
+                let g_val = iter.next()?.first().copied()?;
+                let b_val = iter.next()?.first().copied()?;
+                let r = u8::try_from(r_val).ok()?;
+                let g = u8::try_from(g_val).ok()?;
+                let b = u8::try_from(b_val).ok()?;
+                Some(crate::grid::Color::Rgb(r, g, b))
+            }
+            _ => None,
         }
     }
 }
@@ -376,6 +444,31 @@ mod tests {
                 "set_sgr(Background(Default))",
                 "set_sgr(Foreground(Indexed(12)))",
                 "set_sgr(Background(Indexed(13)))",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_sgr_256_and_truecolor() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // Semicolon 256-color: fg 123, bg 42
+        parser.advance(&mut handler, b"\x1b[38;5;123;48;5;42m");
+        // Semicolon truecolor: fg rgb(255,100,0), bg rgb(10,20,30)
+        parser.advance(&mut handler, b"\x1b[38;2;255;100;0;48;2;10;20;30m");
+        // Colon 256-color and truecolor
+        parser.advance(&mut handler, b"\x1b[38:5:200m\x1b[38:2::50:60:70m");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_sgr(Foreground(Indexed(123)))",
+                "set_sgr(Background(Indexed(42)))",
+                "set_sgr(Foreground(Rgb(255, 100, 0)))",
+                "set_sgr(Background(Rgb(10, 20, 30)))",
+                "set_sgr(Foreground(Indexed(200)))",
+                "set_sgr(Foreground(Rgb(50, 60, 70)))",
             ]
         );
     }
