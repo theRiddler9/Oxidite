@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn default_shell_is_non_empty() {
         let cmd = ShellCommand::default_shell();
-        assert!(!cmd.program.is_empty());
+        assert_ne!(cmd.program, "");
         #[cfg(windows)]
         {
             let prog = cmd.program.to_lowercase();
@@ -313,7 +313,7 @@ mod tests {
     fn shell_command_constructors() {
         let cmd = ShellCommand::new("test");
         assert_eq!(cmd.program, "test");
-        assert!(cmd.args.is_empty());
+        assert_eq!(cmd.args, Vec::<String>::new());
 
         let cmd = ShellCommand::with_args("test", ["--flag", "arg"]);
         assert_eq!(cmd.program, "test");
