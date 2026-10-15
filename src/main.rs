@@ -16,6 +16,7 @@ mod renderer;
 mod terminal;
 mod theme;
 
+/// Entry point for Oxidite.
 fn main() {
     println!("Oxidite — Phase 0 scaffold ready");
 }

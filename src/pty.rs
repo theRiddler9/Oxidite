@@ -5,16 +5,22 @@ use std::fmt;
 /// Desired PTY geometry in character cells and pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PtySize {
+    /// Height in character cells.
     pub rows: u16,
+    /// Width in character cells.
     pub cols: u16,
+    /// Width in pixels (advisory).
     pub px_w: u16,
+    /// Height in pixels (advisory).
     pub px_h: u16,
 }
 
 /// Shell command to run on the PTY slave.
 #[derive(Debug, Clone)]
 pub struct ShellCommand {
+    /// Path or binary name of the shell program to execute.
     pub program: String,
+    /// Command-line arguments passed to the shell program.
     pub args: Vec<String>,
 }
 
@@ -26,6 +32,7 @@ pub enum PtyError {
 }
 
 impl fmt::Display for PtyError {
+    /// Formats the PTY error for display.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotImplemented => write!(f, "PTY not implemented yet (Phase 1)"),
@@ -40,19 +47,19 @@ impl std::error::Error for PtyError {}
 pub struct PtyWriter;
 
 impl PtyWriter {
-    /// Write bytes to the shell.
+    /// Writes bytes to the shell.
     #[allow(clippy::unused_self)]
     pub fn write(&mut self, _bytes: &[u8]) -> Result<usize, PtyError> {
         Err(PtyError::NotImplemented)
     }
 
-    /// Notify the PTY of a new size.
+    /// Notifies the PTY of a new size.
     #[allow(clippy::unused_self)]
     pub fn resize(&mut self, _size: PtySize) -> Result<(), PtyError> {
         Err(PtyError::NotImplemented)
     }
 
-    /// Kill the child process.
+    /// Kills the child process.
     #[allow(clippy::unused_self)]
     pub fn kill(&mut self) -> Result<(), PtyError> {
         Err(PtyError::NotImplemented)
@@ -65,7 +72,7 @@ impl PtyWriter {
 #[derive(Debug)]
 pub struct PtyReader;
 
-/// Spawn a shell on a PTY with the given size.
+/// Spawns a shell on a PTY with the given size.
 pub fn spawn(_cmd: ShellCommand, _size: PtySize) -> Result<(PtyWriter, PtyReader), PtyError> {
     Err(PtyError::NotImplemented)
 }
