@@ -84,12 +84,25 @@ fn run_headless(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
         match reader.recv_timeout(Duration::from_millis(50)) {
             Ok(bytes) => {
                 // Respond to cursor position query (DSR) if requested
-                if bytes.windows(4).any(|w| w == b"\x1b[6n")
-                    && let Ok(mut guard) = writer.lock()
-                {
-                    let _ = guard.write(b"\x1b[1;1R");
-                }
-                stdout.write_all(&bytes)?;
+                let output_bytes = if bytes.windows(4).any(|w| w == b"\x1b[6n") {
+                    if let Ok(mut guard) = writer.lock() {
+                        let _ = guard.write(b"\x1b[1;1R");
+                    }
+                    let mut clean = Vec::with_capacity(bytes.len());
+                    let mut i = 0;
+                    while i < bytes.len() {
+                        if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"\x1b[6n" {
+                            i += 4;
+                        } else {
+                            clean.push(bytes[i]);
+                            i += 1;
+                        }
+                    }
+                    clean
+                } else {
+                    bytes
+                };
+                stdout.write_all(&output_bytes)?;
                 stdout.flush()?;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
