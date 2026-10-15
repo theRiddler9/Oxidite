@@ -29,6 +29,20 @@ impl Parser {
     }
 }
 
+/// Helper returning parameter at `index` or `default` if missing or zero.
+fn param_or(params: &vte::Params, index: usize, default: u16) -> u16 {
+    params
+        .iter()
+        .nth(index)
+        .and_then(|subparams| subparams.first().copied())
+        .map_or(default, |val| if val == 0 { default } else { val })
+}
+
+/// Converts a 16-bit parameter to an `isize` displacement without wrapping.
+fn to_isize(val: u16) -> isize {
+    isize::try_from(val).unwrap_or(isize::MAX)
+}
+
 /// Internal dispatcher connecting [`vte::Perform`] events to a [`Handler`].
 struct Dispatcher<'a> {
     handler: &'a mut dyn Handler,
@@ -61,11 +75,42 @@ impl vte::Perform for Dispatcher<'_> {
 
     fn csi_dispatch(
         &mut self,
-        _params: &vte::Params,
-        _intermediates: &[u8],
+        params: &vte::Params,
+        intermediates: &[u8],
         _ignore: bool,
-        _action: char,
+        action: char,
     ) {
+        if intermediates.is_empty() {
+            match action {
+                // CUU — Cursor Up (CSI Ps A)
+                'A' => {
+                    let count = to_isize(param_or(params, 0, 1));
+                    self.handler.move_cursor_by(-count, 0);
+                }
+                // CUD — Cursor Down (CSI Ps B)
+                'B' => {
+                    let count = to_isize(param_or(params, 0, 1));
+                    self.handler.move_cursor_by(count, 0);
+                }
+                // CUF — Cursor Forward (CSI Ps C)
+                'C' => {
+                    let count = to_isize(param_or(params, 0, 1));
+                    self.handler.move_cursor_by(0, count);
+                }
+                // CUB — Cursor Backward (CSI Ps D)
+                'D' => {
+                    let count = to_isize(param_or(params, 0, 1));
+                    self.handler.move_cursor_by(0, -count);
+                }
+                // CUP / HVP — Cursor Position (CSI Ps ; Ps H / f)
+                'H' | 'f' => {
+                    let row = usize::from(param_or(params, 0, 1).saturating_sub(1));
+                    let col = usize::from(param_or(params, 1, 1).saturating_sub(1));
+                    self.handler.move_cursor_to(row, col);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
@@ -182,6 +227,30 @@ mod tests {
                 "tab",
                 "backspace",
                 "bell",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_csi_cursor_movement() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // CUU, CUD, CUF, CUB with default and explicit parameters
+        parser.advance(&mut handler, b"\x1b[A\x1b[3B\x1b[5C\x1b[2D");
+        // CUP and HVP
+        parser.advance(&mut handler, b"\x1b[H\x1b[12;34H\x1b[5;10f");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "move_cursor_by(-1, 0)",
+                "move_cursor_by(3, 0)",
+                "move_cursor_by(0, 5)",
+                "move_cursor_by(0, -2)",
+                "move_cursor_to(0, 0)",
+                "move_cursor_to(11, 33)",
+                "move_cursor_to(4, 9)",
             ]
         );
     }
