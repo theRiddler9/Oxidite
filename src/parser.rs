@@ -108,6 +108,25 @@ impl vte::Perform for Dispatcher<'_> {
                     let col = usize::from(param_or(params, 1, 1).saturating_sub(1));
                     self.handler.move_cursor_to(row, col);
                 }
+                // ED — Erase in Display (CSI Ps J)
+                'J' => {
+                    let mode = match param_or(params, 0, 0) {
+                        1 => crate::handler::EraseMode::ToStart,
+                        2 => crate::handler::EraseMode::All,
+                        3 => crate::handler::EraseMode::AllIncludingScrollback,
+                        _ => crate::handler::EraseMode::ToEnd,
+                    };
+                    self.handler.erase_in_display(mode);
+                }
+                // EL — Erase in Line (CSI Ps K)
+                'K' => {
+                    let mode = match param_or(params, 0, 0) {
+                        1 => crate::handler::EraseMode::ToStart,
+                        2 => crate::handler::EraseMode::All,
+                        _ => crate::handler::EraseMode::ToEnd,
+                    };
+                    self.handler.erase_in_line(mode);
+                }
                 _ => {}
             }
         }
@@ -251,6 +270,30 @@ mod tests {
                 "move_cursor_to(0, 0)",
                 "move_cursor_to(11, 33)",
                 "move_cursor_to(4, 9)",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_csi_erase() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // ED (J): default (0), 1, 2, 3
+        parser.advance(&mut handler, b"\x1b[J\x1b[1J\x1b[2J\x1b[3J");
+        // EL (K): default (0), 1, 2
+        parser.advance(&mut handler, b"\x1b[K\x1b[1K\x1b[2K");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "erase_in_display(ToEnd)",
+                "erase_in_display(ToStart)",
+                "erase_in_display(All)",
+                "erase_in_display(AllIncludingScrollback)",
+                "erase_in_line(ToEnd)",
+                "erase_in_line(ToStart)",
+                "erase_in_line(All)",
             ]
         );
     }
