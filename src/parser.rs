@@ -142,6 +142,7 @@ impl vte::Perform for Dispatcher<'_> {
 impl Dispatcher<'_> {
     fn dispatch_sgr(&mut self, params: &vte::Params) {
         if params.is_empty() {
+            self.handler.set_sgr(crate::handler::SgrAttr::Reset);
             return;
         }
 
@@ -149,6 +150,24 @@ impl Dispatcher<'_> {
         while let Some(subparams) = iter.next() {
             let code = subparams.first().copied().unwrap_or(0);
             match code {
+                0 => self.handler.set_sgr(crate::handler::SgrAttr::Reset),
+                1 => self.handler.set_sgr(crate::handler::SgrAttr::Bold),
+                2 => self.handler.set_sgr(crate::handler::SgrAttr::Dim),
+                3 => self.handler.set_sgr(crate::handler::SgrAttr::Italic),
+                4 => self.handler.set_sgr(crate::handler::SgrAttr::Underline),
+                7 => self.handler.set_sgr(crate::handler::SgrAttr::Inverse),
+                8 => self.handler.set_sgr(crate::handler::SgrAttr::Hidden),
+                9 => self.handler.set_sgr(crate::handler::SgrAttr::Strikethrough),
+                22 => self
+                    .handler
+                    .set_sgr(crate::handler::SgrAttr::NormalIntensity),
+                23 => self.handler.set_sgr(crate::handler::SgrAttr::NotItalic),
+                24 => self.handler.set_sgr(crate::handler::SgrAttr::NotUnderline),
+                27 => self.handler.set_sgr(crate::handler::SgrAttr::NotInverse),
+                28 => self.handler.set_sgr(crate::handler::SgrAttr::NotHidden),
+                29 => self
+                    .handler
+                    .set_sgr(crate::handler::SgrAttr::NotStrikethrough),
                 // 16-color standard foreground (30–37)
                 30..=37 => {
                     let idx = u8::try_from(code - 30).unwrap_or(0);
@@ -469,6 +488,40 @@ mod tests {
                 "set_sgr(Background(Rgb(10, 20, 30)))",
                 "set_sgr(Foreground(Indexed(200)))",
                 "set_sgr(Foreground(Rgb(50, 60, 70)))",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_sgr_text_styles() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // bold, dim, italic, underline, inverse, hidden, strikethrough
+        parser.advance(&mut handler, b"\x1b[1;2;3;4;7;8;9m");
+        // resets: normal intensity, not italic, not underline, not inverse, not hidden, not strikethrough, full reset
+        parser.advance(&mut handler, b"\x1b[22;23;24;27;28;29;0m");
+        // empty param reset
+        parser.advance(&mut handler, b"\x1b[m");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_sgr(Bold)",
+                "set_sgr(Dim)",
+                "set_sgr(Italic)",
+                "set_sgr(Underline)",
+                "set_sgr(Inverse)",
+                "set_sgr(Hidden)",
+                "set_sgr(Strikethrough)",
+                "set_sgr(NormalIntensity)",
+                "set_sgr(NotItalic)",
+                "set_sgr(NotUnderline)",
+                "set_sgr(NotInverse)",
+                "set_sgr(NotHidden)",
+                "set_sgr(NotStrikethrough)",
+                "set_sgr(Reset)",
+                "set_sgr(Reset)",
             ]
         );
     }
