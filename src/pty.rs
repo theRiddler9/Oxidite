@@ -63,10 +63,10 @@ fn detect_default_shell() -> (String, Vec<String>) {
 
 #[cfg(not(windows))]
 fn detect_default_shell() -> (String, Vec<String>) {
-    if let Ok(shell) = std::env::var("SHELL") {
-        if !shell.is_empty() {
-            return (shell, Vec::new());
-        }
+    if let Ok(shell) = std::env::var("SHELL")
+        && !shell.is_empty()
+    {
+        return (shell, Vec::new());
     }
     ("/bin/sh".to_string(), Vec::new())
 }
