@@ -934,4 +934,41 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn parser_handles_sequences_split_across_reads() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // 1. CSI cursor split across chunks: \x1b[10;20H
+        parser.advance(&mut handler, b"\x1b");
+        parser.advance(&mut handler, b"[1");
+        parser.advance(&mut handler, b"0;20");
+        parser.advance(&mut handler, b"H");
+
+        // 2. OSC title split across chunks: \x1b]0;Split Title\x07
+        parser.advance(&mut handler, b"\x1b]0;Spl");
+        parser.advance(&mut handler, b"it Tit");
+        parser.advance(&mut handler, b"le\x07");
+
+        // 3. SGR truecolor split across chunks: \x1b[38;2;255;100;0m
+        parser.advance(&mut handler, b"\x1b[38;");
+        parser.advance(&mut handler, b"2;255;100");
+        parser.advance(&mut handler, b";0m");
+
+        // 4. Multibyte UTF-8 split across chunks: 🦀 (F0 9F A6 80)
+        let crab_bytes = "🦀".as_bytes();
+        parser.advance(&mut handler, &crab_bytes[..2]);
+        parser.advance(&mut handler, &crab_bytes[2..]);
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "move_cursor_to(9, 19)",
+                "set_title(\"Split Title\")",
+                "set_sgr(Foreground(Rgb(255, 100, 0)))",
+                "print('🦀')",
+            ]
+        );
+    }
 }
