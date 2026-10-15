@@ -127,12 +127,71 @@ impl vte::Perform for Dispatcher<'_> {
                     };
                     self.handler.erase_in_line(mode);
                 }
+                // SGR — Select Graphic Rendition (CSI Ps m)
+                'm' => {
+                    self.dispatch_sgr(params);
+                }
                 _ => {}
             }
         }
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+}
+
+impl Dispatcher<'_> {
+    fn dispatch_sgr(&mut self, params: &vte::Params) {
+        if params.is_empty() {
+            return;
+        }
+
+        for subparams in params {
+            let code = subparams.first().copied().unwrap_or(0);
+            match code {
+                // 16-color standard foreground (30–37)
+                30..=37 => {
+                    let idx = u8::try_from(code - 30).unwrap_or(0);
+                    self.handler.set_sgr(crate::handler::SgrAttr::Foreground(
+                        crate::grid::Color::Indexed(idx),
+                    ));
+                }
+                // Default foreground (39)
+                39 => {
+                    self.handler.set_sgr(crate::handler::SgrAttr::Foreground(
+                        crate::grid::Color::Default,
+                    ));
+                }
+                // 16-color standard background (40–47)
+                40..=47 => {
+                    let idx = u8::try_from(code - 40).unwrap_or(0);
+                    self.handler.set_sgr(crate::handler::SgrAttr::Background(
+                        crate::grid::Color::Indexed(idx),
+                    ));
+                }
+                // Default background (49)
+                49 => {
+                    self.handler.set_sgr(crate::handler::SgrAttr::Background(
+                        crate::grid::Color::Default,
+                    ));
+                }
+                // 16-color bright foreground (90–97)
+                90..=97 => {
+                    let idx = u8::try_from(code - 90 + 8).unwrap_or(8);
+                    self.handler.set_sgr(crate::handler::SgrAttr::Foreground(
+                        crate::grid::Color::Indexed(idx),
+                    ));
+                }
+                // 16-color bright background (100–107)
+                100..=107 => {
+                    let idx = u8::try_from(code - 100 + 8).unwrap_or(8);
+                    self.handler.set_sgr(crate::handler::SgrAttr::Background(
+                        crate::grid::Color::Indexed(idx),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// A [`Handler`] implementation that logs method calls and records them for debugging and tests.
@@ -294,6 +353,29 @@ mod tests {
                 "erase_in_line(ToEnd)",
                 "erase_in_line(ToStart)",
                 "erase_in_line(All)",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_sgr_16_color() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // 31 (red fg), 42 (green bg), 39 (default fg), 49 (default bg)
+        parser.advance(&mut handler, b"\x1b[31;42;39;49m");
+        // 94 (bright blue fg), 105 (bright magenta bg)
+        parser.advance(&mut handler, b"\x1b[94;105m");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_sgr(Foreground(Indexed(1)))",
+                "set_sgr(Background(Indexed(2)))",
+                "set_sgr(Foreground(Default))",
+                "set_sgr(Background(Default))",
+                "set_sgr(Foreground(Indexed(12)))",
+                "set_sgr(Background(Indexed(13)))",
             ]
         );
     }
