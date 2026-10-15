@@ -16,12 +16,77 @@ pub struct PtySize {
 }
 
 /// Shell command to run on the PTY slave.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCommand {
     /// Path or binary name of the shell program to execute.
     pub program: String,
     /// Command-line arguments passed to the shell program.
     pub args: Vec<String>,
+}
+
+#[cfg(windows)]
+fn which_in_path(binary: &str) -> bool {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let full = dir.join(binary);
+            if full.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn detect_default_shell() -> (String, Vec<String>) {
+    if which_in_path("pwsh.exe") {
+        ("pwsh.exe".to_string(), Vec::new())
+    } else if which_in_path("powershell.exe") {
+        ("powershell.exe".to_string(), Vec::new())
+    } else {
+        ("cmd.exe".to_string(), Vec::new())
+    }
+}
+
+#[cfg(not(windows))]
+fn detect_default_shell() -> (String, Vec<String>) {
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() {
+            return (shell, Vec::new());
+        }
+    }
+    ("/bin/sh".to_string(), Vec::new())
+}
+
+impl ShellCommand {
+    /// Creates a new shell command with no arguments.
+    pub fn new(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+        }
+    }
+
+    /// Creates a new shell command with a program and arguments.
+    pub fn with_args<I, S>(program: impl Into<String>, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Detects the system default shell according to platform conventions.
+    ///
+    /// On Windows: probes `pwsh.exe`, then `powershell.exe`, then `cmd.exe`.
+    /// On Unix: reads `$SHELL`, falling back to `/bin/sh`.
+    pub fn default_shell() -> Self {
+        let (program, args) = detect_default_shell();
+        Self { program, args }
+    }
 }
 
 /// Errors from PTY operations.
@@ -75,4 +140,36 @@ pub struct PtyReader;
 /// Spawns a shell on a PTY with the given size.
 pub fn spawn(_cmd: ShellCommand, _size: PtySize) -> Result<(PtyWriter, PtyReader), PtyError> {
     Err(PtyError::NotImplemented)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `ShellCommand::default_shell` returns a non-empty program.
+    #[test]
+    fn default_shell_is_non_empty() {
+        let cmd = ShellCommand::default_shell();
+        assert!(!cmd.program.is_empty());
+        #[cfg(windows)]
+        {
+            let prog = cmd.program.to_lowercase();
+            assert!(
+                prog.contains("pwsh") || prog.contains("powershell") || prog.contains("cmd"),
+                "unexpected Windows default shell: {prog}"
+            );
+        }
+    }
+
+    /// Verifies `ShellCommand` constructors with and without arguments.
+    #[test]
+    fn shell_command_constructors() {
+        let cmd = ShellCommand::new("test");
+        assert_eq!(cmd.program, "test");
+        assert!(cmd.args.is_empty());
+
+        let cmd = ShellCommand::with_args("test", ["--flag", "arg"]);
+        assert_eq!(cmd.program, "test");
+        assert_eq!(cmd.args, vec!["--flag", "arg"]);
+    }
 }
