@@ -71,7 +71,17 @@ impl vte::Perform for Dispatcher<'_> {
 
     fn unhook(&mut self) {}
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if matches!(params.first().copied(), Some(b"0" | b"2")) {
+            let title = if params.len() > 1 {
+                let title_bytes = params[1..].join(&b';');
+                String::from_utf8_lossy(&title_bytes).into_owned()
+            } else {
+                String::new()
+            };
+            self.handler.set_title(title);
+        }
+    }
 
     fn csi_dispatch(
         &mut self,
@@ -593,6 +603,25 @@ mod tests {
         assert_eq!(
             handler.events,
             vec!["set_scroll_region(0, 0)", "set_scroll_region(4, 23)",]
+        );
+    }
+
+    #[test]
+    fn parser_handles_osc_title() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // OSC 0 with BEL terminator
+        parser.advance(&mut handler, b"\x1b]0;Oxidite Shell\x07");
+        // OSC 2 with ST terminator (\x1b\\)
+        parser.advance(&mut handler, b"\x1b]2;Project - Oxidite; v1\x1b\\");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_title(\"Oxidite Shell\")",
+                "set_title(\"Project - Oxidite; v1\")",
+            ]
         );
     }
 }
