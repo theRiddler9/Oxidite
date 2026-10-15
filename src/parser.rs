@@ -131,6 +131,17 @@ impl vte::Perform for Dispatcher<'_> {
                 'm' => {
                     self.dispatch_sgr(params);
                 }
+                // DECSTBM — Set Top and Bottom Margins (CSI Pt ; Pb r)
+                'r' => {
+                    let top = usize::from(param_or(params, 0, 1).saturating_sub(1));
+                    let bottom_param = param_or(params, 1, 0);
+                    let bottom = if bottom_param == 0 {
+                        0
+                    } else {
+                        usize::from(bottom_param.saturating_sub(1))
+                    };
+                    self.handler.set_scroll_region(top, bottom);
+                }
                 _ => {}
             }
         } else if intermediates == b"?" {
@@ -566,6 +577,22 @@ mod tests {
                 "set_mode(ApplicationCursorKeys, false)",
                 "set_mode(MouseReporting, false)",
             ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_scroll_region() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // Default / reset scroll region
+        parser.advance(&mut handler, b"\x1b[r");
+        // Explicit scroll region lines 5 to 24 (1-indexed) -> 4 to 23 (0-indexed)
+        parser.advance(&mut handler, b"\x1b[5;24r");
+
+        assert_eq!(
+            handler.events,
+            vec!["set_scroll_region(0, 0)", "set_scroll_region(4, 23)",]
         );
     }
 }
