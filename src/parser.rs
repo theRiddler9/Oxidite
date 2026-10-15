@@ -133,6 +133,26 @@ impl vte::Perform for Dispatcher<'_> {
                 }
                 _ => {}
             }
+        } else if intermediates == b"?" {
+            // DECSET (h) / DECRST (l)
+            let enabled = match action {
+                'h' => true,
+                'l' => false,
+                _ => return,
+            };
+            for subparams in params {
+                let code = subparams.first().copied().unwrap_or(0);
+                let mode = match code {
+                    1 => crate::handler::Mode::ApplicationCursorKeys,
+                    7 => crate::handler::Mode::Autowrap,
+                    25 => crate::handler::Mode::CursorVisible,
+                    1000 | 1002 | 1003 | 1006 => crate::handler::Mode::MouseReporting,
+                    47 | 1047 | 1049 => crate::handler::Mode::AlternateScreen,
+                    2004 => crate::handler::Mode::BracketedPaste,
+                    _ => continue,
+                };
+                self.handler.set_mode(mode, enabled);
+            }
         }
     }
 
@@ -522,6 +542,29 @@ mod tests {
                 "set_sgr(NotStrikethrough)",
                 "set_sgr(Reset)",
                 "set_sgr(Reset)",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_decset_decrst() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        // Enable: autowrap (?7), cursor visible (?25), alt screen (?1049), bracketed paste (?2004)
+        parser.advance(&mut handler, b"\x1b[?7;25;1049;2004h");
+        // Disable: app cursor keys (?1), mouse reporting (?1006)
+        parser.advance(&mut handler, b"\x1b[?1;1006l");
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_mode(Autowrap, true)",
+                "set_mode(CursorVisible, true)",
+                "set_mode(AlternateScreen, true)",
+                "set_mode(BracketedPaste, true)",
+                "set_mode(ApplicationCursorKeys, false)",
+                "set_mode(MouseReporting, false)",
             ]
         );
     }
