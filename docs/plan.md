@@ -47,12 +47,12 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 1 — PTY (headless, no GUI)
 
-- [ ] `portable-pty` + `anyhow` dependencies
-- [ ] Shell detection and spawn
-- [ ] Reader thread + write path + resize + exit
-- [ ] Headless passthrough mode
-- [ ] PTY tests
-- [ ] `docs/learn/phase-1.md`
+- [x] `portable-pty` + `anyhow` dependencies
+- [x] Shell detection and spawn
+- [x] Reader thread + write path + resize + exit
+- [x] Headless passthrough mode
+- [x] PTY tests
+- [x] `docs/learn/phase-1.md`
 - [ ] Tag: `phase-1-pty`
 
 ### Phase 2 — Parser
