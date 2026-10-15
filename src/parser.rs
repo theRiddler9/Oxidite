@@ -59,3 +59,99 @@ impl vte::Perform for Dispatcher<'_> {
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
 }
+
+/// A [`Handler`] implementation that logs method calls and records them for debugging and tests.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LoggingHandler {
+    /// Recorded call trace formatted as human-readable strings.
+    pub events: Vec<String>,
+}
+
+impl LoggingHandler {
+    /// Creates a new, empty logging handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clears recorded events.
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+}
+
+impl Handler for LoggingHandler {
+    fn print(&mut self, c: char) {
+        self.events.push(format!("print({c:?})"));
+    }
+
+    fn linefeed(&mut self) {
+        self.events.push("linefeed".into());
+    }
+
+    fn carriage_return(&mut self) {
+        self.events.push("carriage_return".into());
+    }
+
+    fn backspace(&mut self) {
+        self.events.push("backspace".into());
+    }
+
+    fn tab(&mut self) {
+        self.events.push("tab".into());
+    }
+
+    fn bell(&mut self) {
+        self.events.push("bell".into());
+    }
+
+    fn move_cursor_to(&mut self, row: usize, col: usize) {
+        self.events.push(format!("move_cursor_to({row}, {col})"));
+    }
+
+    fn move_cursor_by(&mut self, d_row: isize, d_col: isize) {
+        self.events
+            .push(format!("move_cursor_by({d_row}, {d_col})"));
+    }
+
+    fn erase_in_display(&mut self, mode: crate::handler::EraseMode) {
+        self.events.push(format!("erase_in_display({mode:?})"));
+    }
+
+    fn erase_in_line(&mut self, mode: crate::handler::EraseMode) {
+        self.events.push(format!("erase_in_line({mode:?})"));
+    }
+
+    fn set_sgr(&mut self, attr: crate::handler::SgrAttr) {
+        self.events.push(format!("set_sgr({attr:?})"));
+    }
+
+    fn set_mode(&mut self, mode: crate::handler::Mode, enabled: bool) {
+        self.events.push(format!("set_mode({mode:?}, {enabled})"));
+    }
+
+    fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        self.events
+            .push(format!("set_scroll_region({top}, {bottom})"));
+    }
+
+    fn set_title(&mut self, title: String) {
+        self.events.push(format!("set_title({title:?})"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logging_handler_records_calls() {
+        let mut handler = LoggingHandler::new();
+        handler.bell();
+        handler.carriage_return();
+        handler.linefeed();
+        assert_eq!(handler.events, vec!["bell", "carriage_return", "linefeed"]);
+        handler.clear();
+        assert_eq!(handler.events, Vec::<String>::new());
+    }
+}
