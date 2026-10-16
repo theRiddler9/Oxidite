@@ -186,6 +186,18 @@ impl Row {
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
+
+    /// Resizes the row to `new_cols` cells, padding with empty cells or truncating.
+    pub fn resize(&mut self, new_cols: usize) {
+        if new_cols > self.cells.len() {
+            self.cells.resize(new_cols, Cell::empty());
+        } else if new_cols < self.cells.len() {
+            self.cells.truncate(new_cols);
+            if new_cols > 0 && self.cells[new_cols - 1].is_wide_lead() {
+                self.cells[new_cols - 1] = Cell::empty();
+            }
+        }
+    }
 }
 
 impl std::ops::Deref for Row {
@@ -292,6 +304,69 @@ impl Grid {
         if let Some(cell) = self.get_mut(row, col) {
             *cell = Cell::empty();
         }
+    }
+
+    /// Resizes the grid to new column and row dimensions, adjusting visible rows,
+    /// scrollback rows, scroll regions, and clamping the cursor.
+    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        let new_cols = new_cols.max(1);
+        let new_rows = new_rows.max(1);
+
+        if new_cols == self.cols && new_rows == self.rows {
+            return;
+        }
+
+        // 1. Adjust column width across all visible rows and scrollback
+        if new_cols != self.cols {
+            for row in &mut self.visible_rows {
+                row.resize(new_cols);
+            }
+            for row in &mut self.scrollback {
+                row.resize(new_cols);
+            }
+        }
+
+        // 2. Adjust row count
+        if new_rows > self.rows {
+            // Expand: pull lines from scrollback if available, else append empty rows
+            while self.visible_rows.len() < new_rows {
+                if let Some(mut row) = self.scrollback.pop_back() {
+                    row.resize(new_cols);
+                    self.visible_rows.insert(0, row);
+                    self.cursor.row = self.cursor.row.saturating_add(1);
+                } else {
+                    self.visible_rows.push(Row::new(new_cols));
+                }
+            }
+        } else if new_rows < self.rows {
+            // Shrink: push top lines to scrollback and shift cursor up
+            while self.visible_rows.len() > new_rows {
+                let row = self.visible_rows.remove(0);
+                if self.max_scrollback > 0 {
+                    if self.scrollback.len() >= self.max_scrollback {
+                        self.scrollback.pop_front();
+                    }
+                    self.scrollback.push_back(row);
+                }
+                self.cursor.row = self.cursor.row.saturating_sub(1);
+            }
+        }
+
+        self.cols = new_cols;
+        self.rows = new_rows;
+
+        // 3. Re-clamp cursor and reset wrap
+        self.cursor.row = self.cursor.row.min(self.rows.saturating_sub(1));
+        self.cursor.col = self.cursor.col.min(self.cols.saturating_sub(1));
+        self.wrap_pending = false;
+
+        if let Some(ref mut saved) = self.saved_cursor {
+            saved.row = saved.row.min(self.rows.saturating_sub(1));
+            saved.col = saved.col.min(self.cols.saturating_sub(1));
+        }
+
+        // 4. Reset scroll region to full screen height
+        self.reset_scroll_region();
     }
 
     /// Returns a reference to the row at `row_idx`, if within bounds.
@@ -1036,5 +1111,46 @@ mod tests {
         assert_eq!(grid[0][0].ch, 'Z');
         assert_eq!(grid[0][0].width, 1);
         assert!(grid[0][1].is_empty());
+    }
+
+    #[test]
+    fn grid_resize_expand_and_shrink() {
+        let mut grid = Grid::new(3, 3);
+        grid[0][0].ch = '1';
+        grid[1][0].ch = '2';
+        grid[2][0].ch = '3';
+        grid.move_cursor_to(2, 2);
+
+        // Shrink height to 2 rows: row 0 ('1') pushed to scrollback
+        grid.resize(3, 2);
+        assert_eq!(grid.rows, 2);
+        assert_eq!(grid.scrollback_len(), 1);
+        assert_eq!(grid.scrollback_row(0).unwrap()[0].ch, '1');
+        assert_eq!(grid[0][0].ch, '2');
+        assert_eq!(grid[1][0].ch, '3');
+        assert_eq!(grid.cursor.row, 1);
+        assert_eq!(grid.cursor.col, 2);
+
+        // Expand height to 4 rows: row '1' pulled from scrollback, row 3 is blank
+        grid.resize(3, 4);
+        assert_eq!(grid.rows, 4);
+        assert_eq!(grid.scrollback_len(), 0);
+        assert_eq!(grid[0][0].ch, '1');
+        assert_eq!(grid[1][0].ch, '2');
+        assert_eq!(grid[2][0].ch, '3');
+        assert!(grid[3][0].is_empty());
+        assert_eq!(grid.cursor.row, 2);
+
+        // Truncate columns to 2: cursor col clamped
+        grid.cursor.col = 2;
+        grid.resize(2, 4);
+        assert_eq!(grid.cols, 2);
+        assert_eq!(grid.cursor.col, 1);
+
+        // Wide character truncated at right boundary
+        grid[0][0] = Cell::new('語', Color::Default, Color::Default, Attrs::empty(), 2);
+        grid[0][1] = Cell::new(' ', Color::Default, Color::Default, Attrs::empty(), 0);
+        grid.resize(1, 4);
+        assert!(grid[0][0].is_empty());
     }
 }
