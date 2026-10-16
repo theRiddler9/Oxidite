@@ -62,15 +62,56 @@ impl Default for Modes {
     }
 }
 
-/// Full terminal state owned by the app (stub).
-#[derive(Debug, Default)]
+/// Full terminal state owning grid storage, alternate buffer, modes, and title.
+#[derive(Debug)]
 pub struct Terminal {
-    /// Screen grid storage.
+    /// Active screen grid storage.
     pub grid: Grid,
+    /// Inactive screen grid buffer (swapped when `Mode::AlternateScreen` is toggled).
+    pub alternate_grid: Grid,
     /// Runtime terminal modes.
     pub modes: Modes,
     /// Window title set via OSC sequences.
     pub title: String,
+}
+
+impl Default for Terminal {
+    fn default() -> Self {
+        Self::new(80, 24)
+    }
+}
+
+impl Terminal {
+    /// Creates a new terminal with the given column and row dimensions.
+    #[must_use]
+    pub fn new(cols: usize, rows: usize) -> Self {
+        Self {
+            grid: Grid::new(cols, rows),
+            alternate_grid: Grid::with_scrollback(cols, rows, 0),
+            modes: Modes::default(),
+            title: String::new(),
+        }
+    }
+
+    /// Resizes both the active grid and alternate screen grid.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.grid.resize(cols, rows);
+        self.alternate_grid.resize(cols, rows);
+    }
+
+    /// Enables or disables the alternate screen buffer, swapping the active and inactive grids.
+    pub fn set_alternate_screen(&mut self, active: bool) {
+        if self.modes.alternate_screen == active {
+            return;
+        }
+        self.modes.alternate_screen = active;
+        std::mem::swap(&mut self.grid, &mut self.alternate_grid);
+        if active {
+            self.grid.clear_scrollback();
+            self.grid.erase_in_display(EraseMode::All);
+            self.grid.move_cursor_to(0, 0);
+        }
+    }
 }
 
 impl Handler for Terminal {
@@ -107,8 +148,14 @@ impl Handler for Terminal {
     /// Applies an SGR attribute (stub).
     fn set_sgr(&mut self, _attr: SgrAttr) {}
 
-    /// Enables or disables a terminal mode (stub).
-    fn set_mode(&mut self, _mode: Mode, _enabled: bool) {}
+    /// Enables or disables a terminal mode.
+    fn set_mode(&mut self, mode: Mode, enabled: bool) {
+        if mode == Mode::AlternateScreen {
+            self.set_alternate_screen(enabled);
+        } else {
+            self.modes.set(mode, enabled);
+        }
+    }
 
     /// Sets the scrolling region top and bottom rows (stub).
     fn set_scroll_region(&mut self, _top: usize, _bottom: usize) {}
@@ -148,5 +195,30 @@ mod tests {
         modes.set(Mode::Autowrap, false);
         assert!(!modes.is_enabled(Mode::Autowrap));
         assert!(!modes.autowrap);
+    }
+
+    #[test]
+    fn alternate_screen_switching_and_preservation() {
+        let mut terminal = Terminal::new(5, 3);
+        // Put content on primary screen
+        terminal.grid[0][0].ch = 'P';
+        terminal.grid.move_cursor_to(1, 2);
+
+        // Switch to alternate screen
+        terminal.set_mode(Mode::AlternateScreen, true);
+        assert!(terminal.modes.alternate_screen);
+        assert!(terminal.grid[0][0].is_empty());
+        assert_eq!(terminal.grid.cursor.row, 0);
+        assert_eq!(terminal.grid.cursor.col, 0);
+
+        // Put content on alternate screen
+        terminal.grid[0][0].ch = 'A';
+
+        // Switch back to primary screen
+        terminal.set_mode(Mode::AlternateScreen, false);
+        assert!(!terminal.modes.alternate_screen);
+        assert_eq!(terminal.grid[0][0].ch, 'P');
+        assert_eq!(terminal.grid.cursor.row, 1);
+        assert_eq!(terminal.grid.cursor.col, 2);
     }
 }
