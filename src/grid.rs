@@ -3,6 +3,7 @@
 //! Full grid storage and mutation land in Phase 3.
 
 use std::collections::VecDeque;
+use unicode_width::UnicodeWidthChar;
 
 /// Default maximum number of lines preserved in the scrollback buffer.
 pub const DEFAULT_MAX_SCROLLBACK: usize = 10_000;
@@ -104,6 +105,18 @@ impl Cell {
             && self.fg == Color::Default
             && self.bg == Color::Default
             && self.attrs.is_empty()
+    }
+
+    /// Returns whether this cell is the leading half of a 2-cell wide character.
+    #[must_use]
+    pub const fn is_wide_lead(&self) -> bool {
+        self.width == 2
+    }
+
+    /// Returns whether this cell is the trailing/continuation half of a 2-cell wide character.
+    #[must_use]
+    pub const fn is_wide_continuation(&self) -> bool {
+        self.width == 0
     }
 }
 
@@ -274,6 +287,13 @@ impl Grid {
             .and_then(|r| r.cells.get_mut(col))
     }
 
+    /// Resets the cell at `(row, col)` to an empty cell with default attributes, if within bounds.
+    pub fn reset_cell(&mut self, row: usize, col: usize) {
+        if let Some(cell) = self.get_mut(row, col) {
+            *cell = Cell::empty();
+        }
+    }
+
     /// Returns a reference to the row at `row_idx`, if within bounds.
     #[must_use]
     pub fn row(&self, row_idx: usize) -> Option<&Row> {
@@ -408,10 +428,25 @@ impl Grid {
     }
 
     /// Writes a character at the cursor position with the specified styling,
-    /// respecting autowrap mode and deferred wrap state.
+    /// respecting autowrap mode, deferred wrap state, and wide character widths (CJK / emoji).
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, attrs: Attrs, autowrap: bool) {
+        let char_width = if UnicodeWidthChar::width(c).unwrap_or(1) >= 2 {
+            2u8
+        } else {
+            1u8
+        };
+
         if self.wrap_pending && autowrap {
             self.wrap_pending = false;
+            self.cursor.col = 0;
+            self.linefeed();
+        } else if char_width == 2 && self.cursor.col + 1 >= self.cols && autowrap {
+            // Cannot fit 2-cell wide character in the last column: fill last cell with space and wrap
+            let row = self.cursor.row.min(self.rows.saturating_sub(1));
+            let col = self.cursor.col.min(self.cols.saturating_sub(1));
+            if let Some(cell) = self.get_mut(row, col) {
+                *cell = Cell::new(' ', fg, bg, attrs, 1);
+            }
             self.cursor.col = 0;
             self.linefeed();
         }
@@ -419,11 +454,39 @@ impl Grid {
         let row = self.cursor.row.min(self.rows.saturating_sub(1));
         let col = self.cursor.col.min(self.cols.saturating_sub(1));
 
-        if let Some(cell) = self.get_mut(row, col) {
-            *cell = Cell::new(c, fg, bg, attrs, 1);
+        // Overwrite protection for wide characters:
+        // 1. If overwriting a continuation cell, clear its wide leader cell at col - 1
+        if col > 0 && self.get(row, col).is_some_and(Cell::is_wide_continuation) {
+            self.reset_cell(row, col - 1);
+        }
+        if self.get(row, col).is_some_and(Cell::is_wide_lead) {
+            self.reset_cell(row, col + 1);
         }
 
-        if self.cursor.col + 1 < self.cols {
+        // 2. If writing a wide character and next cell is a wide leader, clear its continuation cell
+        if char_width == 2 && self.get(row, col + 1).is_some_and(Cell::is_wide_lead) {
+            self.reset_cell(row, col + 2);
+        }
+
+        // Write the character
+        if let Some(cell) = self.get_mut(row, col) {
+            *cell = Cell::new(c, fg, bg, attrs, char_width);
+        }
+
+        if char_width == 2 {
+            if let Some(next) = self.get_mut(row, col + 1) {
+                *next = Cell::new(' ', fg, bg, attrs, 0);
+            }
+            if self.cursor.col + 2 < self.cols {
+                self.cursor.col += 2;
+                self.wrap_pending = false;
+            } else {
+                self.cursor.col = self.cols.saturating_sub(1);
+                if autowrap {
+                    self.wrap_pending = true;
+                }
+            }
+        } else if self.cursor.col + 1 < self.cols {
             self.cursor.col += 1;
             self.wrap_pending = false;
         } else if autowrap {
@@ -922,5 +985,56 @@ mod tests {
         assert_eq!(grid.scrollback_len(), 0);
         assert!(grid[0][0].is_empty());
         assert!(grid[1][0].is_empty());
+    }
+
+    #[test]
+    fn wide_characters_and_overwrite_handling() {
+        let mut grid = Grid::new(4, 3);
+
+        // Write '語' (width 2) at col 0
+        grid.put_char('語', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid[0][0].ch, '語');
+        assert_eq!(grid[0][0].width, 2);
+        assert!(grid[0][0].is_wide_lead());
+        assert_eq!(grid[0][1].ch, ' ');
+        assert_eq!(grid[0][1].width, 0);
+        assert!(grid[0][1].is_wide_continuation());
+        assert_eq!(grid.cursor.col, 2);
+
+        // Write '🦀' (width 2) at col 2
+        grid.put_char('🦀', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid[0][2].ch, '🦀');
+        assert_eq!(grid[0][2].width, 2);
+        assert_eq!(grid[0][3].width, 0);
+        assert!(grid.wrap_pending);
+
+        // Next character wraps to row 1
+        grid.put_char('A', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid.cursor.row, 1);
+        assert_eq!(grid[1][0].ch, 'A');
+        assert_eq!(grid[1][0].width, 1);
+
+        // Wide character placed at last column (col 3) when autowrap is true
+        // should pad col 3 and wrap to row 2
+        grid.move_cursor_to(1, 3);
+        grid.put_char('漢', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid[1][3].ch, ' ');
+        assert_eq!(grid[2][0].ch, '漢');
+        assert_eq!(grid[2][0].width, 2);
+        assert_eq!(grid[2][1].width, 0);
+
+        // Overwrite continuation cell clears the leader cell
+        grid.move_cursor_to(2, 1);
+        grid.put_char('X', Color::Default, Color::Default, Attrs::empty(), true);
+        assert!(grid[2][0].is_empty());
+        assert_eq!(grid[2][1].ch, 'X');
+        assert_eq!(grid[2][1].width, 1);
+
+        // Overwrite leader cell clears the continuation cell
+        grid.move_cursor_to(0, 0);
+        grid.put_char('Z', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid[0][0].ch, 'Z');
+        assert_eq!(grid[0][0].width, 1);
+        assert!(grid[0][1].is_empty());
     }
 }
