@@ -45,8 +45,19 @@ pub fn create_window(
 
 /// Creates a new `winit` event loop configured for custom user events.
 pub fn create_event_loop<T: 'static>() -> Result<EventLoop<T>, WindowError> {
-    let event_loop = EventLoop::<T>::with_user_event().build()?;
-    Ok(event_loop)
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        let mut builder = EventLoop::<T>::with_user_event();
+        builder.with_any_thread(true);
+        let event_loop = builder.build()?;
+        Ok(event_loop)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let event_loop = EventLoop::<T>::with_user_event().build()?;
+        Ok(event_loop)
+    }
 }
 
 #[cfg(test)]
