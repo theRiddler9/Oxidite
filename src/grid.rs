@@ -291,6 +291,79 @@ impl Grid {
         }
     }
 
+    /// Erases parts of the line containing the cursor (`CSI Ps K`, EL).
+    pub fn erase_in_line(&mut self, mode: crate::handler::EraseMode) {
+        if self.cursor.row >= self.rows {
+            return;
+        }
+        let col = self.cursor.col.min(self.cols);
+        let row = &mut self.visible_rows[self.cursor.row];
+
+        match mode {
+            crate::handler::EraseMode::ToEnd => {
+                for cell in &mut row.cells[col..] {
+                    cell.reset();
+                }
+            }
+            crate::handler::EraseMode::ToStart => {
+                let end = (col + 1).min(self.cols);
+                for cell in &mut row.cells[..end] {
+                    cell.reset();
+                }
+            }
+            crate::handler::EraseMode::All | crate::handler::EraseMode::AllIncludingScrollback => {
+                row.reset();
+            }
+        }
+    }
+
+    /// Erases parts of the visible display (`CSI Ps J`, ED).
+    pub fn erase_in_display(&mut self, mode: crate::handler::EraseMode) {
+        let cur_row = self.cursor.row.min(self.rows.saturating_sub(1));
+        let cur_col = self.cursor.col.min(self.cols);
+
+        match mode {
+            crate::handler::EraseMode::ToEnd => {
+                // Erase from cursor to end of current line
+                for cell in &mut self.visible_rows[cur_row].cells[cur_col..] {
+                    cell.reset();
+                }
+                // Erase all lines below current line
+                for row in &mut self.visible_rows[cur_row + 1..] {
+                    row.reset();
+                }
+            }
+            crate::handler::EraseMode::ToStart => {
+                // Erase all lines above current line
+                for row in &mut self.visible_rows[..cur_row] {
+                    row.reset();
+                }
+                // Erase from start of line through cursor
+                let end = (cur_col + 1).min(self.cols);
+                for cell in &mut self.visible_rows[cur_row].cells[..end] {
+                    cell.reset();
+                }
+            }
+            crate::handler::EraseMode::All | crate::handler::EraseMode::AllIncludingScrollback => {
+                for row in &mut self.visible_rows {
+                    row.reset();
+                }
+            }
+        }
+    }
+
+    /// Erases `count` characters starting at the cursor on the current row (`CSI Ps X`, ECH).
+    pub fn erase_chars(&mut self, count: usize) {
+        if self.cursor.row >= self.rows {
+            return;
+        }
+        let start = self.cursor.col.min(self.cols);
+        let end = (start + count).min(self.cols);
+        for cell in &mut self.visible_rows[self.cursor.row].cells[start..end] {
+            cell.reset();
+        }
+    }
+
     /// Writes a character at the cursor position with the specified styling,
     /// respecting autowrap mode and deferred wrap state.
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, attrs: Attrs, autowrap: bool) {
@@ -511,5 +584,76 @@ mod tests {
         grid.restore_cursor();
         assert_eq!(grid.cursor.row, 5);
         assert_eq!(grid.cursor.col, 12);
+    }
+
+    #[test]
+    fn erase_operations() {
+        use crate::handler::EraseMode;
+
+        let mut grid = Grid::new(5, 3);
+        // Fill grid with 'A'..'O'
+        let mut ch = 'A';
+        for r in 0..3 {
+            for c in 0..5 {
+                grid[r][c] = Cell::new(ch, Color::Default, Color::Default, Attrs::empty(), 1);
+                ch = (ch as u8 + 1) as char;
+            }
+        }
+
+        // Row 0: A B C D E
+        // Row 1: F G H I J
+        // Row 2: K L M N O
+
+        // Erase in line: ToEnd at col 2 on row 1
+        grid.move_cursor_to(1, 2);
+        grid.erase_in_line(EraseMode::ToEnd);
+        assert_eq!(grid[1][0].ch, 'F');
+        assert_eq!(grid[1][1].ch, 'G');
+        assert!(grid[1][2].is_empty());
+        assert!(grid[1][3].is_empty());
+        assert!(grid[1][4].is_empty());
+
+        // Erase in line: ToStart at col 3 on row 0
+        grid.move_cursor_to(0, 3);
+        grid.erase_in_line(EraseMode::ToStart);
+        assert!(grid[0][0].is_empty());
+        assert!(grid[0][1].is_empty());
+        assert!(grid[0][2].is_empty());
+        assert!(grid[0][3].is_empty());
+        assert_eq!(grid[0][4].ch, 'E');
+
+        // Erase chars: 2 chars on row 2 at col 1
+        grid.move_cursor_to(2, 1);
+        grid.erase_chars(2);
+        assert_eq!(grid[2][0].ch, 'K');
+        assert!(grid[2][1].is_empty());
+        assert!(grid[2][2].is_empty());
+        assert_eq!(grid[2][3].ch, 'N');
+        assert_eq!(grid[2][4].ch, 'O');
+
+        // Refill grid and test erase_in_display
+        for r in 0..3 {
+            for c in 0..5 {
+                grid[r][c] = Cell::new('X', Color::Default, Color::Default, Attrs::empty(), 1);
+            }
+        }
+
+        // Erase in display: ToEnd at (1, 2)
+        grid.move_cursor_to(1, 2);
+        grid.erase_in_display(EraseMode::ToEnd);
+        assert_eq!(grid[0][0].ch, 'X');
+        assert_eq!(grid[0][4].ch, 'X');
+        assert_eq!(grid[1][0].ch, 'X');
+        assert_eq!(grid[1][1].ch, 'X');
+        assert!(grid[1][2].is_empty());
+        assert!(grid[1][4].is_empty());
+        assert!(grid[2][0].is_empty());
+        assert!(grid[2][4].is_empty());
+
+        // Erase in display: All
+        grid.erase_in_display(EraseMode::All);
+        assert!(grid[0][0].is_empty());
+        assert!(grid[1][0].is_empty());
+        assert!(grid[2][0].is_empty());
     }
 }
