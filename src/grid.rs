@@ -403,6 +403,29 @@ impl Grid {
         }
     }
 
+    /// Scrolls the visible grid downwards by `count` lines, inserting blank rows at the top.
+    pub fn scroll_down(&mut self, count: usize) {
+        let count = count.min(self.rows);
+        for _ in 0..count {
+            if !self.visible_rows.is_empty() {
+                self.visible_rows.pop();
+                self.visible_rows.insert(0, Row::new(self.cols));
+            }
+        }
+    }
+
+    /// Performs a reverse index (`ESC M`, RI).
+    ///
+    /// Moves cursor up one row, or scrolls the grid down if cursor is at the top row.
+    pub fn reverse_index(&mut self) {
+        self.wrap_pending = false;
+        if self.cursor.row > 0 {
+            self.cursor.row -= 1;
+        } else {
+            self.scroll_down(1);
+        }
+    }
+
     /// Performs a carriage return, moving cursor to column 0.
     pub fn carriage_return(&mut self) {
         self.cursor.col = 0;
@@ -655,5 +678,37 @@ mod tests {
         assert!(grid[0][0].is_empty());
         assert!(grid[1][0].is_empty());
         assert!(grid[2][0].is_empty());
+    }
+
+    #[test]
+    fn scroll_up_down_and_reverse_index() {
+        let mut grid = Grid::new(3, 3);
+        grid[0][0].ch = '1';
+        grid[1][0].ch = '2';
+        grid[2][0].ch = '3';
+
+        // Scroll up by 1: row 0 becomes '2', row 1 becomes '3', row 2 becomes empty
+        grid.scroll_up(1);
+        assert_eq!(grid[0][0].ch, '2');
+        assert_eq!(grid[1][0].ch, '3');
+        assert!(grid[2][0].is_empty());
+
+        // Scroll down by 1: row 0 becomes empty, row 1 becomes '2', row 2 becomes '3'
+        grid.scroll_down(1);
+        assert!(grid[0][0].is_empty());
+        assert_eq!(grid[1][0].ch, '2');
+        assert_eq!(grid[2][0].ch, '3');
+
+        // Reverse index when cursor is on row 1: moves cursor to row 0 without scrolling
+        grid.cursor.row = 1;
+        grid.reverse_index();
+        assert_eq!(grid.cursor.row, 0);
+
+        // Reverse index when cursor is on row 0: scrolls down, cursor stays at row 0
+        grid.reverse_index();
+        assert_eq!(grid.cursor.row, 0);
+        assert!(grid[0][0].is_empty());
+        assert!(grid[1][0].is_empty());
+        assert_eq!(grid[2][0].ch, '2');
     }
 }
