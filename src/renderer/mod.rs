@@ -1,4 +1,4 @@
-//! GPU-backed window and drawing (stub — Phase 4).
+//! GPU-backed window and drawing.
 
 pub mod draw;
 pub mod font;
