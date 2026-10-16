@@ -4,7 +4,7 @@ use crate::grid::Grid;
 use crate::handler::{EraseMode, Handler, Mode, SgrAttr};
 
 /// Runtime terminal modes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Modes {
     /// Automatic wrap at the right margin (DECAWM).
@@ -19,6 +19,33 @@ pub struct Modes {
     pub mouse_reporting: bool,
     /// Alternate screen buffer active.
     pub alternate_screen: bool,
+}
+
+impl Modes {
+    /// Updates a mode flag.
+    pub fn set(&mut self, mode: Mode, enabled: bool) {
+        match mode {
+            Mode::Autowrap => self.autowrap = enabled,
+            Mode::CursorVisible => self.cursor_visible = enabled,
+            Mode::ApplicationCursorKeys => self.application_cursor_keys = enabled,
+            Mode::BracketedPaste => self.bracketed_paste = enabled,
+            Mode::MouseReporting => self.mouse_reporting = enabled,
+            Mode::AlternateScreen => self.alternate_screen = enabled,
+        }
+    }
+
+    /// Checks if a mode is currently enabled.
+    #[must_use]
+    pub const fn is_enabled(&self, mode: Mode) -> bool {
+        match mode {
+            Mode::Autowrap => self.autowrap,
+            Mode::CursorVisible => self.cursor_visible,
+            Mode::ApplicationCursorKeys => self.application_cursor_keys,
+            Mode::BracketedPaste => self.bracketed_paste,
+            Mode::MouseReporting => self.mouse_reporting,
+            Mode::AlternateScreen => self.alternate_screen,
+        }
+    }
 }
 
 impl Default for Modes {
@@ -102,5 +129,24 @@ mod tests {
         let terminal = Terminal::default();
         assert!(terminal.modes.cursor_visible);
         assert_eq!(terminal.modes.cursor_visible, terminal.grid.cursor.visible);
+    }
+
+    #[test]
+    fn modes_defaults_and_toggle() {
+        let mut modes = Modes::default();
+        assert!(modes.is_enabled(Mode::Autowrap));
+        assert!(modes.is_enabled(Mode::CursorVisible));
+        assert!(!modes.is_enabled(Mode::ApplicationCursorKeys));
+        assert!(!modes.is_enabled(Mode::BracketedPaste));
+        assert!(!modes.is_enabled(Mode::MouseReporting));
+        assert!(!modes.is_enabled(Mode::AlternateScreen));
+
+        modes.set(Mode::BracketedPaste, true);
+        assert!(modes.is_enabled(Mode::BracketedPaste));
+        assert!(modes.bracketed_paste);
+
+        modes.set(Mode::Autowrap, false);
+        assert!(!modes.is_enabled(Mode::Autowrap));
+        assert!(!modes.autowrap);
     }
 }
