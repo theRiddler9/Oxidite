@@ -14,26 +14,25 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-/// Text attributes for a cell (SGR styles).
-///
-/// Phase 3 may replace this with `bitflags`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct Attrs {
-    /// Bold text attribute.
-    pub bold: bool,
-    /// Dim / faint text attribute.
-    pub dim: bool,
-    /// Italic text attribute.
-    pub italic: bool,
-    /// Underline text attribute.
-    pub underline: bool,
-    /// Inverse / reverse video attribute.
-    pub inverse: bool,
-    /// Hidden / invisible text attribute.
-    pub hidden: bool,
-    /// Strikethrough text attribute.
-    pub strikethrough: bool,
+bitflags::bitflags! {
+    /// Text attributes for a cell (SGR styles).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Attrs: u16 {
+        /// Bold text attribute (SGR 1).
+        const BOLD          = 1 << 0;
+        /// Dim / faint text attribute (SGR 2).
+        const DIM           = 1 << 1;
+        /// Italic text attribute (SGR 3).
+        const ITALIC        = 1 << 2;
+        /// Underline text attribute (SGR 4).
+        const UNDERLINE     = 1 << 3;
+        /// Inverse / reverse video attribute (SGR 7).
+        const INVERSE       = 1 << 4;
+        /// Hidden / invisible text attribute (SGR 8).
+        const HIDDEN        = 1 << 5;
+        /// Strikethrough text attribute (SGR 9).
+        const STRIKETHROUGH = 1 << 6;
+    }
 }
 
 /// Cursor display shape.
@@ -63,16 +62,50 @@ pub struct Cell {
     pub width: u8,
 }
 
-impl Default for Cell {
-    /// Empty space cell with default colors and attributes.
-    fn default() -> Self {
+impl Cell {
+    /// Creates a cell with custom character and styling attributes.
+    #[must_use]
+    pub const fn new(ch: char, fg: Color, bg: Color, attrs: Attrs, width: u8) -> Self {
+        Self {
+            ch,
+            fg,
+            bg,
+            attrs,
+            width,
+        }
+    }
+
+    /// Creates an empty cell with whitespace, default colors, and default attributes.
+    #[must_use]
+    pub const fn empty() -> Self {
         Self {
             ch: ' ',
             fg: Color::Default,
             bg: Color::Default,
-            attrs: Attrs::default(),
+            attrs: Attrs::empty(),
             width: 1,
         }
+    }
+
+    /// Resets this cell back to empty whitespace with default styles.
+    pub fn reset(&mut self) {
+        *self = Self::empty();
+    }
+
+    /// Checks if this cell is an empty whitespace cell with default colors and no attributes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ch == ' '
+            && self.fg == Color::Default
+            && self.bg == Color::Default
+            && self.attrs.is_empty()
+    }
+}
+
+impl Default for Cell {
+    /// Empty space cell with default colors and attributes.
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -106,4 +139,43 @@ impl Default for Cursor {
 pub struct Grid {
     /// Active cursor state.
     pub cursor: Cursor,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_defaults_and_helpers() {
+        let mut cell = Cell::default();
+        assert!(cell.is_empty());
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+        assert_eq!(cell.attrs, Attrs::empty());
+
+        let bold_italic = Attrs::BOLD | Attrs::ITALIC;
+        cell = Cell::new(
+            'A',
+            Color::Indexed(1),
+            Color::Rgb(10, 20, 30),
+            bold_italic,
+            1,
+        );
+        assert!(!cell.is_empty());
+        assert!(cell.attrs.contains(Attrs::BOLD));
+        assert!(cell.attrs.contains(Attrs::ITALIC));
+        assert!(!cell.attrs.contains(Attrs::UNDERLINE));
+
+        cell.reset();
+        assert!(cell.is_empty());
+    }
+
+    #[test]
+    fn color_variants() {
+        assert_eq!(Color::default(), Color::Default);
+        let indexed = Color::Indexed(42);
+        let rgb = Color::Rgb(255, 128, 0);
+        assert_ne!(indexed, rgb);
+    }
 }
