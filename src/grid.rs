@@ -195,6 +195,8 @@ pub struct Grid {
     pub visible_rows: Vec<Row>,
     /// Active cursor state.
     pub cursor: Cursor,
+    /// Saved cursor state (`ESC 7` / `ESC 8`).
+    pub saved_cursor: Option<Cursor>,
     /// Whether a deferred wrap is pending at the right margin.
     pub wrap_pending: bool,
 }
@@ -217,6 +219,7 @@ impl Grid {
             rows,
             visible_rows: (0..rows).map(|_| Row::new(cols)).collect(),
             cursor: Cursor::default(),
+            saved_cursor: None,
             wrap_pending: false,
         }
     }
@@ -243,6 +246,49 @@ impl Grid {
     /// Returns a mutable reference to the row at `row_idx`, if within bounds.
     pub fn row_mut(&mut self, row_idx: usize) -> Option<&mut Row> {
         self.visible_rows.get_mut(row_idx)
+    }
+
+    /// Moves the cursor to an absolute position clamped within grid bounds.
+    pub fn move_cursor_to(&mut self, row: usize, col: usize) {
+        self.cursor.row = row.min(self.rows.saturating_sub(1));
+        self.cursor.col = col.min(self.cols.saturating_sub(1));
+        self.wrap_pending = false;
+    }
+
+    /// Moves the cursor by a signed relative row and column offset, clamped within grid bounds.
+    pub fn move_cursor_by(&mut self, d_row: isize, d_col: isize) {
+        let max_row = isize::try_from(self.rows.saturating_sub(1)).unwrap_or(isize::MAX);
+        let max_col = isize::try_from(self.cols.saturating_sub(1)).unwrap_or(isize::MAX);
+
+        let current_row = isize::try_from(self.cursor.row).unwrap_or(isize::MAX);
+        let current_col = isize::try_from(self.cursor.col).unwrap_or(isize::MAX);
+
+        let new_row = (current_row + d_row).clamp(0, max_row);
+        let new_col = (current_col + d_col).clamp(0, max_col);
+
+        self.cursor.row = usize::try_from(new_row).unwrap_or(0);
+        self.cursor.col = usize::try_from(new_col).unwrap_or(0);
+        self.wrap_pending = false;
+    }
+
+    /// Advances the cursor to the next 8-column tab stop, clamped to the right margin.
+    pub fn tab(&mut self) {
+        let next_tab = (self.cursor.col / 8 + 1) * 8;
+        self.cursor.col = next_tab.min(self.cols.saturating_sub(1));
+        self.wrap_pending = false;
+    }
+
+    /// Saves the current cursor position and attributes (`ESC 7`, DECSC).
+    pub fn save_cursor(&mut self) {
+        self.saved_cursor = Some(self.cursor.clone());
+    }
+
+    /// Restores the saved cursor position and attributes (`ESC 8`, DECRC).
+    pub fn restore_cursor(&mut self) {
+        if let Some(saved) = &self.saved_cursor {
+            self.cursor = saved.clone();
+            self.wrap_pending = false;
+        }
     }
 
     /// Writes a character at the cursor position with the specified styling,
@@ -419,5 +465,51 @@ mod tests {
         assert_eq!(no_wrap_grid.cursor.col, 2);
         assert_eq!(no_wrap_grid[0][2].ch, 'W');
         assert!(!no_wrap_grid.wrap_pending);
+    }
+
+    #[test]
+    fn cursor_movement_clamping_and_save_restore() {
+        let mut grid = Grid::new(80, 24);
+
+        // Absolute move with clamping
+        grid.move_cursor_to(10, 20);
+        assert_eq!(grid.cursor.row, 10);
+        assert_eq!(grid.cursor.col, 20);
+
+        grid.move_cursor_to(100, 200);
+        assert_eq!(grid.cursor.row, 23);
+        assert_eq!(grid.cursor.col, 79);
+
+        // Relative move with clamping
+        grid.move_cursor_by(-5, -10);
+        assert_eq!(grid.cursor.row, 18);
+        assert_eq!(grid.cursor.col, 69);
+
+        grid.move_cursor_by(-50, -100);
+        assert_eq!(grid.cursor.row, 0);
+        assert_eq!(grid.cursor.col, 0);
+
+        // Tab stops
+        grid.cursor.col = 3;
+        grid.tab();
+        assert_eq!(grid.cursor.col, 8);
+
+        grid.tab();
+        assert_eq!(grid.cursor.col, 16);
+
+        grid.cursor.col = 78;
+        grid.tab();
+        assert_eq!(grid.cursor.col, 79);
+
+        // Save & restore
+        grid.move_cursor_to(5, 12);
+        grid.save_cursor();
+        grid.move_cursor_to(0, 0);
+        assert_eq!(grid.cursor.row, 0);
+        assert_eq!(grid.cursor.col, 0);
+
+        grid.restore_cursor();
+        assert_eq!(grid.cursor.row, 5);
+        assert_eq!(grid.cursor.col, 12);
     }
 }
