@@ -473,4 +473,69 @@ mod tests {
         assert!(term.is_row_dirty(2));
         assert!(term.is_row_dirty(3));
     }
+
+    #[test]
+    fn snapshot_grid_screen_fixture() {
+        let mut term = Terminal::new(30, 4);
+        let mut parser = crate::parser::Parser::new();
+        parser.advance(
+            &mut term,
+            include_bytes!("../tests/fixtures/grid_screen.bin"),
+        );
+
+        let text = term.grid.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Hello Oxidite!");
+        assert_eq!(lines[1], "Orange Text");
+        assert_eq!(lines[2], "日本語 🦀");
+        assert_eq!(lines[3], "");
+
+        // Color check
+        assert_eq!(term.grid[1][0].fg, Color::Rgb(255, 100, 0));
+
+        // Wide character check
+        assert_eq!(term.grid[2][0].ch, '日');
+        assert_eq!(term.grid[2][0].width, 2);
+        assert_eq!(term.grid[2][1].width, 0);
+    }
+
+    #[test]
+    fn snapshot_c0_print_fixture() {
+        let mut term = Terminal::new(10, 3);
+        let mut parser = crate::parser::Parser::new();
+        parser.advance(&mut term, include_bytes!("../tests/fixtures/c0_print.bin"));
+
+        let text = term.grid.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Hi");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "");
+        assert_eq!(term.bell_count, 1);
+        assert_eq!(term.grid.cursor.row, 1);
+        assert_eq!(term.grid.cursor.col, 7);
+    }
+
+    #[test]
+    fn snapshot_alternate_screen_and_scroll_fixtures() {
+        let mut term = Terminal::new(20, 5);
+        let mut parser = crate::parser::Parser::new();
+
+        // 1. Write primary lines
+        parser.advance(&mut term, b"Line 1\nLine 2\nLine 3");
+        assert_eq!(term.grid.row(0).unwrap()[0].ch, 'L');
+
+        // 2. Switch to alternate screen
+        parser.advance(&mut term, b"\x1b[?1049h");
+        assert!(term.modes.alternate_screen);
+        assert!(term.grid.row(0).unwrap()[0].is_empty());
+
+        // 3. Write on alternate screen
+        parser.advance(&mut term, b"Alternate Vim");
+        assert_eq!(term.grid.row(0).unwrap()[0].ch, 'A');
+
+        // 4. Exit alternate screen
+        parser.advance(&mut term, b"\x1b[?1049l");
+        assert!(!term.modes.alternate_screen);
+        assert_eq!(term.grid.row(0).unwrap()[0].ch, 'L');
+    }
 }
