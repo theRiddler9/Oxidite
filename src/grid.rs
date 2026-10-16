@@ -199,6 +199,8 @@ pub struct Grid {
     pub saved_cursor: Option<Cursor>,
     /// Whether a deferred wrap is pending at the right margin.
     pub wrap_pending: bool,
+    /// Active vertical scroll region (top..=bottom inclusive).
+    pub scroll_region: std::ops::RangeInclusive<usize>,
 }
 
 impl Default for Grid {
@@ -221,6 +223,7 @@ impl Grid {
             cursor: Cursor::default(),
             saved_cursor: None,
             wrap_pending: false,
+            scroll_region: 0..=(rows.saturating_sub(1)),
         }
     }
 
@@ -370,11 +373,7 @@ impl Grid {
         if self.wrap_pending && autowrap {
             self.wrap_pending = false;
             self.cursor.col = 0;
-            if self.cursor.row + 1 < self.rows {
-                self.cursor.row += 1;
-            } else {
-                self.scroll_up(1);
-            }
+            self.linefeed();
         }
 
         let row = self.cursor.row.min(self.rows.saturating_sub(1));
@@ -392,37 +391,98 @@ impl Grid {
         }
     }
 
-    /// Scrolls the visible grid upwards by `count` lines, inserting blank rows at the bottom.
+    /// Sets the vertical scroll region (`CSI Ps ; Ps r`, DECSTBM).
+    ///
+    /// The parameters `top` and `bottom` are 0-indexed row boundaries.
+    /// Resets the cursor to (0, 0) and clears pending wrap.
+    pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        if top < bottom && bottom < self.rows {
+            self.scroll_region = top..=bottom;
+        } else {
+            self.scroll_region = 0..=(self.rows.saturating_sub(1));
+        }
+        self.move_cursor_to(0, 0);
+    }
+
+    /// Resets the scroll region to the full visible screen height.
+    pub fn reset_scroll_region(&mut self) {
+        self.scroll_region = 0..=(self.rows.saturating_sub(1));
+    }
+
+    /// Scrolls rows upwards by `count` lines within the active scroll region,
+    /// inserting blank rows at the bottom of the region.
     pub fn scroll_up(&mut self, count: usize) {
-        let count = count.min(self.rows);
+        let top = *self.scroll_region.start();
+        let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
+        if top >= bottom || self.visible_rows.is_empty() {
+            return;
+        }
+        let region_height = bottom - top + 1;
+        let count = count.min(region_height);
         for _ in 0..count {
-            if !self.visible_rows.is_empty() {
-                self.visible_rows.remove(0);
-                self.visible_rows.push(Row::new(self.cols));
-            }
+            self.visible_rows.remove(top);
+            self.visible_rows.insert(bottom, Row::new(self.cols));
         }
     }
 
-    /// Scrolls the visible grid downwards by `count` lines, inserting blank rows at the top.
+    /// Scrolls rows downwards by `count` lines within the active scroll region,
+    /// inserting blank rows at the top of the region.
     pub fn scroll_down(&mut self, count: usize) {
-        let count = count.min(self.rows);
+        let top = *self.scroll_region.start();
+        let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
+        if top >= bottom || self.visible_rows.is_empty() {
+            return;
+        }
+        let region_height = bottom - top + 1;
+        let count = count.min(region_height);
         for _ in 0..count {
-            if !self.visible_rows.is_empty() {
-                self.visible_rows.pop();
-                self.visible_rows.insert(0, Row::new(self.cols));
-            }
+            self.visible_rows.remove(bottom);
+            self.visible_rows.insert(top, Row::new(self.cols));
+        }
+    }
+
+    /// Inserts `count` blank lines at the cursor within the scroll region (`CSI Ps L`, IL).
+    pub fn insert_lines(&mut self, count: usize) {
+        let top = *self.scroll_region.start();
+        let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
+        if self.cursor.row < top || self.cursor.row > bottom || top >= bottom {
+            return;
+        }
+        self.wrap_pending = false;
+        let cur = self.cursor.row;
+        let count = count.min(bottom - cur + 1);
+        for _ in 0..count {
+            self.visible_rows.remove(bottom);
+            self.visible_rows.insert(cur, Row::new(self.cols));
+        }
+    }
+
+    /// Deletes `count` lines starting at the cursor within the scroll region (`CSI Ps M`, DL).
+    pub fn delete_lines(&mut self, count: usize) {
+        let top = *self.scroll_region.start();
+        let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
+        if self.cursor.row < top || self.cursor.row > bottom || top >= bottom {
+            return;
+        }
+        self.wrap_pending = false;
+        let cur = self.cursor.row;
+        let count = count.min(bottom - cur + 1);
+        for _ in 0..count {
+            self.visible_rows.remove(cur);
+            self.visible_rows.insert(bottom, Row::new(self.cols));
         }
     }
 
     /// Performs a reverse index (`ESC M`, RI).
     ///
-    /// Moves cursor up one row, or scrolls the grid down if cursor is at the top row.
+    /// Moves cursor up one row, or scrolls the grid down if cursor is at the top margin.
     pub fn reverse_index(&mut self) {
         self.wrap_pending = false;
-        if self.cursor.row > 0 {
-            self.cursor.row -= 1;
-        } else {
+        let top = *self.scroll_region.start();
+        if self.cursor.row == top {
             self.scroll_down(1);
+        } else if self.cursor.row > 0 {
+            self.cursor.row -= 1;
         }
     }
 
@@ -432,12 +492,19 @@ impl Grid {
         self.wrap_pending = false;
     }
 
-    /// Performs a linefeed, advancing cursor down one line or scrolling if at bottom.
+    /// Performs a linefeed, advancing cursor down one line or scrolling if at bottom margin.
     pub fn linefeed(&mut self) {
         self.wrap_pending = false;
-        if self.cursor.row + 1 < self.rows {
+        let top = *self.scroll_region.start();
+        let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
+        if self.cursor.row == bottom {
+            self.scroll_up(1);
+        } else if self.cursor.row + 1 < self.rows {
             self.cursor.row += 1;
-        } else {
+        } else if self.cursor.row >= self.rows.saturating_sub(1)
+            && top == 0
+            && bottom >= self.rows.saturating_sub(1)
+        {
             self.scroll_up(1);
         }
     }
@@ -710,5 +777,60 @@ mod tests {
         assert!(grid[0][0].is_empty());
         assert!(grid[1][0].is_empty());
         assert_eq!(grid[2][0].ch, '2');
+    }
+
+    #[test]
+    fn scroll_region_and_insert_delete_lines() {
+        let mut grid = Grid::new(5, 5);
+        let digits = ['0', '1', '2', '3', '4'];
+        for (r, &d) in digits.iter().enumerate() {
+            grid[r][0].ch = d;
+        }
+
+        // Set scroll region to rows 1..=3
+        grid.set_scroll_region(1, 3);
+        assert_eq!(*grid.scroll_region.start(), 1);
+        assert_eq!(*grid.scroll_region.end(), 3);
+        assert_eq!(grid.cursor.row, 0);
+        assert_eq!(grid.cursor.col, 0);
+
+        // Scroll up in region: row 0 and 4 untouched, rows 1..=3 shift up
+        // Before: [0: '0', 1: '1', 2: '2', 3: '3', 4: '4']
+        grid.scroll_up(1);
+        assert_eq!(grid[0][0].ch, '0');
+        assert_eq!(grid[1][0].ch, '2');
+        assert_eq!(grid[2][0].ch, '3');
+        assert!(grid[3][0].is_empty());
+        assert_eq!(grid[4][0].ch, '4');
+
+        // Scroll down in region: row 0 and 4 untouched, rows 1..=3 shift down
+        grid.scroll_down(1);
+        assert_eq!(grid[0][0].ch, '0');
+        assert!(grid[1][0].is_empty());
+        assert_eq!(grid[2][0].ch, '2');
+        assert_eq!(grid[3][0].ch, '3');
+        assert_eq!(grid[4][0].ch, '4');
+
+        // Insert line at row 2
+        grid.move_cursor_to(2, 0);
+        grid.insert_lines(1);
+        assert_eq!(grid[0][0].ch, '0');
+        assert!(grid[1][0].is_empty());
+        assert!(grid[2][0].is_empty());
+        assert_eq!(grid[3][0].ch, '2');
+        assert_eq!(grid[4][0].ch, '4');
+
+        // Delete line at row 2
+        grid.delete_lines(1);
+        assert_eq!(grid[0][0].ch, '0');
+        assert!(grid[1][0].is_empty());
+        assert_eq!(grid[2][0].ch, '2');
+        assert!(grid[3][0].is_empty());
+        assert_eq!(grid[4][0].ch, '4');
+
+        // Reset scroll region
+        grid.reset_scroll_region();
+        assert_eq!(*grid.scroll_region.start(), 0);
+        assert_eq!(*grid.scroll_region.end(), 4);
     }
 }
