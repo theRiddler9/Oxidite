@@ -134,11 +134,127 @@ impl Default for Cursor {
     }
 }
 
-/// Screen grid storage (stub — Phase 3).
-#[derive(Debug, Default)]
+/// A single row of character cells on the grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Cells within this row.
+    pub cells: Vec<Cell>,
+}
+
+impl Row {
+    /// Creates a row with `cols` empty cells.
+    #[must_use]
+    pub fn new(cols: usize) -> Self {
+        Self {
+            cells: vec![Cell::empty(); cols],
+        }
+    }
+
+    /// Resets all cells in this row to default empty cells.
+    pub fn reset(&mut self) {
+        for cell in &mut self.cells {
+            cell.reset();
+        }
+    }
+
+    /// Returns the number of cells in this row.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Returns true if this row has zero cells.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
+impl std::ops::Deref for Row {
+    type Target = [Cell];
+
+    fn deref(&self) -> &Self::Target {
+        &self.cells
+    }
+}
+
+impl std::ops::DerefMut for Row {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.cells
+    }
+}
+
+/// 2D screen grid storing character cells and cursor state.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grid {
+    /// Number of columns.
+    pub cols: usize,
+    /// Number of rows.
+    pub rows: usize,
+    /// Visible screen rows (0..rows).
+    pub visible_rows: Vec<Row>,
     /// Active cursor state.
     pub cursor: Cursor,
+}
+
+impl Default for Grid {
+    /// Default standard 80x24 terminal grid.
+    fn default() -> Self {
+        Self::new(80, 24)
+    }
+}
+
+impl Grid {
+    /// Creates a new grid with visible dimensions `cols` × `rows`.
+    #[must_use]
+    pub fn new(cols: usize, rows: usize) -> Self {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        Self {
+            cols,
+            rows,
+            visible_rows: (0..rows).map(|_| Row::new(cols)).collect(),
+            cursor: Cursor::default(),
+        }
+    }
+
+    /// Returns a reference to the cell at `(row, col)`, if within bounds.
+    #[must_use]
+    pub fn get(&self, row: usize, col: usize) -> Option<&Cell> {
+        self.visible_rows.get(row).and_then(|r| r.cells.get(col))
+    }
+
+    /// Returns a mutable reference to the cell at `(row, col)`, if within bounds.
+    pub fn get_mut(&mut self, row: usize, col: usize) -> Option<&mut Cell> {
+        self.visible_rows
+            .get_mut(row)
+            .and_then(|r| r.cells.get_mut(col))
+    }
+
+    /// Returns a reference to the row at `row_idx`, if within bounds.
+    #[must_use]
+    pub fn row(&self, row_idx: usize) -> Option<&Row> {
+        self.visible_rows.get(row_idx)
+    }
+
+    /// Returns a mutable reference to the row at `row_idx`, if within bounds.
+    pub fn row_mut(&mut self, row_idx: usize) -> Option<&mut Row> {
+        self.visible_rows.get_mut(row_idx)
+    }
+}
+
+impl std::ops::Index<usize> for Grid {
+    type Output = Row;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.visible_rows[index]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Grid {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.visible_rows[index]
+    }
 }
 
 #[cfg(test)]
@@ -177,5 +293,30 @@ mod tests {
         let indexed = Color::Indexed(42);
         let rgb = Color::Rgb(255, 128, 0);
         assert_ne!(indexed, rgb);
+    }
+
+    #[test]
+    fn grid_storage_and_indexing() {
+        let mut grid = Grid::new(80, 24);
+        assert_eq!(grid.cols, 80);
+        assert_eq!(grid.rows, 24);
+        assert_eq!(grid.visible_rows.len(), 24);
+        assert_eq!(grid[0].len(), 80);
+
+        // Get and get_mut
+        assert!(grid.get(0, 0).is_some());
+        assert!(grid.get(23, 79).is_some());
+        assert!(grid.get(24, 0).is_none());
+        assert!(grid.get(0, 80).is_none());
+
+        // Mutation via indexing
+        grid[2][5].ch = 'Z';
+        grid[2][5].fg = Color::Indexed(3);
+        assert_eq!(grid.get(2, 5).unwrap().ch, 'Z');
+        assert_eq!(grid[2][5].fg, Color::Indexed(3));
+
+        // Row reset
+        grid.row_mut(2).unwrap().reset();
+        assert!(grid[2][5].is_empty());
     }
 }
