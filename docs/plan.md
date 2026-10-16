@@ -62,16 +62,16 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 - [x] Print, C0, CSI, SGR, DECSET/DECRST, OSC, ESC
 - [x] Fixture tests (including split reads)
 - [x] `docs/learn/phase-2.md`
-- [ ] Tag: `phase-2-parser`
+- [x] Tag: `phase-2-parser`
 
 ### Phase 3 — Terminal state (still headless)
 
-- [ ] Cell / Grid / Cursor / scroll / scrollback / wide chars / resize
-- [ ] Modes + alternate screen
-- [ ] `Handler` for `Terminal` + damage tracking
-- [ ] Headless grid dump + snapshot tests
-- [ ] `docs/learn/phase-3.md`
-- [ ] Tag: `phase-3-grid`
+- [x] Cell / Grid / Cursor / scroll / scrollback / wide chars / resize
+- [x] Modes + alternate screen
+- [x] `Handler` for `Terminal` + damage tracking
+- [x] Headless grid dump + snapshot tests
+- [x] `docs/learn/phase-3.md`
+- [x] Tag: `phase-3-grid`
 
 ### Phase 4 — Window and basic rendering
 

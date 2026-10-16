@@ -120,14 +120,86 @@ fn run_headless(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
     Ok(exit_code)
 }
 
+/// Runs headless grid dump mode: feeds PTY output into Parser and Terminal,
+/// and prints the formatted grid to stdout upon completion.
+fn run_grid_dump(cmd: Option<pty::ShellCommand>) -> anyhow::Result<i32> {
+    let mut term = terminal::Terminal::new(80, 24);
+    let mut vt_parser = parser::Parser::new();
+
+    if let Some(cmd) = cmd {
+        let size = pty::PtySize {
+            rows: 24,
+            cols: 80,
+            px_w: 0,
+            px_h: 0,
+        };
+
+        let (writer, mut reader) =
+            pty::spawn(cmd, size).map_err(|e| anyhow::anyhow!("failed to spawn PTY: {e}"))?;
+
+        let writer = Arc::new(Mutex::new(writer));
+        let mut exit_code = 0;
+
+        loop {
+            // Check child exit status
+            if let Ok(mut guard) = writer.lock() {
+                match guard.try_wait() {
+                    Ok(Some(code)) => {
+                        exit_code = i32::try_from(code).unwrap_or(1);
+                        while let Some(bytes) = reader.try_recv() {
+                            vt_parser.advance(&mut term, &bytes);
+                        }
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+
+            match reader.recv_timeout(Duration::from_millis(50)) {
+                Ok(bytes) => {
+                    if bytes.windows(4).any(|w| w == b"\x1b[6n")
+                        && let Ok(mut guard) = writer.lock()
+                    {
+                        let _ = guard.write(b"\x1b[1;1R");
+                    }
+                    vt_parser.advance(&mut term, &bytes);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    if let Ok(mut guard) = writer.lock()
+                        && let Ok(code) = guard.wait()
+                    {
+                        exit_code = i32::try_from(code).unwrap_or(1);
+                    }
+                    break;
+                }
+            }
+        }
+
+        print!("{}", term.grid.to_plain_text());
+        Ok(exit_code)
+    } else {
+        // Read directly from stdin until EOF
+        let mut stdin = std::io::stdin();
+        let mut buf = Vec::new();
+        stdin.read_to_end(&mut buf)?;
+        vt_parser.advance(&mut term, &buf);
+        print!("{}", term.grid.to_plain_text());
+        Ok(0)
+    }
+}
+
 /// Entry point for Oxidite.
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("Oxidite terminal emulator");
-        println!("Usage: oxidite [--headless] [-- <command> [args...]]");
+        println!("Usage: oxidite [--dump-grid] [--headless] [-- <command> [args...]]");
         return Ok(());
     }
+
+    let dump_grid = args.iter().any(|a| a == "--dump-grid");
 
     let cmd = if let Some(pos) = args.iter().position(|a| a == "--") {
         let program = args
@@ -135,12 +207,20 @@ fn main() -> anyhow::Result<()> {
             .cloned()
             .unwrap_or_else(|| pty::ShellCommand::default_shell().program);
         let cmd_args = args[pos + 2..].to_vec();
-        pty::ShellCommand::with_args(program, cmd_args)
+        Some(pty::ShellCommand::with_args(program, cmd_args))
+    } else if dump_grid {
+        None
     } else {
-        pty::ShellCommand::default_shell()
+        Some(pty::ShellCommand::default_shell())
     };
 
-    let exit_code = run_headless(cmd)?;
+    let exit_code = if dump_grid {
+        run_grid_dump(cmd)?
+    } else {
+        let cmd = cmd.unwrap_or_else(pty::ShellCommand::default_shell);
+        run_headless(cmd)?
+    };
+
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
