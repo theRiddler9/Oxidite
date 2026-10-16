@@ -380,6 +380,25 @@ impl Grid {
         self.visible_rows.get_mut(row_idx)
     }
 
+    /// Returns the visible grid lines as plain text, trimming trailing spaces from each line.
+    #[must_use]
+    pub fn to_plain_text(&self) -> String {
+        let mut out = String::new();
+        for r in 0..self.rows {
+            let mut line = String::new();
+            if let Some(row) = self.row(r) {
+                for cell in &row.cells {
+                    if !cell.is_wide_continuation() {
+                        line.push(cell.ch);
+                    }
+                }
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
     /// Moves the cursor to an absolute position clamped within grid bounds.
     pub fn move_cursor_to(&mut self, row: usize, col: usize) {
         self.cursor.row = row.min(self.rows.saturating_sub(1));
