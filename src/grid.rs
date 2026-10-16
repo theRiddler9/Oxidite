@@ -195,6 +195,8 @@ pub struct Grid {
     pub visible_rows: Vec<Row>,
     /// Active cursor state.
     pub cursor: Cursor,
+    /// Whether a deferred wrap is pending at the right margin.
+    pub wrap_pending: bool,
 }
 
 impl Default for Grid {
@@ -215,6 +217,7 @@ impl Grid {
             rows,
             visible_rows: (0..rows).map(|_| Row::new(cols)).collect(),
             cursor: Cursor::default(),
+            wrap_pending: false,
         }
     }
 
@@ -240,6 +243,69 @@ impl Grid {
     /// Returns a mutable reference to the row at `row_idx`, if within bounds.
     pub fn row_mut(&mut self, row_idx: usize) -> Option<&mut Row> {
         self.visible_rows.get_mut(row_idx)
+    }
+
+    /// Writes a character at the cursor position with the specified styling,
+    /// respecting autowrap mode and deferred wrap state.
+    pub fn put_char(&mut self, c: char, fg: Color, bg: Color, attrs: Attrs, autowrap: bool) {
+        if self.wrap_pending && autowrap {
+            self.wrap_pending = false;
+            self.cursor.col = 0;
+            if self.cursor.row + 1 < self.rows {
+                self.cursor.row += 1;
+            } else {
+                self.scroll_up(1);
+            }
+        }
+
+        let row = self.cursor.row.min(self.rows.saturating_sub(1));
+        let col = self.cursor.col.min(self.cols.saturating_sub(1));
+
+        if let Some(cell) = self.get_mut(row, col) {
+            *cell = Cell::new(c, fg, bg, attrs, 1);
+        }
+
+        if self.cursor.col + 1 < self.cols {
+            self.cursor.col += 1;
+            self.wrap_pending = false;
+        } else if autowrap {
+            self.wrap_pending = true;
+        }
+    }
+
+    /// Scrolls the visible grid upwards by `count` lines, inserting blank rows at the bottom.
+    pub fn scroll_up(&mut self, count: usize) {
+        let count = count.min(self.rows);
+        for _ in 0..count {
+            if !self.visible_rows.is_empty() {
+                self.visible_rows.remove(0);
+                self.visible_rows.push(Row::new(self.cols));
+            }
+        }
+    }
+
+    /// Performs a carriage return, moving cursor to column 0.
+    pub fn carriage_return(&mut self) {
+        self.cursor.col = 0;
+        self.wrap_pending = false;
+    }
+
+    /// Performs a linefeed, advancing cursor down one line or scrolling if at bottom.
+    pub fn linefeed(&mut self) {
+        self.wrap_pending = false;
+        if self.cursor.row + 1 < self.rows {
+            self.cursor.row += 1;
+        } else {
+            self.scroll_up(1);
+        }
+    }
+
+    /// Performs a backspace, moving cursor left by one column.
+    pub fn backspace(&mut self) {
+        self.wrap_pending = false;
+        if self.cursor.col > 0 {
+            self.cursor.col -= 1;
+        }
     }
 }
 
@@ -318,5 +384,40 @@ mod tests {
         // Row reset
         grid.row_mut(2).unwrap().reset();
         assert!(grid[2][5].is_empty());
+    }
+
+    #[test]
+    fn put_char_autowrap_and_scrolling() {
+        let mut grid = Grid::new(4, 2);
+
+        // Fill row 0 (columns 0, 1, 2, 3)
+        grid.put_char('A', Color::Default, Color::Default, Attrs::empty(), true);
+        grid.put_char('B', Color::Default, Color::Default, Attrs::empty(), true);
+        grid.put_char('C', Color::Default, Color::Default, Attrs::empty(), true);
+        grid.put_char('D', Color::Default, Color::Default, Attrs::empty(), true);
+
+        // At end of row 0, wrap is pending
+        assert_eq!(grid.cursor.row, 0);
+        assert_eq!(grid.cursor.col, 3);
+        assert!(grid.wrap_pending);
+
+        // Next character wraps to row 1, col 0, writes 'E', and cursor advances to col 1
+        grid.put_char('E', Color::Default, Color::Default, Attrs::empty(), true);
+        assert_eq!(grid.cursor.row, 1);
+        assert_eq!(grid.cursor.col, 1);
+        assert!(!grid.wrap_pending);
+        assert_eq!(grid[0][3].ch, 'D');
+        assert_eq!(grid[1][0].ch, 'E');
+
+        // Autowrap disabled: does not wrap to next row, overwrites last cell
+        let mut no_wrap_grid = Grid::new(3, 2);
+        no_wrap_grid.put_char('X', Color::Default, Color::Default, Attrs::empty(), false);
+        no_wrap_grid.put_char('Y', Color::Default, Color::Default, Attrs::empty(), false);
+        no_wrap_grid.put_char('Z', Color::Default, Color::Default, Attrs::empty(), false);
+        no_wrap_grid.put_char('W', Color::Default, Color::Default, Attrs::empty(), false);
+        assert_eq!(no_wrap_grid.cursor.row, 0);
+        assert_eq!(no_wrap_grid.cursor.col, 2);
+        assert_eq!(no_wrap_grid[0][2].ch, 'W');
+        assert!(!no_wrap_grid.wrap_pending);
     }
 }
