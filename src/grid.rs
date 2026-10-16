@@ -502,6 +502,36 @@ impl Grid {
         }
     }
 
+    /// Inserts `count` blank characters starting at the cursor (`CSI Ps @`, ICH).
+    pub fn insert_blank_chars(&mut self, count: usize) {
+        if self.cursor.row >= self.rows || self.cursor.col >= self.cols {
+            return;
+        }
+        self.wrap_pending = false;
+        let col = self.cursor.col;
+        let row = &mut self.visible_rows[self.cursor.row];
+        let count = count.min(self.cols - col);
+        for _ in 0..count {
+            row.cells.pop();
+            row.cells.insert(col, Cell::empty());
+        }
+    }
+
+    /// Deletes `count` characters starting at the cursor (`CSI Ps P`, DCH).
+    pub fn delete_chars(&mut self, count: usize) {
+        if self.cursor.row >= self.rows || self.cursor.col >= self.cols {
+            return;
+        }
+        self.wrap_pending = false;
+        let col = self.cursor.col;
+        let row = &mut self.visible_rows[self.cursor.row];
+        let count = count.min(self.cols - col);
+        for _ in 0..count {
+            row.cells.remove(col);
+            row.cells.push(Cell::empty());
+        }
+    }
+
     /// Writes a character at the cursor position with the specified styling,
     /// respecting autowrap mode, deferred wrap state, and wide character widths (CJK / emoji).
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, attrs: Attrs, autowrap: bool) {
@@ -1152,5 +1182,32 @@ mod tests {
         grid[0][1] = Cell::new(' ', Color::Default, Color::Default, Attrs::empty(), 0);
         grid.resize(1, 4);
         assert!(grid[0][0].is_empty());
+    }
+
+    #[test]
+    fn insert_delete_blank_chars() {
+        let mut grid = Grid::new(5, 2);
+        grid[0][0].ch = 'A';
+        grid[0][1].ch = 'B';
+        grid[0][2].ch = 'C';
+        grid[0][3].ch = 'D';
+        grid[0][4].ch = 'E';
+
+        // Insert 2 blank characters at col 1
+        grid.move_cursor_to(0, 1);
+        grid.insert_blank_chars(2);
+        assert_eq!(grid[0][0].ch, 'A');
+        assert!(grid[0][1].is_empty());
+        assert!(grid[0][2].is_empty());
+        assert_eq!(grid[0][3].ch, 'B');
+        assert_eq!(grid[0][4].ch, 'C');
+
+        // Delete 2 characters at col 1
+        grid.delete_chars(2);
+        assert_eq!(grid[0][0].ch, 'A');
+        assert_eq!(grid[0][1].ch, 'B');
+        assert_eq!(grid[0][2].ch, 'C');
+        assert!(grid[0][3].is_empty());
+        assert!(grid[0][4].is_empty());
     }
 }

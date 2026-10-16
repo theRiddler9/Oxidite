@@ -1,6 +1,6 @@
 //! Terminal state: modes, alternate screen, `Handler` implementation (stub — Phase 3).
 
-use crate::grid::Grid;
+use crate::grid::{Attrs, Color, Grid};
 use crate::handler::{EraseMode, Handler, Mode, SgrAttr};
 
 /// Runtime terminal modes.
@@ -73,6 +73,14 @@ pub struct Terminal {
     pub modes: Modes,
     /// Window title set via OSC sequences.
     pub title: String,
+    /// Active foreground color applied to newly printed cells.
+    pub fg: Color,
+    /// Active background color applied to newly printed cells.
+    pub bg: Color,
+    /// Active SGR style attributes applied to newly printed cells.
+    pub attrs: Attrs,
+    /// Number of bell events received.
+    pub bell_count: u64,
 }
 
 impl Default for Terminal {
@@ -90,6 +98,10 @@ impl Terminal {
             alternate_grid: Grid::with_scrollback(cols, rows, 0),
             modes: Modes::default(),
             title: String::new(),
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: Attrs::empty(),
+            bell_count: 0,
         }
     }
 
@@ -115,54 +127,143 @@ impl Terminal {
 }
 
 impl Handler for Terminal {
-    /// Writes a printable character at the cursor (stub).
-    fn print(&mut self, _c: char) {}
+    /// Writes a printable character at the cursor using active colors and styles.
+    fn print(&mut self, c: char) {
+        self.grid
+            .put_char(c, self.fg, self.bg, self.attrs, self.modes.autowrap);
+    }
 
-    /// Advances to the next line (stub).
-    fn linefeed(&mut self) {}
+    /// Advances to the next line (C0 `LF`).
+    fn linefeed(&mut self) {
+        self.grid.linefeed();
+    }
 
-    /// Moves the cursor to column 0 (stub).
-    fn carriage_return(&mut self) {}
+    /// Moves the cursor to column 0 (C0 `CR`).
+    fn carriage_return(&mut self) {
+        self.grid.carriage_return();
+    }
 
-    /// Moves the cursor one column left (stub).
-    fn backspace(&mut self) {}
+    /// Moves the cursor one column left (C0 `BS`).
+    fn backspace(&mut self) {
+        self.grid.backspace();
+    }
 
-    /// Advances to the next tab stop (stub).
-    fn tab(&mut self) {}
+    /// Advances to the next tab stop (C0 `HT`).
+    fn tab(&mut self) {
+        self.grid.tab();
+    }
 
-    /// Rings the bell / triggers visual bell (stub).
-    fn bell(&mut self) {}
+    /// Rings the bell (C0 `BEL`).
+    fn bell(&mut self) {
+        self.bell_count = self.bell_count.wrapping_add(1);
+    }
 
-    /// Moves the cursor to an absolute cell (stub).
-    fn move_cursor_to(&mut self, _row: usize, _col: usize) {}
+    /// Moves the cursor to an absolute 0-indexed row and column (`CSI Ps ; Ps H / f`).
+    fn move_cursor_to(&mut self, row: usize, col: usize) {
+        self.grid.move_cursor_to(row, col);
+    }
 
-    /// Moves the cursor by a relative offset (stub).
-    fn move_cursor_by(&mut self, _d_row: isize, _d_col: isize) {}
+    /// Moves the cursor by a relative offset (`CSI A / B / C / D`).
+    fn move_cursor_by(&mut self, d_row: isize, d_col: isize) {
+        self.grid.move_cursor_by(d_row, d_col);
+    }
 
-    /// Erases part or all of the display (stub).
-    fn erase_in_display(&mut self, _mode: EraseMode) {}
+    /// Erases part or all of the display (`CSI Ps J`, ED).
+    fn erase_in_display(&mut self, mode: EraseMode) {
+        self.grid.erase_in_display(mode);
+    }
 
-    /// Erases part or all of the current line (stub).
-    fn erase_in_line(&mut self, _mode: EraseMode) {}
+    /// Erases part or all of the current line (`CSI Ps K`, EL).
+    fn erase_in_line(&mut self, mode: EraseMode) {
+        self.grid.erase_in_line(mode);
+    }
 
-    /// Applies an SGR attribute (stub).
-    fn set_sgr(&mut self, _attr: SgrAttr) {}
-
-    /// Enables or disables a terminal mode.
-    fn set_mode(&mut self, mode: Mode, enabled: bool) {
-        if mode == Mode::AlternateScreen {
-            self.set_alternate_screen(enabled);
-        } else {
-            self.modes.set(mode, enabled);
+    /// Applies an SGR attribute (`CSI … m`).
+    fn set_sgr(&mut self, attr: SgrAttr) {
+        match attr {
+            SgrAttr::Reset => {
+                self.fg = Color::Default;
+                self.bg = Color::Default;
+                self.attrs = Attrs::empty();
+            }
+            SgrAttr::Bold => self.attrs.insert(Attrs::BOLD),
+            SgrAttr::Dim => self.attrs.insert(Attrs::DIM),
+            SgrAttr::Italic => self.attrs.insert(Attrs::ITALIC),
+            SgrAttr::Underline => self.attrs.insert(Attrs::UNDERLINE),
+            SgrAttr::Inverse => self.attrs.insert(Attrs::INVERSE),
+            SgrAttr::Hidden => self.attrs.insert(Attrs::HIDDEN),
+            SgrAttr::Strikethrough => self.attrs.insert(Attrs::STRIKETHROUGH),
+            SgrAttr::NormalIntensity => self.attrs.remove(Attrs::BOLD | Attrs::DIM),
+            SgrAttr::NotItalic => self.attrs.remove(Attrs::ITALIC),
+            SgrAttr::NotUnderline => self.attrs.remove(Attrs::UNDERLINE),
+            SgrAttr::NotInverse => self.attrs.remove(Attrs::INVERSE),
+            SgrAttr::NotHidden => self.attrs.remove(Attrs::HIDDEN),
+            SgrAttr::NotStrikethrough => self.attrs.remove(Attrs::STRIKETHROUGH),
+            SgrAttr::Foreground(color) => self.fg = color,
+            SgrAttr::Background(color) => self.bg = color,
         }
     }
 
-    /// Sets the scrolling region top and bottom rows (stub).
-    fn set_scroll_region(&mut self, _top: usize, _bottom: usize) {}
+    /// Enables or disables a terminal mode.
+    fn set_mode(&mut self, mode: Mode, enabled: bool) {
+        match mode {
+            Mode::AlternateScreen => self.set_alternate_screen(enabled),
+            Mode::CursorVisible => {
+                self.modes.cursor_visible = enabled;
+                self.grid.cursor.visible = enabled;
+            }
+            _ => self.modes.set(mode, enabled),
+        }
+    }
+
+    /// Sets the scrolling region top and bottom rows (`CSI Ps ; Ps r`, DECSTBM).
+    fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        self.grid.set_scroll_region(top, bottom);
+    }
 
     /// Sets the window title from an OSC sequence.
     fn set_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    /// Saves the current cursor position and attributes (`ESC 7`, DECSC).
+    fn save_cursor(&mut self) {
+        self.grid.save_cursor();
+    }
+
+    /// Restores the saved cursor position and attributes (`ESC 8`, DECRC).
+    fn restore_cursor(&mut self) {
+        self.grid.restore_cursor();
+    }
+
+    /// Performs a reverse index (`ESC M`, RI).
+    fn reverse_index(&mut self) {
+        self.grid.reverse_index();
+    }
+
+    /// Inserts `count` blank lines at the cursor within scroll region (`CSI Ps L`, IL).
+    fn insert_lines(&mut self, count: usize) {
+        self.grid.insert_lines(count);
+    }
+
+    /// Deletes `count` lines starting at the cursor within scroll region (`CSI Ps M`, DL).
+    fn delete_lines(&mut self, count: usize) {
+        self.grid.delete_lines(count);
+    }
+
+    /// Inserts `count` blank characters starting at the cursor (`CSI Ps @`, ICH).
+    fn insert_blank_chars(&mut self, count: usize) {
+        self.grid.insert_blank_chars(count);
+    }
+
+    /// Deletes `count` characters starting at the cursor (`CSI Ps P`, DCH).
+    fn delete_chars(&mut self, count: usize) {
+        self.grid.delete_chars(count);
+    }
+
+    /// Erases `count` characters starting at the cursor (`CSI Ps X`, ECH).
+    fn erase_chars(&mut self, count: usize) {
+        self.grid.erase_chars(count);
     }
 }
 
@@ -220,5 +321,50 @@ mod tests {
         assert_eq!(terminal.grid[0][0].ch, 'P');
         assert_eq!(terminal.grid.cursor.row, 1);
         assert_eq!(terminal.grid.cursor.col, 2);
+    }
+
+    #[test]
+    fn terminal_handler_full_workflow() {
+        let mut term = Terminal::new(10, 4);
+
+        // Title and Bell
+        term.set_title("Test Window".to_string());
+        assert_eq!(term.title, "Test Window");
+        term.bell();
+        assert_eq!(term.bell_count, 1);
+
+        // SGR attributes
+        term.set_sgr(SgrAttr::Bold);
+        term.set_sgr(SgrAttr::Foreground(Color::Indexed(2)));
+        term.print('H');
+        term.print('i');
+        assert_eq!(term.grid[0][0].ch, 'H');
+        assert_eq!(term.grid[0][0].fg, Color::Indexed(2));
+        assert!(term.grid[0][0].attrs.contains(Attrs::BOLD));
+
+        // C0 controls
+        term.carriage_return();
+        assert_eq!(term.grid.cursor.col, 0);
+        term.linefeed();
+        assert_eq!(term.grid.cursor.row, 1);
+        term.tab();
+        assert_eq!(term.grid.cursor.col, 8);
+        term.backspace();
+        assert_eq!(term.grid.cursor.col, 7);
+
+        // Insert and delete characters
+        term.print('X');
+        term.print('Y');
+        term.move_cursor_to(1, 7);
+        term.insert_blank_chars(1);
+        assert_eq!(term.grid[1][7].ch, ' ');
+        assert_eq!(term.grid[1][8].ch, 'X');
+        term.delete_chars(1);
+        assert_eq!(term.grid[1][7].ch, 'X');
+
+        // Cursor visibility mode
+        term.set_mode(Mode::CursorVisible, false);
+        assert!(!term.grid.cursor.visible);
+        assert!(!term.modes.cursor_visible);
     }
 }
