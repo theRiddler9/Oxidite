@@ -81,6 +81,8 @@ pub struct Terminal {
     pub attrs: Attrs,
     /// Number of bell events received.
     pub bell_count: u64,
+    /// Flags marking which visible rows need redrawing.
+    pub dirty_rows: Vec<bool>,
 }
 
 impl Default for Terminal {
@@ -102,6 +104,7 @@ impl Terminal {
             bg: Color::Default,
             attrs: Attrs::empty(),
             bell_count: 0,
+            dirty_rows: vec![true; rows],
         }
     }
 
@@ -109,6 +112,7 @@ impl Terminal {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.grid.resize(cols, rows);
         self.alternate_grid.resize(cols, rows);
+        self.dirty_rows = vec![true; self.grid.rows];
     }
 
     /// Enables or disables the alternate screen buffer, swapping the active and inactive grids.
@@ -123,33 +127,76 @@ impl Terminal {
             self.grid.erase_in_display(EraseMode::All);
             self.grid.move_cursor_to(0, 0);
         }
+        self.mark_all_dirty();
+    }
+
+    /// Marks a specific visible row as dirty (damaged).
+    pub fn mark_row_dirty(&mut self, row: usize) {
+        if let Some(dirty) = self.dirty_rows.get_mut(row) {
+            *dirty = true;
+        }
+    }
+
+    /// Marks all visible rows as dirty (damaged).
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty_rows.fill(true);
+    }
+
+    /// Clears damage flags for all rows after redrawing.
+    pub fn clear_damage(&mut self) {
+        self.dirty_rows.fill(false);
+    }
+
+    /// Returns whether any visible row is currently marked dirty.
+    #[must_use]
+    pub fn has_damage(&self) -> bool {
+        self.dirty_rows.iter().any(|&d| d)
+    }
+
+    /// Returns whether a specific row is marked dirty.
+    #[must_use]
+    pub fn is_row_dirty(&self, row: usize) -> bool {
+        self.dirty_rows.get(row).copied().unwrap_or(false)
     }
 }
 
 impl Handler for Terminal {
     /// Writes a printable character at the cursor using active colors and styles.
     fn print(&mut self, c: char) {
+        let prev_row = self.grid.cursor.row;
         self.grid
             .put_char(c, self.fg, self.bg, self.attrs, self.modes.autowrap);
+        self.mark_row_dirty(prev_row);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Advances to the next line (C0 `LF`).
     fn linefeed(&mut self) {
+        let prev_row = self.grid.cursor.row;
         self.grid.linefeed();
+        if self.grid.cursor.row == prev_row {
+            self.mark_all_dirty();
+        } else {
+            self.mark_row_dirty(prev_row);
+            self.mark_row_dirty(self.grid.cursor.row);
+        }
     }
 
     /// Moves the cursor to column 0 (C0 `CR`).
     fn carriage_return(&mut self) {
+        self.mark_row_dirty(self.grid.cursor.row);
         self.grid.carriage_return();
     }
 
     /// Moves the cursor one column left (C0 `BS`).
     fn backspace(&mut self) {
+        self.mark_row_dirty(self.grid.cursor.row);
         self.grid.backspace();
     }
 
     /// Advances to the next tab stop (C0 `HT`).
     fn tab(&mut self) {
+        self.mark_row_dirty(self.grid.cursor.row);
         self.grid.tab();
     }
 
@@ -160,22 +207,30 @@ impl Handler for Terminal {
 
     /// Moves the cursor to an absolute 0-indexed row and column (`CSI Ps ; Ps H / f`).
     fn move_cursor_to(&mut self, row: usize, col: usize) {
+        let prev_row = self.grid.cursor.row;
         self.grid.move_cursor_to(row, col);
+        self.mark_row_dirty(prev_row);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Moves the cursor by a relative offset (`CSI A / B / C / D`).
     fn move_cursor_by(&mut self, d_row: isize, d_col: isize) {
+        let prev_row = self.grid.cursor.row;
         self.grid.move_cursor_by(d_row, d_col);
+        self.mark_row_dirty(prev_row);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Erases part or all of the display (`CSI Ps J`, ED).
     fn erase_in_display(&mut self, mode: EraseMode) {
         self.grid.erase_in_display(mode);
+        self.mark_all_dirty();
     }
 
     /// Erases part or all of the current line (`CSI Ps K`, EL).
     fn erase_in_line(&mut self, mode: EraseMode) {
         self.grid.erase_in_line(mode);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Applies an SGR attribute (`CSI … m`).
@@ -211,6 +266,7 @@ impl Handler for Terminal {
             Mode::CursorVisible => {
                 self.modes.cursor_visible = enabled;
                 self.grid.cursor.visible = enabled;
+                self.mark_row_dirty(self.grid.cursor.row);
             }
             _ => self.modes.set(mode, enabled),
         }
@@ -219,6 +275,7 @@ impl Handler for Terminal {
     /// Sets the scrolling region top and bottom rows (`CSI Ps ; Ps r`, DECSTBM).
     fn set_scroll_region(&mut self, top: usize, bottom: usize) {
         self.grid.set_scroll_region(top, bottom);
+        self.mark_all_dirty();
     }
 
     /// Sets the window title from an OSC sequence.
@@ -233,37 +290,52 @@ impl Handler for Terminal {
 
     /// Restores the saved cursor position and attributes (`ESC 8`, DECRC).
     fn restore_cursor(&mut self) {
+        let prev_row = self.grid.cursor.row;
         self.grid.restore_cursor();
+        self.mark_row_dirty(prev_row);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Performs a reverse index (`ESC M`, RI).
     fn reverse_index(&mut self) {
+        let prev_row = self.grid.cursor.row;
         self.grid.reverse_index();
+        if self.grid.cursor.row == prev_row {
+            self.mark_all_dirty();
+        } else {
+            self.mark_row_dirty(prev_row);
+            self.mark_row_dirty(self.grid.cursor.row);
+        }
     }
 
     /// Inserts `count` blank lines at the cursor within scroll region (`CSI Ps L`, IL).
     fn insert_lines(&mut self, count: usize) {
         self.grid.insert_lines(count);
+        self.mark_all_dirty();
     }
 
     /// Deletes `count` lines starting at the cursor within scroll region (`CSI Ps M`, DL).
     fn delete_lines(&mut self, count: usize) {
         self.grid.delete_lines(count);
+        self.mark_all_dirty();
     }
 
     /// Inserts `count` blank characters starting at the cursor (`CSI Ps @`, ICH).
     fn insert_blank_chars(&mut self, count: usize) {
         self.grid.insert_blank_chars(count);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Deletes `count` characters starting at the cursor (`CSI Ps P`, DCH).
     fn delete_chars(&mut self, count: usize) {
         self.grid.delete_chars(count);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Erases `count` characters starting at the cursor (`CSI Ps X`, ECH).
     fn erase_chars(&mut self, count: usize) {
         self.grid.erase_chars(count);
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 }
 
@@ -366,5 +438,39 @@ mod tests {
         term.set_mode(Mode::CursorVisible, false);
         assert!(!term.grid.cursor.visible);
         assert!(!term.modes.cursor_visible);
+    }
+
+    #[test]
+    fn damage_tracking_workflow() {
+        let mut term = Terminal::new(10, 4);
+        assert!(term.has_damage());
+        assert!(term.is_row_dirty(0));
+        assert!(term.is_row_dirty(3));
+
+        // Clear initial damage
+        term.clear_damage();
+        assert!(!term.has_damage());
+        assert!(!term.is_row_dirty(0));
+
+        // Printing a character damages row 0
+        term.print('Z');
+        assert!(term.has_damage());
+        assert!(term.is_row_dirty(0));
+        assert!(!term.is_row_dirty(1));
+
+        // Moving cursor to row 2 damages row 0 (old cursor) and row 2 (new cursor)
+        term.clear_damage();
+        term.move_cursor_to(2, 5);
+        assert!(term.is_row_dirty(0));
+        assert!(term.is_row_dirty(2));
+        assert!(!term.is_row_dirty(1));
+
+        // Erase in display damages all rows
+        term.clear_damage();
+        term.erase_in_display(EraseMode::All);
+        assert!(term.is_row_dirty(0));
+        assert!(term.is_row_dirty(1));
+        assert!(term.is_row_dirty(2));
+        assert!(term.is_row_dirty(3));
     }
 }
