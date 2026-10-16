@@ -2,6 +2,11 @@
 //!
 //! Full grid storage and mutation land in Phase 3.
 
+use std::collections::VecDeque;
+
+/// Default maximum number of lines preserved in the scrollback buffer.
+pub const DEFAULT_MAX_SCROLLBACK: usize = 10_000;
+
 /// Cell foreground / background color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Color {
@@ -201,6 +206,10 @@ pub struct Grid {
     pub wrap_pending: bool,
     /// Active vertical scroll region (top..=bottom inclusive).
     pub scroll_region: std::ops::RangeInclusive<usize>,
+    /// Scrollback ring buffer holding rows that scrolled off the top margin.
+    pub scrollback: VecDeque<Row>,
+    /// Maximum number of scrollback lines retained.
+    pub max_scrollback: usize,
 }
 
 impl Default for Grid {
@@ -211,9 +220,15 @@ impl Default for Grid {
 }
 
 impl Grid {
-    /// Creates a new grid with visible dimensions `cols` × `rows`.
+    /// Creates a new grid with visible dimensions `cols` × `rows` and default scrollback limit.
     #[must_use]
     pub fn new(cols: usize, rows: usize) -> Self {
+        Self::with_scrollback(cols, rows, DEFAULT_MAX_SCROLLBACK)
+    }
+
+    /// Creates a new grid with visible dimensions and a custom scrollback line limit.
+    #[must_use]
+    pub fn with_scrollback(cols: usize, rows: usize, max_scrollback: usize) -> Self {
         let cols = cols.max(1);
         let rows = rows.max(1);
         Self {
@@ -224,7 +239,26 @@ impl Grid {
             saved_cursor: None,
             wrap_pending: false,
             scroll_region: 0..=(rows.saturating_sub(1)),
+            scrollback: VecDeque::new(),
+            max_scrollback,
         }
+    }
+
+    /// Returns the number of lines currently held in the scrollback buffer.
+    #[must_use]
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Returns a reference to a scrollback row by 0-based index (0 is oldest).
+    #[must_use]
+    pub fn scrollback_row(&self, idx: usize) -> Option<&Row> {
+        self.scrollback.get(idx)
+    }
+
+    /// Clears all lines currently stored in the scrollback buffer.
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
     }
 
     /// Returns a reference to the cell at `(row, col)`, if within bounds.
@@ -347,10 +381,16 @@ impl Grid {
                     cell.reset();
                 }
             }
-            crate::handler::EraseMode::All | crate::handler::EraseMode::AllIncludingScrollback => {
+            crate::handler::EraseMode::All => {
                 for row in &mut self.visible_rows {
                     row.reset();
                 }
+            }
+            crate::handler::EraseMode::AllIncludingScrollback => {
+                for row in &mut self.visible_rows {
+                    row.reset();
+                }
+                self.clear_scrollback();
             }
         }
     }
@@ -411,6 +451,8 @@ impl Grid {
 
     /// Scrolls rows upwards by `count` lines within the active scroll region,
     /// inserting blank rows at the bottom of the region.
+    ///
+    /// If the top margin is 0, scrolled-off rows are pushed into the scrollback ring buffer.
     pub fn scroll_up(&mut self, count: usize) {
         let top = *self.scroll_region.start();
         let bottom = (*self.scroll_region.end()).min(self.rows.saturating_sub(1));
@@ -420,7 +462,13 @@ impl Grid {
         let region_height = bottom - top + 1;
         let count = count.min(region_height);
         for _ in 0..count {
-            self.visible_rows.remove(top);
+            let removed = self.visible_rows.remove(top);
+            if top == 0 && self.max_scrollback > 0 {
+                if self.scrollback.len() >= self.max_scrollback {
+                    self.scrollback.pop_front();
+                }
+                self.scrollback.push_back(removed);
+            }
             self.visible_rows.insert(bottom, Row::new(self.cols));
         }
     }
@@ -832,5 +880,47 @@ mod tests {
         grid.reset_scroll_region();
         assert_eq!(*grid.scroll_region.start(), 0);
         assert_eq!(*grid.scroll_region.end(), 4);
+    }
+
+    #[test]
+    fn scrollback_ring_buffer_and_clear() {
+        use crate::handler::EraseMode;
+
+        let mut grid = Grid::with_scrollback(5, 2, 3);
+        grid[0][0].ch = 'A';
+        grid[1][0].ch = 'B';
+
+        // Scroll up by 1: row 'A' enters scrollback
+        grid.scroll_up(1);
+        assert_eq!(grid.scrollback_len(), 1);
+        assert_eq!(grid.scrollback_row(0).unwrap()[0].ch, 'A');
+        assert_eq!(grid[0][0].ch, 'B');
+
+        // Write 'C' to visible row 1 and scroll up: row 'B' enters scrollback
+        grid[1][0].ch = 'C';
+        grid.scroll_up(1);
+        assert_eq!(grid.scrollback_len(), 2);
+        assert_eq!(grid.scrollback_row(1).unwrap()[0].ch, 'B');
+
+        // Write 'D' and scroll up: row 'C' enters scrollback (now 3 rows: A, B, C)
+        grid[1][0].ch = 'D';
+        grid.scroll_up(1);
+        assert_eq!(grid.scrollback_len(), 3);
+        assert_eq!(grid.scrollback_row(0).unwrap()[0].ch, 'A');
+        assert_eq!(grid.scrollback_row(2).unwrap()[0].ch, 'C');
+
+        // Write 'E' and scroll up: scrollback reaches cap (3), oldest row 'A' evicted
+        grid[1][0].ch = 'E';
+        grid.scroll_up(1);
+        assert_eq!(grid.scrollback_len(), 3);
+        assert_eq!(grid.scrollback_row(0).unwrap()[0].ch, 'B');
+        assert_eq!(grid.scrollback_row(1).unwrap()[0].ch, 'C');
+        assert_eq!(grid.scrollback_row(2).unwrap()[0].ch, 'D');
+
+        // Erase in display with scrollback clear
+        grid.erase_in_display(EraseMode::AllIncludingScrollback);
+        assert_eq!(grid.scrollback_len(), 0);
+        assert!(grid[0][0].is_empty());
+        assert!(grid[1][0].is_empty());
     }
 }
