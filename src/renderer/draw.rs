@@ -29,6 +29,32 @@ pub const DEFAULT_PALETTE: [[f32; 4]; 16] = [
     [1.0, 1.0, 1.0, 1.0],    // 15: Bright White
 ];
 
+/// Standard 6x6x6 color cube normalized component steps for xterm 256-color palette.
+pub const CUBE_STEPS: [f32; 6] = [
+    0.0,
+    95.0 / 255.0,
+    135.0 / 255.0,
+    175.0 / 255.0,
+    215.0 / 255.0,
+    1.0,
+];
+
+/// Converts an 8-bit indexed terminal color (0..255) into normalized `[r, g, b, a]`.
+pub fn indexed_to_rgba(idx: u8, palette_16: &[[f32; 4]; 16]) -> [f32; 4] {
+    if (idx as usize) < 16 {
+        palette_16[idx as usize]
+    } else if idx < 232 {
+        let q = idx - 16;
+        let r = CUBE_STEPS[(q / 36) as usize % 6];
+        let g = CUBE_STEPS[(q / 6) as usize % 6];
+        let b = CUBE_STEPS[q as usize % 6];
+        [r, g, b, 1.0]
+    } else {
+        let gray = (f32::from(idx - 232) * 10.0 + 8.0) / 255.0;
+        [gray, gray, gray, 1.0]
+    }
+}
+
 /// Converts a terminal `Color` into a normalized `[r, g, b, a]` slice.
 pub fn color_to_rgba(color: Color, default_color: [f32; 4], palette: &[[f32; 4]; 16]) -> [f32; 4] {
     match color {
@@ -39,27 +65,7 @@ pub fn color_to_rgba(color: Color, default_color: [f32; 4], palette: &[[f32; 4];
             f32::from(b) / 255.0,
             1.0,
         ],
-        Color::Indexed(idx) => {
-            if (idx as usize) < 16 {
-                palette[idx as usize]
-            } else if (16..=231).contains(&idx) {
-                let q = idx - 16;
-                let r = (q / 36) % 6;
-                let g = (q / 6) % 6;
-                let b = q % 6;
-                let conv = |c: u8| {
-                    if c == 0 {
-                        0.0
-                    } else {
-                        (f32::from(c) * 40.0 + 55.0) / 255.0
-                    }
-                };
-                [conv(r), conv(g), conv(b), 1.0]
-            } else {
-                let gray = (f32::from(idx - 232) * 10.0 + 8.0) / 255.0;
-                [gray, gray, gray, 1.0]
-            }
-        }
+        Color::Indexed(idx) => indexed_to_rgba(idx, palette),
     }
 }
 
@@ -1009,5 +1015,36 @@ mod tests {
         );
         let (dim_fg, _, _) = resolve_cell_colors(&dim, default_fg, default_bg, &DEFAULT_PALETTE);
         assert!(dim_fg[0] < DEFAULT_PALETTE[7][0]);
+    }
+
+    #[test]
+    fn full_256_palette_and_truecolor_conversions() {
+        // Truecolor
+        let orange = color_to_rgba(
+            Color::Rgb(255, 100, 0),
+            [0.0, 0.0, 0.0, 1.0],
+            &DEFAULT_PALETTE,
+        );
+        assert!(approx_eq4(orange, [1.0, 100.0 / 255.0, 0.0, 1.0]));
+
+        // 256-color cube corners
+        let black_cube = indexed_to_rgba(16, &DEFAULT_PALETTE);
+        assert!(approx_eq4(black_cube, [0.0, 0.0, 0.0, 1.0]));
+
+        let white_cube = indexed_to_rgba(231, &DEFAULT_PALETTE);
+        assert!(approx_eq4(white_cube, [1.0, 1.0, 1.0, 1.0]));
+
+        // Grayscale ramp
+        let gray_start = indexed_to_rgba(232, &DEFAULT_PALETTE);
+        assert!(approx_eq4(
+            gray_start,
+            [8.0 / 255.0, 8.0 / 255.0, 8.0 / 255.0, 1.0]
+        ));
+
+        let gray_end = indexed_to_rgba(255, &DEFAULT_PALETTE);
+        assert!(approx_eq4(
+            gray_end,
+            [238.0 / 255.0, 238.0 / 255.0, 238.0 / 255.0, 1.0]
+        ));
     }
 }
