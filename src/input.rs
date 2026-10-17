@@ -47,6 +47,57 @@ impl KeyEvent {
     }
 }
 
+/// Mouse button identifier for terminal reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+    Other(u8),
+}
+
+/// Action performed with a mouse button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Represents a mouse interaction on the terminal grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MouseEvent {
+    pub button: MouseButton,
+    pub action: MouseAction,
+    /// 0-indexed column in the grid.
+    pub col: usize,
+    /// 0-indexed row in the grid.
+    pub row: usize,
+    pub modifiers: ModifiersState,
+}
+
+impl MouseEvent {
+    /// Constructs a mouse event at the specified grid position.
+    #[must_use]
+    pub fn new(
+        button: MouseButton,
+        action: MouseAction,
+        col: usize,
+        row: usize,
+        modifiers: ModifiersState,
+    ) -> Self {
+        Self {
+            button,
+            action,
+            col,
+            row,
+            modifiers,
+        }
+    }
+}
+
 /// Encodes a key event into bytes for the PTY, or `None` if unhandled.
 #[must_use]
 pub fn encode_key(event: &KeyEvent, modes: &Modes) -> Option<Vec<u8>> {
@@ -109,6 +160,46 @@ pub fn encode_paste(text: &str, modes: &Modes) -> Vec<u8> {
     } else {
         text.as_bytes().to_vec()
     }
+}
+
+/// Encodes a mouse event into SGR 1006 escape sequences when mouse reporting is enabled.
+#[must_use]
+pub fn encode_mouse_event(event: &MouseEvent, modes: &Modes) -> Option<Vec<u8>> {
+    if !modes.mouse_reporting {
+        return None;
+    }
+
+    let mut code: u16 = match event.button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::WheelUp => 64,
+        MouseButton::WheelDown => 65,
+        MouseButton::Other(b) => u16::from(b),
+    };
+
+    if event.modifiers.shift_key() {
+        code += 4;
+    }
+    if event.modifiers.alt_key() {
+        code += 8;
+    }
+    if event.modifiers.control_key() {
+        code += 16;
+    }
+    if event.action == MouseAction::Motion {
+        code += 32;
+    }
+
+    let col = event.col.saturating_add(1);
+    let row = event.row.saturating_add(1);
+    let suffix = if event.action == MouseAction::Release {
+        'm'
+    } else {
+        'M'
+    };
+
+    Some(format!("\x1b[<{code};{col};{row}{suffix}").into_bytes())
 }
 
 fn encode_named_key(named: NamedKey, modifiers: ModifiersState, modes: &Modes) -> Option<Vec<u8>> {
@@ -562,6 +653,82 @@ mod tests {
         assert_eq!(
             encode_paste(payload, &modes_bracketed),
             b"\x1b[200~echo 'hello world'\n\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn encode_mouse_reporting_sgr_1006() {
+        let modes_off = Modes::default();
+        let ev_left_press = MouseEvent::new(
+            MouseButton::Left,
+            MouseAction::Press,
+            0,
+            0,
+            ModifiersState::empty(),
+        );
+        assert_eq!(encode_mouse_event(&ev_left_press, &modes_off), None);
+
+        let modes_on = Modes {
+            mouse_reporting: true,
+            ..Default::default()
+        };
+
+        // Left press at (0, 0) -> \x1b[<0;1;1M
+        assert_eq!(
+            encode_mouse_event(&ev_left_press, &modes_on),
+            Some(b"\x1b[<0;1;1M".to_vec())
+        );
+
+        // Left release at (0, 0) -> \x1b[<0;1;1m
+        let ev_left_rel = MouseEvent::new(
+            MouseButton::Left,
+            MouseAction::Release,
+            0,
+            0,
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            encode_mouse_event(&ev_left_rel, &modes_on),
+            Some(b"\x1b[<0;1;1m".to_vec())
+        );
+
+        // Right press with Shift at (5, 5) -> 2 + 4 = 6 -> \x1b[<6;6;6M
+        let ev_shift_right = MouseEvent::new(
+            MouseButton::Right,
+            MouseAction::Press,
+            5,
+            5,
+            ModifiersState::SHIFT,
+        );
+        assert_eq!(
+            encode_mouse_event(&ev_shift_right, &modes_on),
+            Some(b"\x1b[<6;6;6M".to_vec())
+        );
+
+        // WheelUp at (2, 3) -> 64 -> \x1b[<64;3;4M
+        let ev_wheel = MouseEvent::new(
+            MouseButton::WheelUp,
+            MouseAction::Press,
+            2,
+            3,
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            encode_mouse_event(&ev_wheel, &modes_on),
+            Some(b"\x1b[<64;3;4M".to_vec())
+        );
+
+        // Motion drag at (7, 8) with Left button -> 0 + 32 = 32 -> \x1b[<32;8;9M
+        let ev_motion = MouseEvent::new(
+            MouseButton::Left,
+            MouseAction::Motion,
+            7,
+            8,
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            encode_mouse_event(&ev_motion, &modes_on),
+            Some(b"\x1b[<32;8;9M".to_vec())
         );
     }
 }
