@@ -190,6 +190,33 @@ fn run_grid_dump(cmd: Option<pty::ShellCommand>) -> anyhow::Result<i32> {
     }
 }
 
+/// Runs Oxidite in interactive GPU window mode: creates event loop, spawns PTY,
+/// and runs the winit application handler.
+fn run_gui(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
+    let event_loop = renderer::window::create_event_loop::<app::AppEvent>()
+        .map_err(|e| anyhow::anyhow!("failed to create event loop: {e}"))?;
+    let proxy = event_loop.create_proxy();
+
+    let term = terminal::Terminal::new(80, 24);
+    let size = pty::PtySize {
+        rows: 24,
+        cols: 80,
+        px_w: 800,
+        px_h: 600,
+    };
+
+    let (writer, reader) =
+        pty::spawn(cmd, size).map_err(|e| anyhow::anyhow!("failed to spawn PTY: {e}"))?;
+
+    let writer = Arc::new(Mutex::new(writer));
+    app::spawn_pty_forwarder(reader, Arc::clone(&writer), proxy.clone());
+
+    let mut application = app::App::new(Some(proxy), term, Some(writer));
+    event_loop.run_app(&mut application)?;
+
+    Ok(application.pty_exit_code.unwrap_or(0))
+}
+
 /// Entry point for Oxidite.
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -200,6 +227,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let dump_grid = args.iter().any(|a| a == "--dump-grid");
+    let headless = args.iter().any(|a| a == "--headless");
 
     let cmd = if let Some(pos) = args.iter().position(|a| a == "--") {
         let program = args
@@ -216,9 +244,12 @@ fn main() -> anyhow::Result<()> {
 
     let exit_code = if dump_grid {
         run_grid_dump(cmd)?
-    } else {
+    } else if headless {
         let cmd = cmd.unwrap_or_else(pty::ShellCommand::default_shell);
         run_headless(cmd)?
+    } else {
+        let cmd = cmd.unwrap_or_else(pty::ShellCommand::default_shell);
+        run_gui(cmd)?
     };
 
     if exit_code != 0 {

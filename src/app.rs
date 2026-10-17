@@ -7,8 +7,12 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
-use crate::renderer::draw::{GlyphPipeline, QuadPipeline};
+use crate::renderer::draw::{
+    DEFAULT_PALETTE, DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
+    build_cursor_vertices,
+};
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
 use crate::renderer::window::{
@@ -81,6 +85,8 @@ pub struct App {
     pub quad_pipeline: Option<QuadPipeline>,
     /// Glyph pipeline for rendering text glyphs.
     pub glyph_pipeline: Option<GlyphPipeline>,
+    /// VT parser that translates escape sequence streams into Terminal calls.
+    pub parser: Parser,
 }
 
 impl App {
@@ -105,6 +111,7 @@ impl App {
             gpu: None,
             quad_pipeline: None,
             glyph_pipeline: None,
+            parser: Parser::new(),
         }
     }
 
@@ -134,6 +141,113 @@ impl App {
             let _ = guard.resize(pty_size);
         }
     }
+
+    /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
+    pub fn handle_pty_output(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.terminal, bytes);
+        if self.terminal.has_damage()
+            && let Some(ref win) = self.window
+        {
+            win.request_redraw();
+        }
+    }
+
+    /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn render(&mut self) {
+        let (Some(gpu), Some(quad_pipeline), Some(glyph_pipeline)) = (
+            &mut self.gpu,
+            &mut self.quad_pipeline,
+            &mut self.glyph_pipeline,
+        ) else {
+            return;
+        };
+
+        let output = match gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                gpu.surface.configure(&gpu.device, &gpu.config);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                eprintln!("GPU surface validation error");
+                return;
+            }
+        };
+
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-encoder"),
+            });
+
+        let mut quad_vertices = build_cell_background_vertices(
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &DEFAULT_PALETTE,
+        );
+        let cursor_vertices = build_cursor_vertices(
+            &self.terminal.grid.cursor,
+            &self.cell_metrics,
+            [0.8, 0.8, 0.8, 0.8],
+        );
+        quad_vertices.extend_from_slice(&cursor_vertices);
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("terminal-render-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.05,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            let screen_size = [gpu.config.width as f32, gpu.config.height as f32];
+            quad_pipeline.draw(
+                &gpu.device,
+                &gpu.queue,
+                &mut rpass,
+                screen_size,
+                &quad_vertices,
+            );
+
+            let draw_ctx = DrawContext {
+                device: &gpu.device,
+                queue: &gpu.queue,
+                screen_size: [gpu.config.width, gpu.config.height],
+                metrics: &self.cell_metrics,
+                palette: &DEFAULT_PALETTE,
+            };
+            let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
+        }
+
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+        gpu.queue.present(output);
+        self.terminal.clear_damage();
+    }
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -153,8 +267,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         Err(err) => eprintln!("Failed to initialize GPU context: {err}"),
                     }
-                    self.window = Some(win);
+                    self.window = Some(win.clone());
                     self.handle_resize(size);
+                    win.request_redraw();
                 }
                 Err(err) => eprintln!("Failed to create window: {err}"),
             }
@@ -163,12 +278,15 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::PtyOutput(_bytes) => {
-                // In Commit 11, fed into parser and requests redraw
+            AppEvent::PtyOutput(bytes) => {
+                self.handle_pty_output(&bytes);
             }
             AppEvent::PtyExited(code) => {
                 self.pty_exited = true;
                 self.pty_exit_code = code;
+                if let Some(ref win) = self.window {
+                    win.request_redraw();
+                }
             }
             AppEvent::ConfigReloaded | AppEvent::ThemeChanged(_) => {}
         }
@@ -194,6 +312,9 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::Resized(size) => {
                 self.handle_resize(size);
                 win.request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                self.render();
             }
             _ => {}
         }
@@ -273,5 +394,20 @@ mod tests {
             assert_eq!(app.terminal.grid.cols, 100);
             assert_eq!(app.terminal.grid.rows, 40);
         }
+    }
+
+    #[test]
+    fn handle_pty_output_advances_parser_and_damages_grid() {
+        let term = Terminal::new(80, 24);
+        let mut app = App::new(None, term, None);
+        app.terminal.clear_damage();
+        assert!(!app.terminal.has_damage());
+
+        app.handle_pty_output(b"Hello Oxidite!");
+
+        assert_eq!(app.terminal.grid[0][0].ch, 'H');
+        assert_eq!(app.terminal.grid[0][1].ch, 'e');
+        assert_eq!(app.terminal.grid[0][6].ch, 'O');
+        assert!(app.terminal.has_damage());
     }
 }
