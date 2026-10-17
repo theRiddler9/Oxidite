@@ -4,8 +4,8 @@ use crate::grid::{Color, Cursor, CursorShape, Grid};
 use crate::renderer::font::CellMetrics;
 use glyphon::{
     Attrs as FontAttrs, Buffer as FontBuffer, Cache, Color as GlyphonColor, Family, FontSystem,
-    Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
+    Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport, Weight,
 };
 use std::borrow::Cow;
 
@@ -455,7 +455,7 @@ fn collect_single_row_spans(
 
     let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
     let mut current_text = String::new();
-    let mut current_color = None;
+    let mut current_style: Option<(GlyphonColor, bool, bool)> = None;
 
     for cell in &row_cells[..=last_col] {
         if cell.width == 0 {
@@ -469,26 +469,41 @@ fn collect_single_row_spans(
             float_to_u8(fg_rgba[2]),
             255,
         );
+        let is_bold = cell.attrs.contains(crate::grid::Attrs::BOLD);
+        let is_italic = cell.attrs.contains(crate::grid::Attrs::ITALIC);
+        let cell_style = (color, is_bold, is_italic);
 
-        if current_color == Some(color) {
+        if current_style == Some(cell_style) {
             current_text.push(cell.ch);
         } else {
             if !current_text.is_empty() {
-                let attrs = FontAttrs::new()
-                    .family(Family::Monospace)
-                    .color(current_color.unwrap_or(color));
-                spans.push((current_text, attrs));
+                if let Some((c, bold, italic)) = current_style {
+                    let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
+                    if bold {
+                        attrs = attrs.weight(Weight::BOLD);
+                    }
+                    if italic {
+                        attrs = attrs.style(Style::Italic);
+                    }
+                    spans.push((current_text, attrs));
+                }
                 current_text = String::new();
             }
-            current_color = Some(color);
+            current_style = Some(cell_style);
             current_text.push(cell.ch);
         }
     }
 
-    if !current_text.is_empty() {
-        let attrs = FontAttrs::new()
-            .family(Family::Monospace)
-            .color(current_color.unwrap_or(GlyphonColor::rgb(255, 255, 255)));
+    if !current_text.is_empty()
+        && let Some((c, bold, italic)) = current_style
+    {
+        let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
+        if bold {
+            attrs = attrs.weight(Weight::BOLD);
+        }
+        if italic {
+            attrs = attrs.style(Style::Italic);
+        }
         spans.push((current_text, attrs));
     }
 
@@ -550,9 +565,10 @@ impl GlyphPipeline {
                 let spans = collect_single_row_spans(row_cells, ctx.palette);
                 let mut buffer = match self.glyph_cache.rows[row_idx].take() {
                     Some(mut c) => {
-                        c.buffer.set_metrics(
-                            Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
-                        );
+                        c.buffer.set_metrics(Metrics::new(
+                            ctx.metrics.font_size,
+                            ctx.metrics.line_height,
+                        ));
                         c.buffer
                     }
                     None => FontBuffer::new(
@@ -760,5 +776,48 @@ mod tests {
 
         cache.clear();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn collect_row_spans_applies_bold_and_italic_styles() {
+        let mut grid = Grid::new(10, 1);
+        grid[0][0] = crate::grid::Cell::new(
+            'B',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::BOLD,
+            1,
+        );
+        grid[0][1] = crate::grid::Cell::new(
+            'I',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::ITALIC,
+            1,
+        );
+        grid[0][2] = crate::grid::Cell::new(
+            'X',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::BOLD | crate::grid::Attrs::ITALIC,
+            1,
+        );
+
+        let spans = collect_row_spans(&grid, &DEFAULT_PALETTE);
+        assert_eq!(spans.len(), 1);
+        let row_spans = &spans[0].1;
+        assert_eq!(row_spans.len(), 3);
+
+        assert_eq!(row_spans[0].0, "B");
+        assert_eq!(row_spans[0].1.weight, Weight::BOLD);
+        assert_eq!(row_spans[0].1.style, Style::Normal);
+
+        assert_eq!(row_spans[1].0, "I");
+        assert_eq!(row_spans[1].1.weight, Weight::NORMAL);
+        assert_eq!(row_spans[1].1.style, Style::Italic);
+
+        assert_eq!(row_spans[2].0, "X");
+        assert_eq!(row_spans[2].1.weight, Weight::BOLD);
+        assert_eq!(row_spans[2].1.style, Style::Italic);
     }
 }
