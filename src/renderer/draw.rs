@@ -342,6 +342,50 @@ impl QuadPipeline {
     }
 }
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+/// A cached shaped text row buffer with its content hash signature.
+struct CachedRowBuffer {
+    signature: u64,
+    buffer: FontBuffer,
+}
+
+/// Cache of shaped text buffers across terminal rows to avoid reshapes on unchanged lines.
+#[derive(Default)]
+pub struct GlyphCache {
+    rows: Vec<Option<CachedRowBuffer>>,
+}
+
+impl GlyphCache {
+    /// Creates a new empty glyph cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { rows: Vec::new() }
+    }
+
+    /// Resizes the cache entry storage to accommodate the visible grid rows.
+    pub fn resize(&mut self, row_count: usize) {
+        self.rows.resize_with(row_count, || None);
+    }
+
+    /// Clears all cached row buffers.
+    pub fn clear(&mut self) {
+        self.rows.clear();
+    }
+
+    /// Returns the number of cached row entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Returns whether the cache is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
 /// WGPU graphics pipeline for rendering text glyphs via glyphon.
 pub struct GlyphPipeline {
     /// Font system containing loaded font faces.
@@ -354,6 +398,8 @@ pub struct GlyphPipeline {
     pub atlas: TextAtlas,
     /// Text renderer for drawing text quads.
     pub text_renderer: TextRenderer,
+    /// Cache of shaped row text buffers.
+    pub glyph_cache: GlyphCache,
 }
 
 impl GlyphPipeline {
@@ -366,6 +412,7 @@ impl GlyphPipeline {
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        let glyph_cache = GlyphCache::new();
 
         Self {
             font_system,
@@ -373,6 +420,7 @@ impl GlyphPipeline {
             viewport,
             atlas,
             text_renderer,
+            glyph_cache,
         }
     }
 }
@@ -397,64 +445,70 @@ pub struct DrawContext<'a> {
     pub palette: &'a [[f32; 4]; 16],
 }
 
+fn collect_single_row_spans(
+    row_cells: &[crate::grid::Cell],
+    palette: &[[f32; 4]; 16],
+) -> Vec<(String, FontAttrs<'static>)> {
+    let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
+        return Vec::new();
+    };
+
+    let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_color = None;
+
+    for cell in &row_cells[..=last_col] {
+        if cell.width == 0 {
+            continue;
+        }
+
+        let fg_rgba = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
+        let color = GlyphonColor::rgba(
+            float_to_u8(fg_rgba[0]),
+            float_to_u8(fg_rgba[1]),
+            float_to_u8(fg_rgba[2]),
+            255,
+        );
+
+        if current_color == Some(color) {
+            current_text.push(cell.ch);
+        } else {
+            if !current_text.is_empty() {
+                let attrs = FontAttrs::new()
+                    .family(Family::Monospace)
+                    .color(current_color.unwrap_or(color));
+                spans.push((current_text, attrs));
+                current_text = String::new();
+            }
+            current_color = Some(color);
+            current_text.push(cell.ch);
+        }
+    }
+
+    if !current_text.is_empty() {
+        let attrs = FontAttrs::new()
+            .family(Family::Monospace)
+            .color(current_color.unwrap_or(GlyphonColor::rgb(255, 255, 255)));
+        spans.push((current_text, attrs));
+    }
+
+    spans
+}
+
+#[cfg(test)]
 fn collect_row_spans(
     grid: &Grid,
     palette: &[[f32; 4]; 16],
 ) -> Vec<(usize, Vec<(String, FontAttrs<'static>)>)> {
     let mut row_spans = Vec::new();
-
     for row_idx in 0..grid.rows {
-        let Some(row_cells) = grid.display_row(row_idx) else {
-            continue;
-        };
-        let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
-            continue;
-        };
-
-        let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
-        let mut current_text = String::new();
-        let mut current_color = None;
-
-        for cell in &row_cells[..=last_col] {
-            if cell.width == 0 {
-                continue;
+        if let Some(row_cells) = grid.display_row(row_idx) {
+            let spans = collect_single_row_spans(row_cells, palette);
+            if !spans.is_empty() {
+                row_spans.push((row_idx, spans));
             }
-
-            let fg_rgba = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
-            let color = GlyphonColor::rgba(
-                float_to_u8(fg_rgba[0]),
-                float_to_u8(fg_rgba[1]),
-                float_to_u8(fg_rgba[2]),
-                255,
-            );
-
-            if current_color == Some(color) {
-                current_text.push(cell.ch);
-            } else {
-                if !current_text.is_empty() {
-                    let attrs = FontAttrs::new()
-                        .family(Family::Monospace)
-                        .color(current_color.unwrap_or(color));
-                    spans.push((current_text, attrs));
-                    current_text = String::new();
-                }
-                current_color = Some(color);
-                current_text.push(cell.ch);
-            }
-        }
-
-        if !current_text.is_empty() {
-            let attrs = FontAttrs::new()
-                .family(Family::Monospace)
-                .color(current_color.unwrap_or(GlyphonColor::rgb(255, 255, 255)));
-            spans.push((current_text, attrs));
-        }
-
-        if !spans.is_empty() {
-            row_spans.push((row_idx, spans));
         }
     }
-
     row_spans
 }
 
@@ -467,36 +521,72 @@ impl GlyphPipeline {
         rpass: &mut wgpu::RenderPass<'pass>,
         grid: &Grid,
     ) -> Result<(), glyphon::RenderError> {
-        let row_spans = collect_row_spans(grid, ctx.palette);
+        self.glyph_cache.resize(grid.rows);
 
-        let mut buffers = Vec::with_capacity(row_spans.len());
-        for (row_idx, spans) in &row_spans {
-            let mut buffer = FontBuffer::new(
-                &mut self.font_system,
-                Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
-            );
-            let rich_spans: Vec<(&str, FontAttrs)> = spans
-                .iter()
-                .map(|(text, attrs)| (text.as_str(), attrs.clone()))
-                .collect();
-            buffer.set_rich_text(
-                rich_spans,
-                &FontAttrs::new().family(Family::Monospace),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            buffers.push((*row_idx, buffer));
+        for row_idx in 0..grid.rows {
+            let Some(row_cells) = grid.display_row(row_idx) else {
+                self.glyph_cache.rows[row_idx] = None;
+                continue;
+            };
+
+            if !row_cells.iter().any(|c| c.ch != ' ') {
+                self.glyph_cache.rows[row_idx] = None;
+                continue;
+            }
+
+            let mut hasher = DefaultHasher::new();
+            row_idx.hash(&mut hasher);
+            ctx.metrics.font_size.to_bits().hash(&mut hasher);
+            ctx.metrics.line_height.to_bits().hash(&mut hasher);
+            row_cells.hash(&mut hasher);
+            let signature = hasher.finish();
+
+            let needs_update = match &self.glyph_cache.rows[row_idx] {
+                Some(cached) => cached.signature != signature,
+                None => true,
+            };
+
+            if needs_update {
+                let spans = collect_single_row_spans(row_cells, ctx.palette);
+                let mut buffer = match self.glyph_cache.rows[row_idx].take() {
+                    Some(mut c) => {
+                        c.buffer.set_metrics(
+                            Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
+                        );
+                        c.buffer
+                    }
+                    None => FontBuffer::new(
+                        &mut self.font_system,
+                        Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
+                    ),
+                };
+                let rich_spans: Vec<(&str, FontAttrs)> = spans
+                    .iter()
+                    .map(|(text, attrs)| (text.as_str(), attrs.clone()))
+                    .collect();
+                buffer.set_rich_text(
+                    rich_spans,
+                    &FontAttrs::new().family(Family::Monospace),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.font_system, false);
+                self.glyph_cache.rows[row_idx] = Some(CachedRowBuffer { signature, buffer });
+            }
         }
 
         let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
         let max_h = i32::try_from(ctx.screen_size[1]).unwrap_or(i32::MAX);
-        let text_areas: Vec<TextArea> = buffers
+        let text_areas: Vec<TextArea> = self
+            .glyph_cache
+            .rows
             .iter()
-            .map(|(row_idx, buffer)| {
-                let top = *row_idx as f32 * ctx.metrics.cell_height;
-                TextArea {
-                    buffer,
+            .enumerate()
+            .filter_map(|(row_idx, entry)| {
+                let cached = entry.as_ref()?;
+                let top = row_idx as f32 * ctx.metrics.cell_height;
+                Some(TextArea {
+                    buffer: &cached.buffer,
                     left: 0.0,
                     top,
                     scale: 1.0,
@@ -508,7 +598,7 @@ impl GlyphPipeline {
                     },
                     default_color: GlyphonColor::rgb(255, 255, 255),
                     custom_glyphs: &[],
-                }
+                })
             })
             .collect();
 
@@ -656,5 +746,19 @@ mod tests {
         let bar_verts = build_cursor_vertices(&cursor, &metrics, color);
         assert_eq!(bar_verts.len(), 6);
         assert!(approx_eq(bar_verts[5].position, [22.0, 40.0])); // 20 + 2.0 width
+    }
+
+    #[test]
+    fn glyph_cache_lifecycle_and_invalidation() {
+        let mut cache = GlyphCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.resize(24);
+        assert_eq!(cache.len(), 24);
+        assert!(!cache.is_empty());
+
+        cache.clear();
+        assert!(cache.is_empty());
     }
 }
