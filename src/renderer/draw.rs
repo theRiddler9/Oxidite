@@ -133,8 +133,11 @@ pub fn build_cell_background_vertices(
     let mut vertices = Vec::new();
 
     for row in 0..grid.rows {
+        let Some(row_cells) = grid.display_row(row) else {
+            continue;
+        };
         for col in 0..grid.cols {
-            let cell = &grid[row][col];
+            let cell = &row_cells[col];
             // Only draw background if cell background is not default
             if cell.bg != Color::Default {
                 let x = col as f32 * cell_width;
@@ -401,7 +404,9 @@ fn collect_row_spans(
     let mut row_spans = Vec::new();
 
     for row_idx in 0..grid.rows {
-        let row_cells = &grid[row_idx];
+        let Some(row_cells) = grid.display_row(row_idx) else {
+            continue;
+        };
         let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
             continue;
         };

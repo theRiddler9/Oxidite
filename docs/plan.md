@@ -83,12 +83,12 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 5 — Input
 
-- [ ] Key encoding (printable, controls, arrows, mods, app cursor)
-- [ ] Bracketed paste, mouse (SGR 1006), scrollback keys
-- [ ] Selection + clipboard
-- [ ] Table-driven input tests
-- [ ] `docs/learn/phase-5.md`
-- [ ] Tag: `phase-5-input`
+- [x] Key encoding (printable, controls, arrows, mods, app cursor)
+- [x] Bracketed paste, mouse (SGR 1006), scrollback keys
+- [x] Selection + clipboard
+- [x] Table-driven input tests
+- [x] `docs/learn/phase-5.md`
+- [x] Tag: `phase-5-input`
 
 ### Phase 6 — Rendering polish
 

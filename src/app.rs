@@ -8,11 +8,14 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::input::{
+    GridPoint, InputAction, KeyEvent, Selection, check_input_action, encode_key, encode_paste,
+};
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
     DEFAULT_PALETTE, DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
-    build_cursor_vertices,
+    build_cursor_vertices, build_quad_vertices,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -21,6 +24,7 @@ use crate::renderer::window::{
 };
 use crate::terminal::Terminal;
 use winit::dpi::PhysicalSize;
+use winit::keyboard::ModifiersState;
 
 /// Cross-thread events delivered via `winit`'s `EventLoopProxy`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +107,16 @@ pub struct App {
     pub glyph_pipeline: Option<GlyphPipeline>,
     /// VT parser that translates escape sequence streams into Terminal calls.
     pub parser: Parser,
+    /// Currently pressed keyboard modifier state (Shift, Ctrl, Alt, Super).
+    pub modifiers: ModifiersState,
+    /// Active text selection range if user is selecting text with the mouse.
+    pub selection: Option<Selection>,
+    /// Mouse drag start coordinate when selecting text.
+    pub mouse_down_pos: Option<GridPoint>,
+    /// Last recorded cursor position in window pixel coordinates.
+    pub cursor_pixel_pos: (f64, f64),
+    /// System clipboard interface for copying and pasting text.
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -128,6 +142,159 @@ impl App {
             quad_pipeline: None,
             glyph_pipeline: None,
             parser: Parser::new(),
+            modifiers: ModifiersState::empty(),
+            selection: None,
+            mouse_down_pos: None,
+            cursor_pixel_pos: (0.0, 0.0),
+            clipboard: arboard::Clipboard::new().ok(),
+        }
+    }
+
+    /// Converts window pixel coordinates to a clamped terminal grid point.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn pixel_to_grid_point(&self, pos: (f64, f64)) -> GridPoint {
+        let col = (pos.0 / f64::from(self.cell_metrics.cell_width)).max(0.0) as usize;
+        let row = (pos.1 / f64::from(self.cell_metrics.cell_height)).max(0.0) as usize;
+        GridPoint::new(
+            col.min(self.terminal.grid.cols.saturating_sub(1)),
+            row.min(self.terminal.grid.rows.saturating_sub(1)),
+        )
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn build_selection_vertices(
+        grid: &crate::grid::Grid,
+        selection: Option<&Selection>,
+        metrics: &CellMetrics,
+    ) -> Vec<crate::renderer::draw::QuadVertex> {
+        let mut verts = Vec::new();
+        let Some(sel) = selection else {
+            return verts;
+        };
+        for row in 0..grid.rows {
+            let Some(row_cells) = grid.display_row(row) else {
+                continue;
+            };
+            for (col, cell) in row_cells.iter().enumerate() {
+                if sel.contains(row, col) {
+                    let x = col as f32 * metrics.cell_width;
+                    let y = row as f32 * metrics.cell_height;
+                    let w = f32::from(cell.width.max(1)) * metrics.cell_width;
+                    let h = metrics.cell_height;
+                    let sel_color = [0.2, 0.4, 0.8, 0.4];
+                    verts.extend_from_slice(&build_quad_vertices(x, y, w, h, sel_color));
+                }
+            }
+        }
+        verts
+    }
+
+    fn handle_keyboard_input(&mut self, key_ev: &winit::event::KeyEvent, win: &Window) {
+        let key_event = KeyEvent::new(
+            key_ev.logical_key.clone(),
+            key_ev.text.as_ref().map(ToString::to_string),
+            self.modifiers,
+            key_ev.state,
+        );
+
+        if let Some(action) = check_input_action(&key_event) {
+            match action {
+                InputAction::ScrollUp(lines) => {
+                    let delta = isize::try_from(lines).unwrap_or(12);
+                    self.terminal.grid.scroll_display(delta);
+                    win.request_redraw();
+                }
+                InputAction::ScrollDown(lines) => {
+                    let delta = isize::try_from(lines).unwrap_or(12);
+                    self.terminal.grid.scroll_display(-delta);
+                    win.request_redraw();
+                }
+                InputAction::ScrollToTop => {
+                    self.terminal.grid.scroll_to_top();
+                    win.request_redraw();
+                }
+                InputAction::ScrollToBottom => {
+                    self.terminal.grid.scroll_to_bottom();
+                    win.request_redraw();
+                }
+                InputAction::Copy => {
+                    self.copy_selection();
+                }
+                InputAction::Paste => {
+                    self.paste_clipboard(win);
+                }
+            }
+            return;
+        }
+
+        if let Some(bytes) = encode_key(&key_event, &self.terminal.modes) {
+            if self.terminal.grid.display_offset > 0 {
+                self.terminal.grid.scroll_to_bottom();
+                win.request_redraw();
+            }
+            if let Some(ref writer) = self.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let _ = guard.write(&bytes);
+            }
+        }
+    }
+
+    fn handle_mouse_wheel(&mut self, delta: winit::event::MouseScrollDelta, win: &Window) {
+        let lines: isize = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                if y > 0.0 {
+                    3
+                } else if y < 0.0 {
+                    -3
+                } else {
+                    0
+                }
+            }
+            winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                if pos.y > 0.0 {
+                    3
+                } else if pos.y < 0.0 {
+                    -3
+                } else {
+                    0
+                }
+            }
+        };
+        if lines != 0 {
+            self.terminal.grid.scroll_display(lines);
+            win.request_redraw();
+        }
+    }
+
+    /// Copies currently selected text to the system clipboard.
+    pub fn copy_selection(&mut self) {
+        if let Some(ref sel) = self.selection {
+            let text = sel.extract_text(&self.terminal.grid);
+            if !text.is_empty()
+                && let Some(ref mut clip) = self.clipboard
+            {
+                let _ = clip.set_text(text);
+            }
+        }
+    }
+
+    /// Pastes text from the system clipboard to the PTY.
+    pub fn paste_clipboard(&mut self, win: &Window) {
+        let text = self.clipboard.as_mut().and_then(|c| c.get_text().ok());
+        if let Some(text) = text
+            && !text.is_empty()
+        {
+            let bytes = encode_paste(&text, &self.terminal.modes);
+            if self.terminal.grid.display_offset > 0 {
+                self.terminal.grid.scroll_to_bottom();
+                win.request_redraw();
+            }
+            if let Some(ref writer) = self.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let _ = guard.write(&bytes);
+            }
         }
     }
 
@@ -222,12 +389,20 @@ impl App {
             self.cell_metrics.cell_height,
             &DEFAULT_PALETTE,
         );
-        let cursor_vertices = build_cursor_vertices(
-            &self.terminal.grid.cursor,
+        if self.terminal.grid.display_offset == 0 {
+            let cursor_vertices = build_cursor_vertices(
+                &self.terminal.grid.cursor,
+                &self.cell_metrics,
+                [0.8, 0.8, 0.8, 0.8],
+            );
+            quad_vertices.extend_from_slice(&cursor_vertices);
+        }
+
+        quad_vertices.extend_from_slice(&Self::build_selection_vertices(
+            &self.terminal.grid,
+            self.selection.as_ref(),
             &self.cell_metrics,
-            [0.8, 0.8, 0.8, 0.8],
-        );
-        quad_vertices.extend_from_slice(&cursor_vertices);
+        ));
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -342,6 +517,43 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.render();
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
+            }
+            WindowEvent::KeyboardInput { event: key_ev, .. } => {
+                self.handle_keyboard_input(&key_ev, &win);
+            }
+            WindowEvent::MouseWheel { delta, .. } if !self.terminal.modes.mouse_reporting => {
+                self.handle_mouse_wheel(delta, &win);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pixel_pos = (position.x, position.y);
+                if let Some(start) = self.mouse_down_pos {
+                    let current = self.pixel_to_grid_point(self.cursor_pixel_pos);
+                    self.selection = Some(Selection::new(start, current));
+                    win.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } if !self.terminal.modes.mouse_reporting => {
+                let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
+                if state == winit::event::ElementState::Pressed {
+                    self.mouse_down_pos = Some(pt);
+                    self.selection = None;
+                    win.request_redraw();
+                } else if state == winit::event::ElementState::Released {
+                    self.mouse_down_pos = None;
+                    if let Some(sel) = self.selection
+                        && sel.start == sel.end
+                    {
+                        self.selection = None;
+                        win.request_redraw();
+                    }
+                }
             }
             _ => {}
         }
