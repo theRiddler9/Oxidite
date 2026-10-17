@@ -98,6 +98,112 @@ impl MouseEvent {
     }
 }
 
+/// A point on the terminal grid representing (col, row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridPoint {
+    /// 0-indexed column in the grid.
+    pub col: usize,
+    /// 0-indexed row in the grid.
+    pub row: usize,
+}
+
+impl GridPoint {
+    /// Creates a new grid point.
+    #[must_use]
+    pub const fn new(col: usize, row: usize) -> Self {
+        Self { col, row }
+    }
+}
+
+/// Text selection range spanning between two grid coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    /// Selection start anchor.
+    pub start: GridPoint,
+    /// Selection end point.
+    pub end: GridPoint,
+}
+
+impl Selection {
+    /// Creates a new selection between `start` and `end`.
+    #[must_use]
+    pub const fn new(start: GridPoint, end: GridPoint) -> Self {
+        Self { start, end }
+    }
+
+    /// Returns the normalized `(top_left, bottom_right)` endpoints ordered by row and col.
+    #[must_use]
+    pub fn normalized(&self) -> (GridPoint, GridPoint) {
+        if self.start.row < self.end.row
+            || (self.start.row == self.end.row && self.start.col <= self.end.col)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+
+    /// Checks whether the cell at `(row, col)` is covered by this selection.
+    #[must_use]
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        let (min, max) = self.normalized();
+        if row < min.row || row > max.row {
+            return false;
+        }
+        if min.row == max.row {
+            return col >= min.col && col <= max.col;
+        }
+        if row == min.row {
+            col >= min.col
+        } else if row == max.row {
+            col <= max.col
+        } else {
+            true
+        }
+    }
+
+    /// Extracts the text covered by this selection from the given grid.
+    #[must_use]
+    pub fn extract_text(&self, grid: &crate::grid::Grid) -> String {
+        let (min, max) = self.normalized();
+        let mut result = String::new();
+
+        for r in min.row..=max.row {
+            if r >= grid.rows {
+                break;
+            }
+            let Some(row_cells) = grid.display_row(r) else {
+                continue;
+            };
+
+            let start_col = if r == min.row { min.col } else { 0 };
+            let end_col = if r == max.row {
+                max.col.min(row_cells.len().saturating_sub(1))
+            } else {
+                row_cells.len().saturating_sub(1)
+            };
+
+            if start_col <= end_col && start_col < row_cells.len() {
+                let mut line = String::new();
+                for c in start_col..=end_col {
+                    let cell = &row_cells[c];
+                    if cell.width != 0 {
+                        line.push(cell.ch);
+                    }
+                }
+                let trimmed = line.trim_end_matches(' ');
+                result.push_str(trimmed);
+            }
+
+            if r < max.row {
+                result.push('\n');
+            }
+        }
+
+        result
+    }
+}
+
 /// Terminal action triggered by key combinations (such as scrollback navigation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
@@ -819,5 +925,40 @@ mod tests {
         // Plain PageUp is not an input action (handled by encode_key)
         let plain_page_up = KeyEvent::simple(Key::Named(NamedKey::PageUp), None);
         assert_eq!(check_input_action(&plain_page_up), None);
+    }
+
+    #[test]
+    fn selection_containment_and_text_extraction() {
+        use crate::grid::{Attrs, Color, Grid};
+
+        let mut grid = Grid::new(10, 3);
+        // Row 0: "hello     "
+        for (i, ch) in "hello".chars().enumerate() {
+            grid.move_cursor_to(0, i);
+            grid.put_char(ch, Color::Default, Color::Default, Attrs::empty(), false);
+        }
+        // Row 1: "world     "
+        for (i, ch) in "world".chars().enumerate() {
+            grid.move_cursor_to(1, i);
+            grid.put_char(ch, Color::Default, Color::Default, Attrs::empty(), false);
+        }
+
+        // Single line selection: "ell"
+        let sel_single = Selection::new(GridPoint::new(1, 0), GridPoint::new(3, 0));
+        assert!(sel_single.contains(0, 1));
+        assert!(sel_single.contains(0, 2));
+        assert!(sel_single.contains(0, 3));
+        assert!(!sel_single.contains(0, 0));
+        assert!(!sel_single.contains(0, 4));
+        assert_eq!(sel_single.extract_text(&grid), "ell");
+
+        // Multi-line selection from (3, 0) ("lo") to (2, 1) ("wor")
+        let sel_multi = Selection::new(GridPoint::new(3, 0), GridPoint::new(2, 1));
+        assert!(sel_multi.contains(0, 3));
+        assert!(sel_multi.contains(0, 4));
+        assert!(sel_multi.contains(1, 0));
+        assert!(sel_multi.contains(1, 2));
+        assert!(!sel_multi.contains(1, 3));
+        assert_eq!(sel_multi.extract_text(&grid), "lo\nwor");
     }
 }
