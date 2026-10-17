@@ -1,6 +1,12 @@
 //! Cell backgrounds, glyphs, and cursor drawing.
 
 use crate::grid::{Color, Grid};
+use crate::renderer::font::CellMetrics;
+use glyphon::{
+    Attrs as FontAttrs, Buffer as FontBuffer, Cache, Color as GlyphonColor, Family, FontSystem,
+    Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport,
+};
 use std::borrow::Cow;
 
 /// Default 16-color standard ANSI palette (normalized RGBA).
@@ -299,6 +305,198 @@ impl QuadPipeline {
     }
 }
 
+/// WGPU graphics pipeline for rendering text glyphs via glyphon.
+pub struct GlyphPipeline {
+    /// Font system containing loaded font faces.
+    pub font_system: FontSystem,
+    /// Rasterization swash cache.
+    pub swash_cache: SwashCache,
+    /// Viewport for projecting text into window coordinates.
+    pub viewport: Viewport,
+    /// Texture atlas for glyph caching on the GPU.
+    pub atlas: TextAtlas,
+    /// Text renderer for drawing text quads.
+    pub text_renderer: TextRenderer,
+}
+
+impl GlyphPipeline {
+    /// Creates a new glyph pipeline for the target surface texture format.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(device);
+        let viewport = Viewport::new(device, &cache);
+        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        let text_renderer =
+            TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+
+        Self {
+            font_system,
+            swash_cache,
+            viewport,
+            atlas,
+            text_renderer,
+        }
+    }
+}
+
+#[inline]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn float_to_u8(val: f32) -> u8 {
+    (val.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Context parameters required for drawing operations.
+pub struct DrawContext<'a> {
+    /// Logical GPU device.
+    pub device: &'a wgpu::Device,
+    /// Command execution queue.
+    pub queue: &'a wgpu::Queue,
+    /// Screen dimensions in physical pixels [width, height].
+    pub screen_size: [u32; 2],
+    /// Monospace cell dimensions and font metrics.
+    pub metrics: &'a CellMetrics,
+    /// 16-color ANSI palette.
+    pub palette: &'a [[f32; 4]; 16],
+}
+
+fn collect_row_spans(
+    grid: &Grid,
+    palette: &[[f32; 4]; 16],
+) -> Vec<(usize, Vec<(String, FontAttrs<'static>)>)> {
+    let mut row_spans = Vec::new();
+
+    for row_idx in 0..grid.rows {
+        let row_cells = &grid[row_idx];
+        let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
+            continue;
+        };
+
+        let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_color = None;
+
+        for cell in &row_cells[..=last_col] {
+            if cell.width == 0 {
+                continue;
+            }
+
+            let fg_rgba = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
+            let color = GlyphonColor::rgba(
+                float_to_u8(fg_rgba[0]),
+                float_to_u8(fg_rgba[1]),
+                float_to_u8(fg_rgba[2]),
+                255,
+            );
+
+            if current_color == Some(color) {
+                current_text.push(cell.ch);
+            } else {
+                if !current_text.is_empty() {
+                    let attrs = FontAttrs::new()
+                        .family(Family::Monospace)
+                        .color(current_color.unwrap_or(color));
+                    spans.push((current_text, attrs));
+                    current_text = String::new();
+                }
+                current_color = Some(color);
+                current_text.push(cell.ch);
+            }
+        }
+
+        if !current_text.is_empty() {
+            let attrs = FontAttrs::new()
+                .family(Family::Monospace)
+                .color(current_color.unwrap_or(GlyphonColor::rgb(255, 255, 255)));
+            spans.push((current_text, attrs));
+        }
+
+        if !spans.is_empty() {
+            row_spans.push((row_idx, spans));
+        }
+    }
+
+    row_spans
+}
+
+impl GlyphPipeline {
+    /// Formats grid characters and renders text glyphs into the active render pass.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    pub fn draw<'pass>(
+        &'pass mut self,
+        ctx: &DrawContext<'_>,
+        rpass: &mut wgpu::RenderPass<'pass>,
+        grid: &Grid,
+    ) -> Result<(), glyphon::RenderError> {
+        let row_spans = collect_row_spans(grid, ctx.palette);
+
+        let mut buffers = Vec::with_capacity(row_spans.len());
+        for (row_idx, spans) in &row_spans {
+            let mut buffer = FontBuffer::new(
+                &mut self.font_system,
+                Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
+            );
+            let rich_spans: Vec<(&str, FontAttrs)> = spans
+                .iter()
+                .map(|(text, attrs)| (text.as_str(), attrs.clone()))
+                .collect();
+            buffer.set_rich_text(
+                rich_spans,
+                &FontAttrs::new().family(Family::Monospace),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut self.font_system, false);
+            buffers.push((*row_idx, buffer));
+        }
+
+        let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
+        let text_areas: Vec<TextArea> = buffers
+            .iter()
+            .map(|(row_idx, buffer)| {
+                let top = *row_idx as f32 * ctx.metrics.cell_height;
+                TextArea {
+                    buffer,
+                    left: 0.0,
+                    top,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: top as i32,
+                        right: max_w,
+                        bottom: (top + ctx.metrics.cell_height) as i32,
+                    },
+                    default_color: GlyphonColor::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                }
+            })
+            .collect();
+
+        self.viewport.update(
+            ctx.queue,
+            Resolution {
+                width: ctx.screen_size[0],
+                height: ctx.screen_size[1],
+            },
+        );
+
+        let _ = self.text_renderer.prepare(
+            ctx.device,
+            ctx.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        );
+
+        self.text_renderer
+            .render(&self.atlas, &self.viewport, rpass)?;
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +546,33 @@ mod tests {
         grid[0][0].bg = Color::Indexed(1);
         let verts_one = build_cell_background_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
         assert_eq!(verts_one.len(), 6);
+    }
+
+    #[test]
+    fn glyph_buffer_shaping_handles_spans() {
+        let mut font_system = FontSystem::new();
+        let mut buffer = FontBuffer::new(&mut font_system, Metrics::new(14.0, 16.0));
+        let spans = [
+            (
+                "Hello ",
+                FontAttrs::new()
+                    .family(Family::Monospace)
+                    .color(GlyphonColor::rgb(255, 100, 0)),
+            ),
+            (
+                "World",
+                FontAttrs::new()
+                    .family(Family::Monospace)
+                    .color(GlyphonColor::rgb(0, 200, 255)),
+            ),
+        ];
+        buffer.set_rich_text(
+            spans,
+            &FontAttrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+        assert!(!buffer.lines.is_empty());
     }
 }
