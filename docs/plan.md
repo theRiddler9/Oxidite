@@ -75,11 +75,11 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 4 — Window and basic rendering
 
-- [ ] `winit` / `wgpu` / `glyphon` / `pollster`
-- [ ] Window, AppEvent, GPU, fonts, cell bg, glyphs, cursor
-- [ ] Resize -> grid -> PTY; PTY output -> parser -> redraw
-- [ ] `docs/learn/phase-4.md`
-- [ ] Tag: `phase-4-window`
+- [x] `winit` / `wgpu` / `glyphon` / `pollster`
+- [x] Window, AppEvent, GPU, fonts, cell bg, glyphs, cursor
+- [x] Resize -> grid -> PTY; PTY output -> parser -> redraw
+- [x] `docs/learn/phase-4.md`
+- [x] Tag: `phase-4-window`
 
 ### Phase 5 — Input
 
