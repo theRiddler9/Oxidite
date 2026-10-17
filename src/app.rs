@@ -8,7 +8,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
-use crate::input::{GridPoint, InputAction, KeyEvent, Selection, check_input_action, encode_key};
+use crate::input::{
+    GridPoint, InputAction, KeyEvent, Selection, check_input_action, encode_key, encode_paste,
+};
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
@@ -113,6 +115,8 @@ pub struct App {
     pub mouse_down_pos: Option<GridPoint>,
     /// Last recorded cursor position in window pixel coordinates.
     pub cursor_pixel_pos: (f64, f64),
+    /// System clipboard interface for copying and pasting text.
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -142,6 +146,7 @@ impl App {
             selection: None,
             mouse_down_pos: None,
             cursor_pixel_pos: (0.0, 0.0),
+            clipboard: arboard::Clipboard::new().ok(),
         }
     }
 
@@ -212,6 +217,12 @@ impl App {
                     self.terminal.grid.scroll_to_bottom();
                     win.request_redraw();
                 }
+                InputAction::Copy => {
+                    self.copy_selection();
+                }
+                InputAction::Paste => {
+                    self.paste_clipboard(win);
+                }
             }
             return;
         }
@@ -253,6 +264,37 @@ impl App {
         if lines != 0 {
             self.terminal.grid.scroll_display(lines);
             win.request_redraw();
+        }
+    }
+
+    /// Copies currently selected text to the system clipboard.
+    pub fn copy_selection(&mut self) {
+        if let Some(ref sel) = self.selection {
+            let text = sel.extract_text(&self.terminal.grid);
+            if !text.is_empty()
+                && let Some(ref mut clip) = self.clipboard
+            {
+                let _ = clip.set_text(text);
+            }
+        }
+    }
+
+    /// Pastes text from the system clipboard to the PTY.
+    pub fn paste_clipboard(&mut self, win: &Window) {
+        let text = self.clipboard.as_mut().and_then(|c| c.get_text().ok());
+        if let Some(text) = text
+            && !text.is_empty()
+        {
+            let bytes = encode_paste(&text, &self.terminal.modes);
+            if self.terminal.grid.display_offset > 0 {
+                self.terminal.grid.scroll_to_bottom();
+                win.request_redraw();
+            }
+            if let Some(ref writer) = self.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let _ = guard.write(&bytes);
+            }
         }
     }
 

@@ -216,6 +216,10 @@ pub enum InputAction {
     ScrollToTop,
     /// Scroll directly to the active prompt.
     ScrollToBottom,
+    /// Copy currently selected text to system clipboard.
+    Copy,
+    /// Paste text from system clipboard to PTY.
+    Paste,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback).
@@ -236,6 +240,19 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
             Key::Named(NamedKey::Home) => return Some(InputAction::ScrollToTop),
             Key::Named(NamedKey::End) => return Some(InputAction::ScrollToBottom),
             _ => {}
+        }
+    }
+
+    let is_ctrl_shift = ctrl && shift && !alt;
+    let is_super = event.modifiers.super_key() && !ctrl && !alt;
+    if (is_ctrl_shift || is_super)
+        && let Key::Character(ref ch) = event.logical_key
+    {
+        if ch.eq_ignore_ascii_case("c") {
+            return Some(InputAction::Copy);
+        }
+        if ch.eq_ignore_ascii_case("v") {
+            return Some(InputAction::Paste);
         }
     }
 
@@ -960,5 +977,35 @@ mod tests {
         assert!(sel_multi.contains(1, 2));
         assert!(!sel_multi.contains(1, 3));
         assert_eq!(sel_multi.extract_text(&grid), "lo\nwor");
+    }
+
+    #[test]
+    fn check_clipboard_copy_paste_keybindings() {
+        // Ctrl+Shift+C -> Copy
+        let ctrl_shift_c = KeyEvent::new(
+            Key::Character(SmolStr::new("c")),
+            Some("c".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_shift_c), Some(InputAction::Copy));
+
+        // Ctrl+Shift+V -> Paste
+        let ctrl_shift_v = KeyEvent::new(
+            Key::Character(SmolStr::new("v")),
+            Some("v".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_shift_v), Some(InputAction::Paste));
+
+        // Plain Ctrl+C is NOT an input action (handled by encode_key for SIGINT)
+        let ctrl_c = KeyEvent::new(
+            Key::Character(SmolStr::new("c")),
+            Some("c".to_string()),
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_c), None);
     }
 }
