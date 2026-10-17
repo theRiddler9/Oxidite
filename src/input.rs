@@ -151,6 +151,25 @@ fn encode_named_key(named: NamedKey, modifiers: ModifiersState, modes: &Modes) -
         NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
         NamedKey::Insert => Some(b"\x1b[2~".to_vec()),
         NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
+        other => encode_function_key(other).map(<[u8]>::to_vec),
+    }
+}
+
+/// Encodes standard VT220 / xterm function keys F1..F12.
+fn encode_function_key(named: NamedKey) -> Option<&'static [u8]> {
+    match named {
+        NamedKey::F1 => Some(b"\x1bOP"),
+        NamedKey::F2 => Some(b"\x1bOQ"),
+        NamedKey::F3 => Some(b"\x1bOR"),
+        NamedKey::F4 => Some(b"\x1bOS"),
+        NamedKey::F5 => Some(b"\x1b[15~"),
+        NamedKey::F6 => Some(b"\x1b[17~"),
+        NamedKey::F7 => Some(b"\x1b[18~"),
+        NamedKey::F8 => Some(b"\x1b[19~"),
+        NamedKey::F9 => Some(b"\x1b[20~"),
+        NamedKey::F10 => Some(b"\x1b[21~"),
+        NamedKey::F11 => Some(b"\x1b[23~"),
+        NamedKey::F12 => Some(b"\x1b[24~"),
         _ => None,
     }
 }
@@ -330,5 +349,29 @@ mod tests {
 
         let end = KeyEvent::simple(Key::Named(NamedKey::End), None);
         assert_eq!(encode_key(&end, &modes), Some(b"\x1bOF".to_vec()));
+    }
+
+    #[test]
+    fn encode_function_keys_f1_to_f12() {
+        let modes = Modes::default();
+        let expected = [
+            (NamedKey::F1, b"\x1bOP".as_slice()),
+            (NamedKey::F2, b"\x1bOQ".as_slice()),
+            (NamedKey::F3, b"\x1bOR".as_slice()),
+            (NamedKey::F4, b"\x1bOS".as_slice()),
+            (NamedKey::F5, b"\x1b[15~".as_slice()),
+            (NamedKey::F6, b"\x1b[17~".as_slice()),
+            (NamedKey::F7, b"\x1b[18~".as_slice()),
+            (NamedKey::F8, b"\x1b[19~".as_slice()),
+            (NamedKey::F9, b"\x1b[20~".as_slice()),
+            (NamedKey::F10, b"\x1b[21~".as_slice()),
+            (NamedKey::F11, b"\x1b[23~".as_slice()),
+            (NamedKey::F12, b"\x1b[24~".as_slice()),
+        ];
+
+        for (key, exp) in expected {
+            let ev = KeyEvent::simple(Key::Named(key), None);
+            assert_eq!(encode_key(&ev, &modes), Some(exp.to_vec()));
+        }
     }
 }
