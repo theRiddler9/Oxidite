@@ -97,6 +97,20 @@ pub fn encode_key(event: &KeyEvent, modes: &Modes) -> Option<Vec<u8>> {
     None
 }
 
+/// Encodes pasted text into bytes, wrapping in bracketed paste escape sequences if enabled.
+#[must_use]
+pub fn encode_paste(text: &str, modes: &Modes) -> Vec<u8> {
+    if modes.bracketed_paste {
+        let mut bytes = Vec::with_capacity(text.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
 fn encode_named_key(named: NamedKey, modifiers: ModifiersState, modes: &Modes) -> Option<Vec<u8>> {
     let alt = modifiers.alt_key();
 
@@ -530,5 +544,24 @@ mod tests {
             ElementState::Pressed,
         );
         assert_eq!(encode_key(&ctrl_f5, &modes), Some(b"\x1b[15;5~".to_vec()));
+    }
+
+    #[test]
+    fn encode_paste_unbracketed_and_bracketed() {
+        let modes_normal = Modes::default();
+        let payload = "echo 'hello world'\n";
+        assert_eq!(
+            encode_paste(payload, &modes_normal),
+            payload.as_bytes().to_vec()
+        );
+
+        let modes_bracketed = Modes {
+            bracketed_paste: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            encode_paste(payload, &modes_bracketed),
+            b"\x1b[200~echo 'hello world'\n\x1b[201~".to_vec()
+        );
     }
 }
