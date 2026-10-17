@@ -1,6 +1,6 @@
 //! Cell backgrounds, glyphs, and cursor drawing.
 
-use crate::grid::{Color, Grid};
+use crate::grid::{Color, Cursor, CursorShape, Grid};
 use crate::renderer::font::CellMetrics;
 use glyphon::{
     Attrs as FontAttrs, Buffer as FontBuffer, Cache, Color as GlyphonColor, Family, FontSystem,
@@ -148,6 +148,40 @@ pub fn build_cell_background_vertices(
     }
 
     vertices
+}
+
+/// Builds quad vertices for the cursor based on its position, visibility, and shape.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_cursor_vertices(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+) -> Vec<QuadVertex> {
+    if !cursor.visible {
+        return Vec::new();
+    }
+
+    let x = cursor.col as f32 * metrics.cell_width;
+    let y = cursor.row as f32 * metrics.cell_height;
+
+    let (pos_x, pos_y, w, h) = match cursor.shape {
+        CursorShape::Block => (x, y, metrics.cell_width, metrics.cell_height),
+        CursorShape::Underline => {
+            let underline_height = (metrics.cell_height * 0.15).max(2.0);
+            (
+                x,
+                y + metrics.cell_height - underline_height,
+                metrics.cell_width,
+                underline_height,
+            )
+        }
+        CursorShape::Bar => {
+            let bar_width = (metrics.cell_width * 0.15).max(2.0);
+            (x, y, bar_width, metrics.cell_height)
+        }
+    };
+
+    build_quad_vertices(pos_x, pos_y, w, h, color).to_vec()
 }
 
 /// WGPU graphics pipeline for rendering solid colored 2D quads.
@@ -574,5 +608,44 @@ mod tests {
         );
         buffer.shape_until_scroll(&mut font_system, false);
         assert!(!buffer.lines.is_empty());
+    }
+
+    #[test]
+    fn build_cursor_vertices_shapes_and_visibility() {
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let color = [1.0, 1.0, 1.0, 1.0];
+
+        // 1. Invisible cursor returns empty
+        let mut cursor = Cursor {
+            row: 1,
+            col: 2,
+            visible: false,
+            shape: CursorShape::Block,
+        };
+        assert!(build_cursor_vertices(&cursor, &metrics, color).is_empty());
+
+        // 2. Visible block cursor
+        cursor.visible = true;
+        let block_verts = build_cursor_vertices(&cursor, &metrics, color);
+        assert_eq!(block_verts.len(), 6);
+        assert!(approx_eq(block_verts[0].position, [20.0, 20.0]));
+        assert!(approx_eq(block_verts[5].position, [30.0, 40.0]));
+
+        // 3. Visible underline cursor
+        cursor.shape = CursorShape::Underline;
+        let underline_verts = build_cursor_vertices(&cursor, &metrics, color);
+        assert_eq!(underline_verts.len(), 6);
+        assert!(approx_eq(underline_verts[0].position, [20.0, 37.0])); // 20 + 20 - 3.0
+
+        // 4. Visible bar cursor
+        cursor.shape = CursorShape::Bar;
+        let bar_verts = build_cursor_vertices(&cursor, &metrics, color);
+        assert_eq!(bar_verts.len(), 6);
+        assert!(approx_eq(bar_verts[5].position, [22.0, 40.0])); // 20 + 2.0 width
     }
 }
