@@ -41,9 +41,26 @@ impl GpuContext {
     /// Initializes WGPU on the given window synchronously using `pollster`.
     pub fn new(window: Arc<Window>) -> Result<Self, GpuError> {
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window)?;
 
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, use DX12 (the native Windows DirectX 12 API) unless overridden by WGPU_BACKEND.
+            // Avoid Vulkan by default on Windows because third-party Vulkan layer DLLs
+            // (e.g. OBS, RTSS, Discord overlay) frequently crash during instance enumeration with 0xc0000005.
+            if std::env::var("WGPU_BACKEND").is_ok() {
+                desc = desc.with_env();
+            } else {
+                desc.backends = wgpu::Backends::DX12;
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            desc = desc.with_env();
+        }
+
+        let instance = wgpu::Instance::new(desc);
+        let surface = instance.create_surface(window)?;
         pollster::block_on(Self::init_async(&instance, surface, size))
     }
 
@@ -52,14 +69,27 @@ impl GpuContext {
         surface: wgpu::Surface<'static>,
         size: PhysicalSize<u32>,
     ) -> Result<Self, GpuError> {
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
                 ..Default::default()
             })
-            .await?;
+            .await
+        {
+            Ok(adapter) => adapter,
+            Err(_) => {
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: true,
+                        ..Default::default()
+                    })
+                    .await?
+            }
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
