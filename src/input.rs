@@ -92,7 +92,20 @@ pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
         _ => {}
     }
 
-    // 2. Printable text without Ctrl/Alt
+    // 2. Ctrl + letter / symbol combinations
+    if event.modifiers.control_key()
+        && let Key::Character(ref s) = event.logical_key
+        && let Some(ch) = s.chars().next()
+        && let Some(ctrl_byte) = encode_ctrl_char(ch)
+    {
+        return Some(if alt {
+            vec![0x1b, ctrl_byte]
+        } else {
+            vec![ctrl_byte]
+        });
+    }
+
+    // 3. Printable text without Ctrl/Alt
     if !event.modifiers.control_key() && !alt {
         if let Some(ref text) = event.text {
             if !text.is_empty() {
@@ -104,6 +117,21 @@ pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+/// Translates a character combined with the Control modifier into its ASCII control code.
+fn encode_ctrl_char(ch: char) -> Option<u8> {
+    match ch {
+        'a'..='z' | 'A'..='Z' => Some((ch.to_ascii_uppercase() as u8) - 0x40),
+        '@' | ' ' => Some(0x00),
+        '[' => Some(0x1B),
+        '\\' => Some(0x1C),
+        ']' => Some(0x1D),
+        '^' | '6' => Some(0x1E),
+        '_' | '/' => Some(0x1F),
+        '?' => Some(0x7F),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +198,46 @@ mod tests {
             ElementState::Pressed,
         );
         assert_eq!(encode_key(&ev_alt_enter, &modes), Some(b"\x1b\r".to_vec()));
+    }
+
+    #[test]
+    fn encode_ctrl_combinations() {
+        let modes = Modes::default();
+
+        // Ctrl+C -> 0x03
+        let ev_ctrl_c = KeyEvent::new(
+            Key::Character(SmolStr::new("c")),
+            None,
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_ctrl_c, &modes), Some(vec![0x03]));
+
+        // Ctrl+A -> 0x01
+        let ev_ctrl_a = KeyEvent::new(
+            Key::Character(SmolStr::new("a")),
+            None,
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_ctrl_a, &modes), Some(vec![0x01]));
+
+        // Ctrl+Z -> 0x1A
+        let ev_ctrl_z = KeyEvent::new(
+            Key::Character(SmolStr::new("z")),
+            None,
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_ctrl_z, &modes), Some(vec![0x1A]));
+
+        // Ctrl+Alt+C -> \x1b\x03
+        let ev_ctrl_alt_c = KeyEvent::new(
+            Key::Character(SmolStr::new("c")),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_ctrl_alt_c, &modes), Some(vec![0x1B, 0x03]));
     }
 }
