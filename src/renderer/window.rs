@@ -60,13 +60,95 @@ pub fn create_event_loop<T: 'static>() -> Result<EventLoop<T>, WindowError> {
     }
 }
 
+/// Maps a window physical size to terminal grid dimensions (cols, rows).
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn window_size_to_grid_dimensions(
+    size: winit::dpi::PhysicalSize<u32>,
+    metrics: &crate::renderer::font::CellMetrics,
+) -> (u16, u16) {
+    if metrics.cell_width <= 0.0 || metrics.cell_height <= 0.0 {
+        return (1, 1);
+    }
+
+    let cols = ((size.width as f32) / metrics.cell_width).floor().max(1.0) as u16;
+    let rows = ((size.height as f32) / metrics.cell_height)
+        .floor()
+        .max(1.0) as u16;
+
+    (cols, rows)
+}
+
+/// Computes the corresponding `PtySize` for a given window size and cell metrics.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn window_size_to_pty_size(
+    size: winit::dpi::PhysicalSize<u32>,
+    metrics: &crate::renderer::font::CellMetrics,
+) -> crate::pty::PtySize {
+    let (cols, rows) = window_size_to_grid_dimensions(size, metrics);
+    let px_w = u16::try_from(size.width).unwrap_or(u16::MAX);
+    let px_h = u16::try_from(size.height).unwrap_or(u16::MAX);
+
+    crate::pty::PtySize {
+        rows,
+        cols,
+        px_w,
+        px_h,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::font::CellMetrics;
+    use winit::dpi::PhysicalSize;
 
     #[test]
     fn default_window_attributes_has_title_and_size() {
         let attrs = default_window_attributes("Test Window");
         assert_eq!(attrs.title, "Test Window");
+    }
+
+    #[test]
+    fn window_size_to_grid_dimensions_maps_correctly() {
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+
+        let size = PhysicalSize::new(800, 600);
+        let (cols, rows) = window_size_to_grid_dimensions(size, &metrics);
+        assert_eq!(cols, 80);
+        assert_eq!(rows, 30);
+
+        // Very small window clamps to minimum 1x1
+        let small_size = PhysicalSize::new(5, 5);
+        let (small_cols, small_rows) = window_size_to_grid_dimensions(small_size, &metrics);
+        assert_eq!(small_cols, 1);
+        assert_eq!(small_rows, 1);
+    }
+
+    #[test]
+    fn window_size_to_pty_size_preserves_pixel_dimensions() {
+        let metrics = CellMetrics {
+            cell_width: 8.0,
+            cell_height: 16.0,
+            font_size: 14.0,
+            line_height: 16.0,
+        };
+
+        let size = PhysicalSize::new(640, 480);
+        let pty_size = window_size_to_pty_size(size, &metrics);
+        assert_eq!(pty_size.cols, 80);
+        assert_eq!(pty_size.rows, 30);
+        assert_eq!(pty_size.px_w, 640);
+        assert_eq!(pty_size.px_h, 480);
     }
 }
