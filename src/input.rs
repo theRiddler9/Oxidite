@@ -98,6 +98,44 @@ impl MouseEvent {
     }
 }
 
+/// Terminal action triggered by key combinations (such as scrollback navigation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub enum InputAction {
+    /// Scroll viewport up into history by `lines` rows.
+    ScrollUp(usize),
+    /// Scroll viewport down toward active screen by `lines` rows.
+    ScrollDown(usize),
+    /// Scroll directly to the oldest row in scrollback.
+    ScrollToTop,
+    /// Scroll directly to the active prompt.
+    ScrollToBottom,
+}
+
+/// Checks if a key event corresponds to a terminal internal action (e.g. scrollback).
+#[must_use]
+pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
+    if event.state != ElementState::Pressed {
+        return None;
+    }
+
+    let shift = event.modifiers.shift_key();
+    let ctrl = event.modifiers.control_key();
+    let alt = event.modifiers.alt_key();
+
+    if shift && !ctrl && !alt {
+        match event.logical_key {
+            Key::Named(NamedKey::PageUp) => return Some(InputAction::ScrollUp(12)),
+            Key::Named(NamedKey::PageDown) => return Some(InputAction::ScrollDown(12)),
+            Key::Named(NamedKey::Home) => return Some(InputAction::ScrollToTop),
+            Key::Named(NamedKey::End) => return Some(InputAction::ScrollToBottom),
+            _ => {}
+        }
+    }
+
+    None
+}
+
 /// Encodes a key event into bytes for the PTY, or `None` if unhandled.
 #[must_use]
 pub fn encode_key(event: &KeyEvent, modes: &Modes) -> Option<Vec<u8>> {
@@ -730,5 +768,56 @@ mod tests {
             encode_mouse_event(&ev_motion, &modes_on),
             Some(b"\x1b[<32;8;9M".to_vec())
         );
+    }
+
+    #[test]
+    fn check_scrollback_keybindings() {
+        let shift_page_up = KeyEvent::new(
+            Key::Named(NamedKey::PageUp),
+            None,
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&shift_page_up),
+            Some(InputAction::ScrollUp(12))
+        );
+
+        let shift_page_down = KeyEvent::new(
+            Key::Named(NamedKey::PageDown),
+            None,
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&shift_page_down),
+            Some(InputAction::ScrollDown(12))
+        );
+
+        let shift_home = KeyEvent::new(
+            Key::Named(NamedKey::Home),
+            None,
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&shift_home),
+            Some(InputAction::ScrollToTop)
+        );
+
+        let shift_end = KeyEvent::new(
+            Key::Named(NamedKey::End),
+            None,
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&shift_end),
+            Some(InputAction::ScrollToBottom)
+        );
+
+        // Plain PageUp is not an input action (handled by encode_key)
+        let plain_page_up = KeyEvent::simple(Key::Named(NamedKey::PageUp), None);
+        assert_eq!(check_input_action(&plain_page_up), None);
     }
 }

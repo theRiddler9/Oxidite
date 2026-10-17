@@ -235,6 +235,8 @@ pub struct Grid {
     pub scrollback: VecDeque<Row>,
     /// Maximum number of scrollback lines retained.
     pub max_scrollback: usize,
+    /// Number of lines the viewport is scrolled back into scrollback history (0 = bottom active screen).
+    pub display_offset: usize,
 }
 
 impl Default for Grid {
@@ -266,6 +268,7 @@ impl Grid {
             scroll_region: 0..=(rows.saturating_sub(1)),
             scrollback: VecDeque::new(),
             max_scrollback,
+            display_offset: 0,
         }
     }
 
@@ -284,6 +287,54 @@ impl Grid {
     /// Clears all lines currently stored in the scrollback buffer.
     pub fn clear_scrollback(&mut self) {
         self.scrollback.clear();
+        self.display_offset = 0;
+    }
+
+    /// Returns the active scrollback display offset (0 = current bottom screen).
+    #[must_use]
+    pub fn display_offset(&self) -> usize {
+        self.display_offset
+    }
+
+    /// Returns a reference to the displayed row at viewport index `row` (0..rows).
+    /// If scrolled back into history (`display_offset > 0`), reads from scrollback.
+    #[must_use]
+    pub fn display_row(&self, row: usize) -> Option<&Row> {
+        if row >= self.rows {
+            return None;
+        }
+        let n = self.scrollback.len();
+        let abs_idx = (n + row).checked_sub(self.display_offset)?;
+        if abs_idx < n {
+            self.scrollback.get(abs_idx)
+        } else {
+            self.visible_rows.get(abs_idx - n)
+        }
+    }
+
+    /// Scrolls the viewport display offset by `delta` lines.
+    /// Positive `delta` scrolls up into history; negative `delta` scrolls down toward the prompt.
+    pub fn scroll_display(&mut self, delta: isize) {
+        if delta > 0 {
+            let add = delta.unsigned_abs();
+            self.display_offset = self
+                .display_offset
+                .saturating_add(add)
+                .min(self.scrollback.len());
+        } else if delta < 0 {
+            let sub = delta.unsigned_abs();
+            self.display_offset = self.display_offset.saturating_sub(sub);
+        }
+    }
+
+    /// Resets the viewport scroll offset to the bottom (the active screen).
+    pub fn scroll_to_bottom(&mut self) {
+        self.display_offset = 0;
+    }
+
+    /// Scrolls the viewport to the oldest line in the scrollback buffer.
+    pub fn scroll_to_top(&mut self) {
+        self.display_offset = self.scrollback.len();
     }
 
     /// Returns a reference to the cell at `(row, col)`, if within bounds.
@@ -665,6 +716,9 @@ impl Grid {
                     self.scrollback.pop_front();
                 }
                 self.scrollback.push_back(removed);
+                if self.display_offset > 0 {
+                    self.display_offset = (self.display_offset + 1).min(self.scrollback.len());
+                }
             }
             self.visible_rows.insert(bottom, Row::new(self.cols));
         }
@@ -1238,5 +1292,41 @@ mod tests {
         assert_eq!(grid[0][2].ch, 'C');
         assert!(grid[0][3].is_empty());
         assert!(grid[0][4].is_empty());
+    }
+
+    #[test]
+    fn viewport_scrollback_display_rows() {
+        let mut grid = Grid::new(10, 2);
+        // Fill row 0 with '1' and row 1 with '2'
+        grid.put_char('1', Color::Default, Color::Default, Attrs::empty(), false);
+        grid.move_cursor_to(1, 0);
+        grid.put_char('2', Color::Default, Color::Default, Attrs::empty(), false);
+
+        // Scroll up by 1: row 0 ('1') moves to scrollback
+        grid.scroll_up(1);
+        grid.move_cursor_to(1, 0);
+        grid.put_char('3', Color::Default, Color::Default, Attrs::empty(), false);
+
+        // Visible rows are now: row 0 has '2', row 1 has '3'
+        assert_eq!(grid.display_offset(), 0);
+        assert_eq!(grid.display_row(0).unwrap()[0].ch, '2');
+        assert_eq!(grid.display_row(1).unwrap()[0].ch, '3');
+
+        // Scroll viewport up by 1 line into scrollback
+        grid.scroll_display(1);
+        assert_eq!(grid.display_offset(), 1);
+        // Now row 0 shows '1' (from scrollback) and row 1 shows '2'
+        assert_eq!(grid.display_row(0).unwrap()[0].ch, '1');
+        assert_eq!(grid.display_row(1).unwrap()[0].ch, '2');
+
+        // Scroll to bottom
+        grid.scroll_to_bottom();
+        assert_eq!(grid.display_offset(), 0);
+        assert_eq!(grid.display_row(0).unwrap()[0].ch, '2');
+
+        // Scroll to top
+        grid.scroll_to_top();
+        assert_eq!(grid.display_offset(), 1);
+        assert_eq!(grid.display_row(0).unwrap()[0].ch, '1');
     }
 }

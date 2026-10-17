@@ -8,6 +8,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::input::{InputAction, KeyEvent, check_input_action, encode_key};
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
@@ -21,6 +22,7 @@ use crate::renderer::window::{
 };
 use crate::terminal::Terminal;
 use winit::dpi::PhysicalSize;
+use winit::keyboard::ModifiersState;
 
 /// Cross-thread events delivered via `winit`'s `EventLoopProxy`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +105,8 @@ pub struct App {
     pub glyph_pipeline: Option<GlyphPipeline>,
     /// VT parser that translates escape sequence streams into Terminal calls.
     pub parser: Parser,
+    /// Currently pressed keyboard modifier state (Shift, Ctrl, Alt, Super).
+    pub modifiers: ModifiersState,
 }
 
 impl App {
@@ -128,6 +132,7 @@ impl App {
             quad_pipeline: None,
             glyph_pipeline: None,
             parser: Parser::new(),
+            modifiers: ModifiersState::empty(),
         }
     }
 
@@ -222,12 +227,14 @@ impl App {
             self.cell_metrics.cell_height,
             &DEFAULT_PALETTE,
         );
-        let cursor_vertices = build_cursor_vertices(
-            &self.terminal.grid.cursor,
-            &self.cell_metrics,
-            [0.8, 0.8, 0.8, 0.8],
-        );
-        quad_vertices.extend_from_slice(&cursor_vertices);
+        if self.terminal.grid.display_offset == 0 {
+            let cursor_vertices = build_cursor_vertices(
+                &self.terminal.grid.cursor,
+                &self.cell_metrics,
+                [0.8, 0.8, 0.8, 0.8],
+            );
+            quad_vertices.extend_from_slice(&cursor_vertices);
+        }
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -342,6 +349,79 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.render();
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
+            }
+            WindowEvent::KeyboardInput { event: key_ev, .. } => {
+                let key_event = KeyEvent::new(
+                    key_ev.logical_key,
+                    key_ev.text.map(|s| s.to_string()),
+                    self.modifiers,
+                    key_ev.state,
+                );
+
+                if let Some(action) = check_input_action(&key_event) {
+                    match action {
+                        InputAction::ScrollUp(lines) => {
+                            let delta = isize::try_from(lines).unwrap_or(12);
+                            self.terminal.grid.scroll_display(delta);
+                            win.request_redraw();
+                        }
+                        InputAction::ScrollDown(lines) => {
+                            let delta = isize::try_from(lines).unwrap_or(12);
+                            self.terminal.grid.scroll_display(-delta);
+                            win.request_redraw();
+                        }
+                        InputAction::ScrollToTop => {
+                            self.terminal.grid.scroll_to_top();
+                            win.request_redraw();
+                        }
+                        InputAction::ScrollToBottom => {
+                            self.terminal.grid.scroll_to_bottom();
+                            win.request_redraw();
+                        }
+                    }
+                    return;
+                }
+
+                if let Some(bytes) = encode_key(&key_event, &self.terminal.modes) {
+                    if self.terminal.grid.display_offset > 0 {
+                        self.terminal.grid.scroll_to_bottom();
+                        win.request_redraw();
+                    }
+                    if let Some(ref writer) = self.pty_writer
+                        && let Ok(mut guard) = writer.lock()
+                    {
+                        let _ = guard.write(&bytes);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if !self.terminal.modes.mouse_reporting => {
+                let lines: isize = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        if y > 0.0 {
+                            3
+                        } else if y < 0.0 {
+                            -3
+                        } else {
+                            0
+                        }
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        if pos.y > 0.0 {
+                            3
+                        } else if pos.y < 0.0 {
+                            -3
+                        } else {
+                            0
+                        }
+                    }
+                };
+                if lines != 0 {
+                    self.terminal.grid.scroll_display(lines);
+                    win.request_redraw();
+                }
             }
             _ => {}
         }
