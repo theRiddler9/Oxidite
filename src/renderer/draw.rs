@@ -153,6 +153,66 @@ pub fn build_cell_background_vertices(
     vertices
 }
 
+/// Builds quad vertices for text decorations (underline and strikethrough) in the visible grid.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_text_decoration_vertices(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+) -> Vec<QuadVertex> {
+    let mut vertices = Vec::new();
+
+    for row in 0..grid.rows {
+        let Some(row_cells) = grid.display_row(row) else {
+            continue;
+        };
+        for (col, cell) in row_cells.iter().enumerate() {
+            if cell.attrs.is_empty() || cell.width == 0 {
+                continue;
+            }
+
+            let has_underline = cell.attrs.contains(crate::grid::Attrs::UNDERLINE);
+            let has_strike = cell.attrs.contains(crate::grid::Attrs::STRIKETHROUGH);
+
+            if !has_underline && !has_strike {
+                continue;
+            }
+
+            let x = col as f32 * cell_width;
+            let y = row as f32 * cell_height;
+            let w = f32::from(cell.width.max(1)) * cell_width;
+            let line_color = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
+
+            if has_underline {
+                let underline_thickness = (cell_height * 0.08).round().max(1.0);
+                let underline_y = y + cell_height - underline_thickness;
+                vertices.extend_from_slice(&build_quad_vertices(
+                    x,
+                    underline_y,
+                    w,
+                    underline_thickness,
+                    line_color,
+                ));
+            }
+
+            if has_strike {
+                let strike_thickness = (cell_height * 0.08).round().max(1.0);
+                let strike_y = y + (cell_height * 0.55).round();
+                vertices.extend_from_slice(&build_quad_vertices(
+                    x,
+                    strike_y,
+                    w,
+                    strike_thickness,
+                    line_color,
+                ));
+            }
+        }
+    }
+
+    vertices
+}
+
 /// Builds quad vertices for the cursor based on its position, visibility, and shape.
 #[allow(clippy::cast_precision_loss)]
 pub fn build_cursor_vertices(
@@ -819,5 +879,45 @@ mod tests {
         assert_eq!(row_spans[2].0, "X");
         assert_eq!(row_spans[2].1.weight, Weight::BOLD);
         assert_eq!(row_spans[2].1.style, Style::Italic);
+    }
+
+    #[test]
+    fn build_text_decoration_vertices_underline_and_strikethrough() {
+        let mut grid = Grid::new(4, 1);
+        grid[0][0] = crate::grid::Cell::new(
+            'U',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::UNDERLINE,
+            1,
+        );
+        grid[0][1] = crate::grid::Cell::new(
+            'S',
+            Color::Indexed(2),
+            Color::Default,
+            crate::grid::Attrs::STRIKETHROUGH,
+            1,
+        );
+        grid[0][2] = crate::grid::Cell::new(
+            'B',
+            Color::Indexed(3),
+            Color::Default,
+            crate::grid::Attrs::UNDERLINE | crate::grid::Attrs::STRIKETHROUGH,
+            1,
+        );
+        grid[0][3] = crate::grid::Cell::new(
+            'N',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::empty(),
+            1,
+        );
+
+        let vertices = build_text_decoration_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        // Cell 0: 1 quad (6 verts) for underline
+        // Cell 1: 1 quad (6 verts) for strike
+        // Cell 2: 2 quads (12 verts) for both
+        // Cell 3: 0 quads
+        assert_eq!(vertices.len(), 24);
     }
 }

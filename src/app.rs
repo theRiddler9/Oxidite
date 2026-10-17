@@ -15,7 +15,7 @@ use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
     DEFAULT_PALETTE, DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
-    build_cursor_vertices, build_quad_vertices,
+    build_cursor_vertices, build_quad_vertices, build_text_decoration_vertices,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -389,6 +389,12 @@ impl App {
             self.cell_metrics.cell_height,
             &DEFAULT_PALETTE,
         );
+        quad_vertices.extend_from_slice(&build_text_decoration_vertices(
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &DEFAULT_PALETTE,
+        ));
         if self.terminal.grid.display_offset == 0 {
             let cursor_vertices = build_cursor_vertices(
                 &self.terminal.grid.cursor,
