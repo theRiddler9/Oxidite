@@ -160,6 +160,17 @@ impl App {
 
     /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
     pub fn handle_pty_output(&mut self, bytes: &[u8]) {
+        // Respond to DSR (Device Status Report: \x1b[6n) if requested by ConPTY/shell
+        if bytes.windows(4).any(|w| w == b"\x1b[6n")
+            && let Some(ref writer) = self.pty_writer
+            && let Ok(mut guard) = writer.lock()
+        {
+            let row = self.terminal.grid.cursor.row + 1;
+            let col = self.terminal.grid.cursor.col + 1;
+            let response = format!("\x1b[{row};{col}R");
+            let _ = guard.write(response.as_bytes());
+        }
+
         self.parser.advance(&mut self.terminal, bytes);
         if self.terminal.has_damage()
             && let Some(ref win) = self.window
