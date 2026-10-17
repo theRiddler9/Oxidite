@@ -49,57 +49,18 @@ impl KeyEvent {
 
 /// Encodes a key event into bytes for the PTY, or `None` if unhandled.
 #[must_use]
-pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
+pub fn encode_key(event: &KeyEvent, modes: &Modes) -> Option<Vec<u8>> {
     if event.state == ElementState::Released {
         return None;
     }
 
     let alt = event.modifiers.alt_key();
 
-    // 1. Enter, Tab, Backspace, Escape
-    match event.logical_key {
-        Key::Named(NamedKey::Enter) => {
-            return Some(if alt {
-                b"\x1b\r".to_vec()
-            } else {
-                b"\r".to_vec()
-            });
-        }
-        Key::Named(NamedKey::Tab) => {
-            if event.modifiers.shift_key() {
-                return Some(b"\x1b[Z".to_vec());
-            }
-            return Some(if alt {
-                b"\x1b\t".to_vec()
-            } else {
-                b"\t".to_vec()
-            });
-        }
-        Key::Named(NamedKey::Backspace) => {
-            return Some(if alt {
-                b"\x1b\x7f".to_vec()
-            } else {
-                b"\x7f".to_vec()
-            });
-        }
-        Key::Named(NamedKey::Escape) => {
-            return Some(if alt {
-                b"\x1b\x1b".to_vec()
-            } else {
-                b"\x1b".to_vec()
-            });
-        }
-        Key::Named(NamedKey::ArrowUp) => return Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => return Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => return Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => return Some(b"\x1b[D".to_vec()),
-        Key::Named(NamedKey::Home) => return Some(b"\x1b[H".to_vec()),
-        Key::Named(NamedKey::End) => return Some(b"\x1b[F".to_vec()),
-        Key::Named(NamedKey::PageUp) => return Some(b"\x1b[5~".to_vec()),
-        Key::Named(NamedKey::PageDown) => return Some(b"\x1b[6~".to_vec()),
-        Key::Named(NamedKey::Insert) => return Some(b"\x1b[2~".to_vec()),
-        Key::Named(NamedKey::Delete) => return Some(b"\x1b[3~".to_vec()),
-        _ => {}
+    // 1. Named keys (Enter, Tab, Backspace, Escape, arrows, navigation)
+    if let Key::Named(named) = event.logical_key
+        && let Some(bytes) = encode_named_key(named, event.modifiers, modes)
+    {
+        return Some(bytes);
     }
 
     // 2. Ctrl + letter / symbol combinations
@@ -127,6 +88,71 @@ pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+fn encode_named_key(named: NamedKey, modifiers: ModifiersState, modes: &Modes) -> Option<Vec<u8>> {
+    let alt = modifiers.alt_key();
+    match named {
+        NamedKey::Enter => Some(if alt {
+            b"\x1b\r".to_vec()
+        } else {
+            b"\r".to_vec()
+        }),
+        NamedKey::Tab => {
+            if modifiers.shift_key() {
+                Some(b"\x1b[Z".to_vec())
+            } else if alt {
+                Some(b"\x1b\t".to_vec())
+            } else {
+                Some(b"\t".to_vec())
+            }
+        }
+        NamedKey::Backspace => Some(if alt {
+            b"\x1b\x7f".to_vec()
+        } else {
+            b"\x7f".to_vec()
+        }),
+        NamedKey::Escape => Some(if alt {
+            b"\x1b\x1b".to_vec()
+        } else {
+            b"\x1b".to_vec()
+        }),
+        NamedKey::ArrowUp => Some(if modes.application_cursor_keys {
+            b"\x1bOA".to_vec()
+        } else {
+            b"\x1b[A".to_vec()
+        }),
+        NamedKey::ArrowDown => Some(if modes.application_cursor_keys {
+            b"\x1bOB".to_vec()
+        } else {
+            b"\x1b[B".to_vec()
+        }),
+        NamedKey::ArrowRight => Some(if modes.application_cursor_keys {
+            b"\x1bOC".to_vec()
+        } else {
+            b"\x1b[C".to_vec()
+        }),
+        NamedKey::ArrowLeft => Some(if modes.application_cursor_keys {
+            b"\x1bOD".to_vec()
+        } else {
+            b"\x1b[D".to_vec()
+        }),
+        NamedKey::Home => Some(if modes.application_cursor_keys {
+            b"\x1bOH".to_vec()
+        } else {
+            b"\x1b[H".to_vec()
+        }),
+        NamedKey::End => Some(if modes.application_cursor_keys {
+            b"\x1bOF".to_vec()
+        } else {
+            b"\x1b[F".to_vec()
+        }),
+        NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
+        NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
+        NamedKey::Insert => Some(b"\x1b[2~".to_vec()),
+        NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
+        _ => None,
+    }
 }
 
 /// Translates a character combined with the Control modifier into its ASCII control code.
@@ -278,5 +304,31 @@ mod tests {
 
         let page_down = KeyEvent::simple(Key::Named(NamedKey::PageDown), None);
         assert_eq!(encode_key(&page_down, &modes), Some(b"\x1b[6~".to_vec()));
+    }
+
+    #[test]
+    fn honor_application_cursor_keys_mode() {
+        let modes = Modes {
+            application_cursor_keys: true,
+            ..Default::default()
+        };
+
+        let up = KeyEvent::simple(Key::Named(NamedKey::ArrowUp), None);
+        assert_eq!(encode_key(&up, &modes), Some(b"\x1bOA".to_vec()));
+
+        let down = KeyEvent::simple(Key::Named(NamedKey::ArrowDown), None);
+        assert_eq!(encode_key(&down, &modes), Some(b"\x1bOB".to_vec()));
+
+        let right = KeyEvent::simple(Key::Named(NamedKey::ArrowRight), None);
+        assert_eq!(encode_key(&right, &modes), Some(b"\x1bOC".to_vec()));
+
+        let left = KeyEvent::simple(Key::Named(NamedKey::ArrowLeft), None);
+        assert_eq!(encode_key(&left, &modes), Some(b"\x1bOD".to_vec()));
+
+        let home = KeyEvent::simple(Key::Named(NamedKey::Home), None);
+        assert_eq!(encode_key(&home, &modes), Some(b"\x1bOH".to_vec()));
+
+        let end = KeyEvent::simple(Key::Named(NamedKey::End), None);
+        assert_eq!(encode_key(&end, &modes), Some(b"\x1bOF".to_vec()));
     }
 }
