@@ -575,7 +575,7 @@ mod tests {
     fn build_cell_background_vertices_filters_default_bg() {
         let mut grid = Grid::new(5, 5);
         let verts_empty = build_cell_background_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
-        assert!(verts_empty.is_empty());
+        assert_eq!(verts_empty, Vec::<QuadVertex>::new());
 
         grid[0][0].bg = Color::Indexed(1);
         let verts_one = build_cell_background_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
@@ -627,7 +627,10 @@ mod tests {
             visible: false,
             shape: CursorShape::Block,
         };
-        assert!(build_cursor_vertices(&cursor, &metrics, color).is_empty());
+        assert_eq!(
+            build_cursor_vertices(&cursor, &metrics, color),
+            Vec::<QuadVertex>::new()
+        );
 
         // 2. Visible block cursor
         cursor.visible = true;
