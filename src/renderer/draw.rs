@@ -485,6 +485,7 @@ impl GlyphPipeline {
         }
 
         let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
+        let max_h = i32::try_from(ctx.screen_size[1]).unwrap_or(i32::MAX);
         let text_areas: Vec<TextArea> = buffers
             .iter()
             .map(|(row_idx, buffer)| {
@@ -496,9 +497,9 @@ impl GlyphPipeline {
                     scale: 1.0,
                     bounds: TextBounds {
                         left: 0,
-                        top: top as i32,
+                        top: 0,
                         right: max_w,
-                        bottom: (top + ctx.metrics.cell_height) as i32,
+                        bottom: max_h,
                     },
                     default_color: GlyphonColor::rgb(255, 255, 255),
                     custom_glyphs: &[],

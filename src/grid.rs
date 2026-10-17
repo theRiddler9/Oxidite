@@ -339,16 +339,26 @@ impl Grid {
                 }
             }
         } else if new_rows < self.rows {
-            // Shrink: push top lines to scrollback and shift cursor up
+            // Shrink: pop empty bottom rows if cursor is above them,
+            // otherwise push top lines to scrollback and shift cursor up.
             while self.visible_rows.len() > new_rows {
-                let row = self.visible_rows.remove(0);
-                if self.max_scrollback > 0 {
-                    if self.scrollback.len() >= self.max_scrollback {
-                        self.scrollback.pop_front();
+                if self.cursor.row < self.visible_rows.len() - 1
+                    && self
+                        .visible_rows
+                        .last()
+                        .is_some_and(|r| r.cells.iter().all(Cell::is_empty))
+                {
+                    self.visible_rows.pop();
+                } else {
+                    let row = self.visible_rows.remove(0);
+                    if self.max_scrollback > 0 {
+                        if self.scrollback.len() >= self.max_scrollback {
+                            self.scrollback.pop_front();
+                        }
+                        self.scrollback.push_back(row);
                     }
-                    self.scrollback.push_back(row);
+                    self.cursor.row = self.cursor.row.saturating_sub(1);
                 }
-                self.cursor.row = self.cursor.row.saturating_sub(1);
             }
         }
 
