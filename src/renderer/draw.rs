@@ -122,6 +122,44 @@ pub fn build_quad_vertices(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> [
     ]
 }
 
+/// Computes the effective foreground and background colors for a cell considering SGR attributes
+/// (such as INVERSE and DIM), returning `(effective_fg, effective_bg, has_visible_bg)`.
+#[allow(clippy::similar_names)]
+pub fn resolve_cell_colors(
+    cell: &crate::grid::Cell,
+    default_fg: [f32; 4],
+    default_bg: [f32; 4],
+    palette: &[[f32; 4]; 16],
+) -> ([f32; 4], [f32; 4], bool) {
+    let raw_fg = color_to_rgba(cell.fg, default_fg, palette);
+    let raw_bg = color_to_rgba(cell.bg, default_bg, palette);
+
+    let is_inverse = cell.attrs.contains(crate::grid::Attrs::INVERSE);
+    let (mut fg, bg, has_visible_bg) = if is_inverse {
+        let effective_fg = if cell.bg == Color::Default {
+            default_bg
+        } else {
+            raw_bg
+        };
+        let effective_bg = if cell.fg == Color::Default {
+            default_fg
+        } else {
+            raw_fg
+        };
+        (effective_fg, effective_bg, true)
+    } else {
+        (raw_fg, raw_bg, cell.bg != Color::Default)
+    };
+
+    if cell.attrs.contains(crate::grid::Attrs::DIM) {
+        fg[0] *= 0.65;
+        fg[1] *= 0.65;
+        fg[2] *= 0.65;
+    }
+
+    (fg, bg, has_visible_bg)
+}
+
 /// Gathers background quad vertices for all cells in `grid` that differ from default background.
 #[allow(clippy::cast_precision_loss)]
 pub fn build_cell_background_vertices(
@@ -136,16 +174,15 @@ pub fn build_cell_background_vertices(
         let Some(row_cells) = grid.display_row(row) else {
             continue;
         };
-        for col in 0..grid.cols {
-            let cell = &row_cells[col];
-            // Only draw background if cell background is not default
-            if cell.bg != Color::Default {
+        for (col, cell) in row_cells.iter().enumerate() {
+            let (_, bg_color, has_visible_bg) =
+                resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.0, 0.0, 0.0, 1.0], palette);
+            if has_visible_bg {
                 let x = col as f32 * cell_width;
                 let y = row as f32 * cell_height;
                 let w = f32::from(cell.width.max(1)) * cell_width;
                 let h = cell_height;
-                let color = color_to_rgba(cell.bg, [0.0, 0.0, 0.0, 1.0], palette);
-                vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, color));
+                vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, bg_color));
             }
         }
     }
@@ -182,7 +219,8 @@ pub fn build_text_decoration_vertices(
             let x = col as f32 * cell_width;
             let y = row as f32 * cell_height;
             let w = f32::from(cell.width.max(1)) * cell_width;
-            let line_color = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
+            let (line_color, _, _) =
+                resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.05, 0.05, 0.05, 1.0], palette);
 
             if has_underline {
                 let underline_thickness = (cell_height * 0.08).round().max(1.0);
@@ -522,7 +560,8 @@ fn collect_single_row_spans(
             continue;
         }
 
-        let fg_rgba = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
+        let (fg_rgba, _, _) =
+            resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.05, 0.05, 0.05, 1.0], palette);
         let color = GlyphonColor::rgba(
             float_to_u8(fg_rgba[0]),
             float_to_u8(fg_rgba[1]),
@@ -532,25 +571,30 @@ fn collect_single_row_spans(
         let is_bold = cell.attrs.contains(crate::grid::Attrs::BOLD);
         let is_italic = cell.attrs.contains(crate::grid::Attrs::ITALIC);
         let cell_style = (color, is_bold, is_italic);
+        let ch = if cell.attrs.contains(crate::grid::Attrs::HIDDEN) {
+            ' '
+        } else {
+            cell.ch
+        };
 
         if current_style == Some(cell_style) {
-            current_text.push(cell.ch);
+            current_text.push(ch);
         } else {
-            if !current_text.is_empty() {
-                if let Some((c, bold, italic)) = current_style {
-                    let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
-                    if bold {
-                        attrs = attrs.weight(Weight::BOLD);
-                    }
-                    if italic {
-                        attrs = attrs.style(Style::Italic);
-                    }
-                    spans.push((current_text, attrs));
+            if !current_text.is_empty()
+                && let Some((c, bold, italic)) = current_style
+            {
+                let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
+                if bold {
+                    attrs = attrs.weight(Weight::BOLD);
                 }
+                if italic {
+                    attrs = attrs.style(Style::Italic);
+                }
+                spans.push((current_text, attrs));
                 current_text = String::new();
             }
             current_style = Some(cell_style);
-            current_text.push(cell.ch);
+            current_text.push(ch);
         }
     }
 
@@ -919,5 +963,51 @@ mod tests {
         // Cell 2: 2 quads (12 verts) for both
         // Cell 3: 0 quads
         assert_eq!(vertices.len(), 24);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn resolve_cell_colors_inverse_dim_and_hidden() {
+        let default_fg = [0.9, 0.9, 0.9, 1.0];
+        let default_bg = [0.0, 0.0, 0.0, 1.0];
+
+        // Normal cell
+        let normal = crate::grid::Cell::new(
+            'A',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::empty(),
+            1,
+        );
+        let (fg, bg, has_bg) =
+            resolve_cell_colors(&normal, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(!has_bg);
+        assert!(approx_eq4(fg, DEFAULT_PALETTE[1]));
+        assert!(approx_eq4(bg, default_bg));
+
+        // Inverse cell: swaps fg and bg, forces visible bg
+        let inverse = crate::grid::Cell::new(
+            'B',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::INVERSE,
+            1,
+        );
+        let (inv_fg, inv_bg, inv_has_bg) =
+            resolve_cell_colors(&inverse, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(inv_has_bg);
+        assert!(approx_eq4(inv_fg, default_bg));
+        assert!(approx_eq4(inv_bg, DEFAULT_PALETTE[1]));
+
+        // Dim cell: reduces fg brightness
+        let dim = crate::grid::Cell::new(
+            'C',
+            Color::Indexed(7),
+            Color::Default,
+            crate::grid::Attrs::DIM,
+            1,
+        );
+        let (dim_fg, _, _) = resolve_cell_colors(&dim, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(dim_fg[0] < DEFAULT_PALETTE[7][0]);
     }
 }
