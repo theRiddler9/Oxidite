@@ -1,7 +1,7 @@
 //! Keyboard / mouse / paste encoding to PTY bytes.
 
 use winit::event::ElementState;
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::terminal::Modes;
 
@@ -54,8 +54,46 @@ pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
         return None;
     }
 
-    // 1. Printable text without Ctrl/Alt
-    if !event.modifiers.control_key() && !event.modifiers.alt_key() {
+    let alt = event.modifiers.alt_key();
+
+    // 1. Enter, Tab, Backspace, Escape
+    match event.logical_key {
+        Key::Named(NamedKey::Enter) => {
+            return Some(if alt {
+                b"\x1b\r".to_vec()
+            } else {
+                b"\r".to_vec()
+            });
+        }
+        Key::Named(NamedKey::Tab) => {
+            if event.modifiers.shift_key() {
+                return Some(b"\x1b[Z".to_vec());
+            }
+            return Some(if alt {
+                b"\x1b\t".to_vec()
+            } else {
+                b"\t".to_vec()
+            });
+        }
+        Key::Named(NamedKey::Backspace) => {
+            return Some(if alt {
+                b"\x1b\x7f".to_vec()
+            } else {
+                b"\x7f".to_vec()
+            });
+        }
+        Key::Named(NamedKey::Escape) => {
+            return Some(if alt {
+                b"\x1b\x1b".to_vec()
+            } else {
+                b"\x1b".to_vec()
+            });
+        }
+        _ => {}
+    }
+
+    // 2. Printable text without Ctrl/Alt
+    if !event.modifiers.control_key() && !alt {
         if let Some(ref text) = event.text {
             if !text.is_empty() {
                 return Some(text.as_bytes().to_vec());
@@ -93,5 +131,44 @@ mod tests {
             ElementState::Released,
         );
         assert_eq!(encode_key(&ev_released, &modes), None);
+    }
+
+    #[test]
+    fn encode_enter_tab_backspace_escape() {
+        let modes = Modes::default();
+
+        // Enter -> \r
+        let ev_enter = KeyEvent::simple(Key::Named(NamedKey::Enter), None);
+        assert_eq!(encode_key(&ev_enter, &modes), Some(b"\r".to_vec()));
+
+        // Tab -> \t
+        let ev_tab = KeyEvent::simple(Key::Named(NamedKey::Tab), None);
+        assert_eq!(encode_key(&ev_tab, &modes), Some(b"\t".to_vec()));
+
+        // Shift+Tab -> \x1b[Z
+        let ev_backtab = KeyEvent::new(
+            Key::Named(NamedKey::Tab),
+            None,
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_backtab, &modes), Some(b"\x1b[Z".to_vec()));
+
+        // Backspace -> \x7f
+        let ev_bs = KeyEvent::simple(Key::Named(NamedKey::Backspace), None);
+        assert_eq!(encode_key(&ev_bs, &modes), Some(b"\x7f".to_vec()));
+
+        // Escape -> \x1b
+        let ev_esc = KeyEvent::simple(Key::Named(NamedKey::Escape), None);
+        assert_eq!(encode_key(&ev_esc, &modes), Some(b"\x1b".to_vec()));
+
+        // Alt+Enter -> \x1b\r
+        let ev_alt_enter = KeyEvent::new(
+            Key::Named(NamedKey::Enter),
+            None,
+            ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_alt_enter, &modes), Some(b"\x1b\r".to_vec()));
     }
 }
