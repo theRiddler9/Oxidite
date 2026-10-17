@@ -89,6 +89,16 @@ pub fn encode_key(event: &KeyEvent, _modes: &Modes) -> Option<Vec<u8>> {
                 b"\x1b".to_vec()
             });
         }
+        Key::Named(NamedKey::ArrowUp) => return Some(b"\x1b[A".to_vec()),
+        Key::Named(NamedKey::ArrowDown) => return Some(b"\x1b[B".to_vec()),
+        Key::Named(NamedKey::ArrowRight) => return Some(b"\x1b[C".to_vec()),
+        Key::Named(NamedKey::ArrowLeft) => return Some(b"\x1b[D".to_vec()),
+        Key::Named(NamedKey::Home) => return Some(b"\x1b[H".to_vec()),
+        Key::Named(NamedKey::End) => return Some(b"\x1b[F".to_vec()),
+        Key::Named(NamedKey::PageUp) => return Some(b"\x1b[5~".to_vec()),
+        Key::Named(NamedKey::PageDown) => return Some(b"\x1b[6~".to_vec()),
+        Key::Named(NamedKey::Insert) => return Some(b"\x1b[2~".to_vec()),
+        Key::Named(NamedKey::Delete) => return Some(b"\x1b[3~".to_vec()),
         _ => {}
     }
 
@@ -239,5 +249,34 @@ mod tests {
             ElementState::Pressed,
         );
         assert_eq!(encode_key(&ev_ctrl_alt_c, &modes), Some(vec![0x1B, 0x03]));
+    }
+
+    #[test]
+    fn encode_arrows_home_end_page_navigation() {
+        let modes = Modes::default();
+
+        let up = KeyEvent::simple(Key::Named(NamedKey::ArrowUp), None);
+        assert_eq!(encode_key(&up, &modes), Some(b"\x1b[A".to_vec()));
+
+        let down = KeyEvent::simple(Key::Named(NamedKey::ArrowDown), None);
+        assert_eq!(encode_key(&down, &modes), Some(b"\x1b[B".to_vec()));
+
+        let right = KeyEvent::simple(Key::Named(NamedKey::ArrowRight), None);
+        assert_eq!(encode_key(&right, &modes), Some(b"\x1b[C".to_vec()));
+
+        let left = KeyEvent::simple(Key::Named(NamedKey::ArrowLeft), None);
+        assert_eq!(encode_key(&left, &modes), Some(b"\x1b[D".to_vec()));
+
+        let home = KeyEvent::simple(Key::Named(NamedKey::Home), None);
+        assert_eq!(encode_key(&home, &modes), Some(b"\x1b[H".to_vec()));
+
+        let end = KeyEvent::simple(Key::Named(NamedKey::End), None);
+        assert_eq!(encode_key(&end, &modes), Some(b"\x1b[F".to_vec()));
+
+        let page_up = KeyEvent::simple(Key::Named(NamedKey::PageUp), None);
+        assert_eq!(encode_key(&page_up, &modes), Some(b"\x1b[5~".to_vec()));
+
+        let page_down = KeyEvent::simple(Key::Named(NamedKey::PageDown), None);
+        assert_eq!(encode_key(&page_down, &modes), Some(b"\x1b[6~".to_vec()));
     }
 }
