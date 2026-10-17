@@ -76,9 +76,16 @@ pub fn encode_key(event: &KeyEvent, modes: &Modes) -> Option<Vec<u8>> {
         });
     }
 
-    // 3. Printable text without Ctrl/Alt
-    if !event.modifiers.control_key() && !alt {
-        if let Some(ref text) = event.text {
+    // 3. Characters / printable text (with or without Alt prefix)
+    if !event.modifiers.control_key() {
+        if alt {
+            if let Key::Character(ref ch) = event.logical_key {
+                let mut bytes = Vec::with_capacity(ch.len() + 1);
+                bytes.push(0x1b);
+                bytes.extend_from_slice(ch.as_bytes());
+                return Some(bytes);
+            }
+        } else if let Some(ref text) = event.text {
             if !text.is_empty() {
                 return Some(text.as_bytes().to_vec());
             }
@@ -373,5 +380,25 @@ mod tests {
             let ev = KeyEvent::simple(Key::Named(key), None);
             assert_eq!(encode_key(&ev, &modes), Some(exp.to_vec()));
         }
+    }
+
+    #[test]
+    fn encode_alt_as_esc_prefix() {
+        let modes = Modes::default();
+        let ev_alt_b = KeyEvent::new(
+            Key::Character(SmolStr::new("b")),
+            Some("b".to_string()),
+            ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_alt_b, &modes), Some(b"\x1bb".to_vec()));
+
+        let ev_alt_f = KeyEvent::new(
+            Key::Character(SmolStr::new("f")),
+            Some("f".to_string()),
+            ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(encode_key(&ev_alt_f, &modes), Some(b"\x1bf".to_vec()));
     }
 }
