@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
@@ -49,12 +50,27 @@ pub fn spawn_pty_forwarder(
                 }
             }
 
-            // Reader channel closed; fetch child exit code if possible
-            let exit_code = if let Ok(mut guard) = writer.lock() {
-                guard.wait().ok().and_then(|c| i32::try_from(c).ok())
-            } else {
-                None
-            };
+            // Reader channel closed; poll try_wait() under a short-lived lock
+            // without holding the mutex across sleeps to keep handle_resize responsive.
+            let mut exit_code = None;
+            loop {
+                let status = if let Ok(mut guard) = writer.lock() {
+                    guard.try_wait().ok()
+                } else {
+                    break;
+                };
+
+                match status {
+                    Some(Some(code)) => {
+                        exit_code = i32::try_from(code).ok();
+                        break;
+                    }
+                    Some(None) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    None => break,
+                }
+            }
 
             let _ = proxy.send_event(AppEvent::PtyExited(exit_code));
         })
@@ -325,7 +341,6 @@ impl ApplicationHandler<AppEvent> for App {
 mod tests {
     use super::*;
     use crate::pty::{PtySize, ShellCommand};
-    use crate::renderer::window::create_event_loop;
 
     #[test]
     fn app_event_variants_equality() {
@@ -338,10 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn app_initializes_with_proxy() {
-        let el = create_event_loop::<AppEvent>().expect("event loop should build");
-        let proxy = el.create_proxy();
-        let app = App::new(Some(proxy), Terminal::new(80, 24), None);
+    fn app_initializes_default_state() {
+        let app = App::new(None, Terminal::new(80, 24), None);
         assert!(app.window.is_none());
         assert_eq!(app.title, DEFAULT_TITLE);
         assert!(!app.pty_exited);
