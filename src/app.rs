@@ -145,7 +145,7 @@ pub struct App {
     /// Active application configuration.
     pub config: crate::config::Config,
     /// Background file watcher keeping track of config.toml modifications.
-    pub _config_watcher: Option<notify::RecommendedWatcher>,
+    pub config_watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl App {
@@ -207,7 +207,7 @@ impl App {
             last_bell_count,
             bell_triggered_at: None,
             config: crate::config::Config::default(),
-            _config_watcher: config_watcher,
+            config_watcher,
         }
     }
 
