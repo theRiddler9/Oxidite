@@ -96,6 +96,10 @@ pub struct App {
     pub pty_exit_code: Option<i32>,
     /// Terminal state containing grid, modes, cursor, and damage tracking.
     pub terminal: Terminal,
+    /// Base configured font size in points/pixels before DPI scaling or zoom.
+    pub base_font_size: f32,
+    /// Current display `HiDPI` scale factor.
+    pub scale_factor: f64,
     /// Measured cell dimensions for font layout and sizing calculations.
     pub cell_metrics: CellMetrics,
     /// PTY master writer for resizing and keyboard/mouse input forwarding.
@@ -133,8 +137,10 @@ impl App {
         terminal: Terminal,
         pty_writer: Option<Arc<Mutex<PtyWriter>>>,
     ) -> Self {
+        let base_font_size = 14.0;
+        let scale_factor = 1.0;
         let mut font_system = glyphon::FontSystem::new();
-        let cell_metrics = CellMetrics::measure(&mut font_system, 14.0, 1.2);
+        let cell_metrics = CellMetrics::measure(&mut font_system, base_font_size, 1.2);
 
         Self {
             proxy,
@@ -143,6 +149,8 @@ impl App {
             pty_exited: false,
             pty_exit_code: None,
             terminal,
+            base_font_size,
+            scale_factor,
             cell_metrics,
             pty_writer,
             gpu: None,
@@ -316,6 +324,31 @@ impl App {
         }
     }
 
+    /// Recalculates cell metrics based on the base font size and scale factor,
+    /// invalidates shaped glyph caches, and resizes grid and PTY.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn update_scale(&mut self) {
+        let effective_size = (self.base_font_size * (self.scale_factor as f32)).max(4.0);
+        let mut font_system = glyphon::FontSystem::new();
+        self.cell_metrics = CellMetrics::measure(&mut font_system, effective_size, 1.2);
+        if let Some(ref mut pipeline) = self.glyph_pipeline {
+            pipeline.glyph_cache.clear();
+        }
+        self.terminal.mark_all_dirty();
+        if let Some(win) = self.window.clone() {
+            self.handle_resize(win.inner_size());
+            win.request_redraw();
+        }
+    }
+
+    /// Handles changes to display `HiDPI` scale factor.
+    pub fn handle_scale_factor_changed(&mut self, scale_factor: f64) {
+        if (self.scale_factor - scale_factor).abs() > f64::EPSILON {
+            self.scale_factor = scale_factor;
+            self.update_scale();
+        }
+    }
+
     /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
     pub fn handle_pty_output(&mut self, bytes: &[u8]) {
         // Respond to DSR (Device Status Report: \x1b[6n) if requested by ConPTY/shell
@@ -476,7 +509,7 @@ impl ApplicationHandler<AppEvent> for App {
         if self.window.is_none() {
             match create_window(event_loop, &self.title) {
                 Ok(win) => {
-                    let size = win.inner_size();
+                    self.scale_factor = win.scale_factor();
                     match GpuContext::new(Arc::clone(&win)) {
                         Ok(gpu) => {
                             let quad_pipeline = QuadPipeline::new(&gpu.device, gpu.config.format);
@@ -489,7 +522,7 @@ impl ApplicationHandler<AppEvent> for App {
                         Err(err) => eprintln!("Failed to initialize GPU context: {err}"),
                     }
                     self.window = Some(win.clone());
-                    self.handle_resize(size);
+                    self.update_scale();
                     win.request_redraw();
                 }
                 Err(err) => eprintln!("Failed to create window: {err}"),
@@ -533,6 +566,9 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::Resized(size) => {
                 self.handle_resize(size);
                 win.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.handle_scale_factor_changed(scale_factor);
             }
             WindowEvent::RedrawRequested => {
                 self.render();
@@ -626,6 +662,20 @@ mod tests {
         assert!(app.pty_exit_code.is_none());
         assert_eq!(app.terminal.grid.cols, 80);
         assert_eq!(app.terminal.grid.rows, 24);
+        assert!((app.base_font_size - 14.0).abs() < f32::EPSILON);
+        assert!((app.scale_factor - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn scale_factor_change_recalculates_metrics() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        let orig_width = app.cell_metrics.cell_width;
+        let orig_height = app.cell_metrics.cell_height;
+
+        app.handle_scale_factor_changed(2.0);
+        assert!((app.scale_factor - 2.0).abs() < f64::EPSILON);
+        assert!(app.cell_metrics.cell_width > orig_width);
+        assert!(app.cell_metrics.cell_height > orig_height);
     }
 
     #[test]
