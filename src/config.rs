@@ -86,11 +86,91 @@ impl Default for Config {
     }
 }
 
+/// Loads a theme by name from either built-in presets or custom theme TOML files.
+///
+/// Lookups are attempted in the following order:
+/// 1. Built-in presets (e.g. `dracula`, `solarized-dark`, etc.)
+/// 2. User configuration themes directory (`<config_dir>/themes/<name>.toml`)
+/// 3. Application shipped themes directory (`./themes/<name>.toml`)
+#[must_use]
+pub fn load_theme_by_name(name: &str) -> Option<Theme> {
+    if let Some(preset) = Theme::preset_by_name(name) {
+        return Some(preset);
+    }
+
+    let file_name = if std::path::Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+    {
+        name.to_string()
+    } else {
+        format!("{name}.toml")
+    };
+
+    if let Some(mut dir) = themes_dir() {
+        dir.push(&file_name);
+        if let Ok(content) = std::fs::read_to_string(&dir) {
+            match Theme::from_toml(&content) {
+                Ok(theme) => return Some(theme),
+                Err(err) => log::warn!("failed to parse user theme '{}': {err}", dir.display()),
+            }
+        }
+    }
+
+    let shipped_path = PathBuf::from("themes").join(&file_name);
+    if let Ok(content) = std::fs::read_to_string(&shipped_path) {
+        match Theme::from_toml(&content) {
+            Ok(theme) => return Some(theme),
+            Err(err) => {
+                log::warn!(
+                    "failed to parse shipped theme '{}': {err}",
+                    shipped_path.display()
+                );
+            }
+        }
+    }
+
+    None
+}
+
+/// Discovers all available theme names across built-in presets and theme directories.
+#[must_use]
+pub fn available_themes() -> Vec<String> {
+    let mut names = Vec::new();
+    for preset in Theme::builtin_presets() {
+        names.push((*preset).to_string());
+    }
+
+    let mut scan_dir = |dir: &std::path::Path| {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_toml = path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("toml"));
+                if let (true, Some(stem)) = (is_toml, path.file_stem().and_then(|s| s.to_str())) {
+                    let stem_str = stem.to_string();
+                    if !names.contains(&stem_str) {
+                        names.push(stem_str);
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(user_themes) = themes_dir() {
+        scan_dir(&user_themes);
+    }
+    scan_dir(std::path::Path::new("themes"));
+
+    names
+}
+
 impl Config {
     /// Parses configuration from a TOML string.
     pub fn from_toml(content: &str) -> Result<Self, ConfigError> {
         let file: ConfigFile = toml::from_str(content)?;
-        let theme = Theme::preset_by_name(&file.theme).unwrap_or_else(|| {
+        let theme = load_theme_by_name(&file.theme).unwrap_or_else(|| {
             log::warn!("theme '{}' not found, using default-dark", file.theme);
             Theme::default_dark()
         });
@@ -177,5 +257,27 @@ theme = "nonexistent-theme-xyz"
     fn config_from_toml_invalid_toml_returns_err() {
         let toml_str = "invalid [ toml syntax";
         assert!(Config::from_toml(toml_str).is_err());
+    }
+
+    #[test]
+    fn available_themes_lists_all_builtins_and_shipped() {
+        let themes = available_themes();
+        assert!(themes.contains(&"dracula".to_string()));
+        assert!(themes.contains(&"solarized-dark".to_string()));
+        assert!(themes.contains(&"solarized-light".to_string()));
+        assert!(themes.contains(&"gruvbox-dark".to_string()));
+        assert!(themes.contains(&"nord".to_string()));
+        assert!(themes.contains(&"one-dark".to_string()));
+    }
+
+    #[test]
+    fn load_theme_by_name_resolves_presets_and_shipped() {
+        let dracula = load_theme_by_name("dracula").expect("dracula theme should resolve");
+        assert_eq!(dracula.name, "dracula");
+
+        let nord = load_theme_by_name("nord").expect("nord theme should resolve");
+        assert_eq!(nord.name, "nord");
+
+        assert!(load_theme_by_name("completely-missing-theme-name").is_none());
     }
 }
