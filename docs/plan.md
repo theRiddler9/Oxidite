@@ -109,12 +109,12 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 8 — Hardening and release
 
-- [ ] Property/fuzz tests, throughput bench
-- [ ] Platform fixes, CI matrix, release workflow
-- [ ] README, architecture diagram, LICENSE
-- [ ] Golden demo passes
-- [ ] `docs/learn/phase-8.md`
-- [ ] Tag: `phase-8-release`
+- [x] Property/fuzz tests, throughput bench
+- [x] Platform fixes, CI matrix, release workflow
+- [x] README, architecture diagram, LICENSE
+- [x] Golden demo passes
+- [x] `docs/learn/phase-8.md`
+- [x] Tag: `phase-8-release`
 
 ## Integration Notes
 
