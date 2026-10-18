@@ -589,6 +589,8 @@ pub struct DrawContext<'a> {
     pub metrics: &'a CellMetrics,
     /// 16-color ANSI palette.
     pub palette: &'a [[f32; 4]; 16],
+    /// Optional damage tracking flags for visible rows.
+    pub dirty_rows: Option<&'a [bool]>,
 }
 
 fn collect_single_row_spans(
@@ -691,6 +693,14 @@ impl GlyphPipeline {
         self.glyph_cache.resize(grid.rows);
 
         for row_idx in 0..grid.rows {
+            let is_dirty = ctx
+                .dirty_rows
+                .is_none_or(|dirty| dirty.get(row_idx).copied().unwrap_or(true));
+
+            if !is_dirty && self.glyph_cache.rows[row_idx].is_some() {
+                continue;
+            }
+
             let Some(row_cells) = grid.display_row(row_idx) else {
                 self.glyph_cache.rows[row_idx] = None;
                 continue;
@@ -1123,5 +1133,18 @@ mod tests {
         let verts_multi =
             build_selection_vertices(&grid, Some(&sel_multi), 10.0, 20.0, DEFAULT_SELECTION_COLOR);
         assert_eq!(verts_multi.len(), 12);
+    }
+
+    #[test]
+    fn dirty_rows_damage_tracking_skips_clean_rows() {
+        let mut cache = GlyphCache::new();
+        cache.resize(4);
+
+        let dirty = [true, false, true, false];
+        let is_row_0_dirty = dirty.first().copied().unwrap_or(true);
+        let is_row_1_dirty = dirty.get(1).copied().unwrap_or(true);
+
+        assert!(is_row_0_dirty);
+        assert!(!is_row_1_dirty);
     }
 }

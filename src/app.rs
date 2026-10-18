@@ -187,19 +187,23 @@ impl App {
                 InputAction::ScrollUp(lines) => {
                     let delta = isize::try_from(lines).unwrap_or(12);
                     self.terminal.grid.scroll_display(delta);
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                 }
                 InputAction::ScrollDown(lines) => {
                     let delta = isize::try_from(lines).unwrap_or(12);
                     self.terminal.grid.scroll_display(-delta);
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                 }
                 InputAction::ScrollToTop => {
                     self.terminal.grid.scroll_to_top();
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                 }
                 InputAction::ScrollToBottom => {
                     self.terminal.grid.scroll_to_bottom();
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                 }
                 InputAction::Copy => {
@@ -215,6 +219,7 @@ impl App {
         if let Some(bytes) = encode_key(&key_event, &self.terminal.modes) {
             if self.terminal.grid.display_offset > 0 {
                 self.terminal.grid.scroll_to_bottom();
+                self.terminal.mark_all_dirty();
                 win.request_redraw();
             }
             if let Some(ref writer) = self.pty_writer
@@ -248,6 +253,7 @@ impl App {
         };
         if lines != 0 {
             self.terminal.grid.scroll_display(lines);
+            self.terminal.mark_all_dirty();
             win.request_redraw();
         }
     }
@@ -331,45 +337,45 @@ impl App {
         }
     }
 
-fn assemble_quad_vertices(
-    terminal: &Terminal,
-    selection: Option<&Selection>,
-    metrics: &CellMetrics,
-    cursor_blink_visible: bool,
-    has_focus: bool,
-) -> Vec<crate::renderer::draw::QuadVertex> {
-    let mut quad_vertices = build_cell_background_vertices(
-        &terminal.grid,
-        metrics.cell_width,
-        metrics.cell_height,
-        &DEFAULT_PALETTE,
-    );
-    quad_vertices.extend_from_slice(&build_text_decoration_vertices(
-        &terminal.grid,
-        metrics.cell_width,
-        metrics.cell_height,
-        &DEFAULT_PALETTE,
-    ));
-    let should_draw_cursor = terminal.grid.display_offset == 0
-        && terminal.grid.cursor.visible
-        && (!terminal.cursor_blinking || cursor_blink_visible || !has_focus);
+    fn assemble_quad_vertices(
+        terminal: &Terminal,
+        selection: Option<&Selection>,
+        metrics: &CellMetrics,
+        cursor_blink_visible: bool,
+        has_focus: bool,
+    ) -> Vec<crate::renderer::draw::QuadVertex> {
+        let mut quad_vertices = build_cell_background_vertices(
+            &terminal.grid,
+            metrics.cell_width,
+            metrics.cell_height,
+            &DEFAULT_PALETTE,
+        );
+        quad_vertices.extend_from_slice(&build_text_decoration_vertices(
+            &terminal.grid,
+            metrics.cell_width,
+            metrics.cell_height,
+            &DEFAULT_PALETTE,
+        ));
+        let should_draw_cursor = terminal.grid.display_offset == 0
+            && terminal.grid.cursor.visible
+            && (!terminal.cursor_blinking || cursor_blink_visible || !has_focus);
 
-    if should_draw_cursor {
-        let cursor_vertices =
-            build_cursor_vertices(&terminal.grid.cursor, metrics, [0.8, 0.8, 0.8, 0.8]);
-        quad_vertices.extend_from_slice(&cursor_vertices);
+        if should_draw_cursor {
+            let cursor_vertices =
+                build_cursor_vertices(&terminal.grid.cursor, metrics, [0.8, 0.8, 0.8, 0.8]);
+            quad_vertices.extend_from_slice(&cursor_vertices);
+        }
+
+        quad_vertices.extend_from_slice(&build_selection_vertices(
+            &terminal.grid,
+            selection,
+            metrics.cell_width,
+            metrics.cell_height,
+            DEFAULT_SELECTION_COLOR,
+        ));
+
+        quad_vertices
     }
-
-    quad_vertices.extend_from_slice(&build_selection_vertices(
-        &terminal.grid,
-        selection,
-        metrics.cell_width,
-        metrics.cell_height,
-        DEFAULT_SELECTION_COLOR,
-    ));
-
-    quad_vertices
-}
 
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
     #[allow(clippy::cast_precision_loss)]
@@ -454,6 +460,7 @@ fn assemble_quad_vertices(
                 screen_size: [gpu.config.width, gpu.config.height],
                 metrics: &self.cell_metrics,
                 palette: &DEFAULT_PALETTE,
+                dirty_rows: Some(&self.terminal.dirty_rows),
             };
             let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
         }
