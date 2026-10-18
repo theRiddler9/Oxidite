@@ -48,8 +48,18 @@ pub enum ConfigError {
 pub struct ConfigFile {
     /// Active theme name.
     pub theme: String,
+    /// Primary font family name (e.g. "monospace", "`JetBrains Mono`").
+    pub font_family: String,
     /// Font size in points.
     pub font_size: f32,
+    /// Horizontal window padding in pixels.
+    pub padding_x: f32,
+    /// Vertical window padding in pixels.
+    pub padding_y: f32,
+    /// Optional custom shell program path or command.
+    pub shell: Option<String>,
+    /// Optional command-line arguments for the custom shell.
+    pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
 }
@@ -58,7 +68,12 @@ impl Default for ConfigFile {
     fn default() -> Self {
         Self {
             theme: "default-dark".to_string(),
+            font_family: "monospace".to_string(),
             font_size: 14.0,
+            padding_x: 4.0,
+            padding_y: 4.0,
+            shell: None,
+            shell_args: Vec::new(),
             scrollback_lines: 10_000,
         }
     }
@@ -69,8 +84,18 @@ impl Default for ConfigFile {
 pub struct Config {
     /// Active color theme.
     pub theme: Theme,
+    /// Primary font family name (e.g. "monospace", "`JetBrains Mono`").
+    pub font_family: String,
     /// Font size in points.
     pub font_size: f32,
+    /// Horizontal window padding in pixels.
+    pub padding_x: f32,
+    /// Vertical window padding in pixels.
+    pub padding_y: f32,
+    /// Optional custom shell program path or command.
+    pub shell: Option<String>,
+    /// Optional command-line arguments for the custom shell.
+    pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
 }
@@ -80,7 +105,12 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: Theme::default_dark(),
+            font_family: "monospace".to_string(),
             font_size: 14.0,
+            padding_x: 4.0,
+            padding_y: 4.0,
+            shell: None,
+            shell_args: Vec::new(),
             scrollback_lines: 10_000,
         }
     }
@@ -177,7 +207,12 @@ impl Config {
 
         Ok(Self {
             theme,
+            font_family: file.font_family,
             font_size: file.font_size,
+            padding_x: file.padding_x,
+            padding_y: file.padding_y,
+            shell: file.shell,
+            shell_args: file.shell_args,
             scrollback_lines: file.scrollback_lines,
         })
     }
@@ -201,7 +236,12 @@ mod tests {
     fn config_defaults_match_expected() {
         let config = Config::default();
         assert_eq!(config.theme.name, "default-dark");
+        assert_eq!(config.font_family, "monospace");
         assert!((config.font_size - 14.0).abs() < f32::EPSILON);
+        assert!((config.padding_x - 4.0).abs() < f32::EPSILON);
+        assert!((config.padding_y - 4.0).abs() < f32::EPSILON);
+        assert!(config.shell.is_none());
+        assert!(config.shell_args.is_empty());
         assert_eq!(config.scrollback_lines, 10_000);
     }
 
@@ -227,7 +267,12 @@ mod tests {
     fn config_from_toml_empty_uses_defaults() {
         let config = Config::from_toml("").expect("empty config should parse to defaults");
         assert_eq!(config.theme.name, "default-dark");
+        assert_eq!(config.font_family, "monospace");
         assert!((config.font_size - 14.0).abs() < f32::EPSILON);
+        assert!((config.padding_x - 4.0).abs() < f32::EPSILON);
+        assert!((config.padding_y - 4.0).abs() < f32::EPSILON);
+        assert!(config.shell.is_none());
+        assert!(config.shell_args.is_empty());
         assert_eq!(config.scrollback_lines, 10_000);
     }
 
@@ -235,12 +280,22 @@ mod tests {
     fn config_from_toml_custom_values() {
         let toml_str = r#"
 theme = "dracula"
+font_family = "JetBrains Mono"
 font_size = 16.5
+padding_x = 8.0
+padding_y = 12.0
+shell = "/bin/zsh"
+shell_args = ["-l"]
 scrollback_lines = 5000
 "#;
         let config = Config::from_toml(toml_str).expect("custom config should parse");
         assert_eq!(config.theme.name, "dracula");
+        assert_eq!(config.font_family, "JetBrains Mono");
         assert!((config.font_size - 16.5).abs() < f32::EPSILON);
+        assert!((config.padding_x - 8.0).abs() < f32::EPSILON);
+        assert!((config.padding_y - 12.0).abs() < f32::EPSILON);
+        assert_eq!(config.shell, Some("/bin/zsh".to_string()));
+        assert_eq!(config.shell_args, vec!["-l".to_string()]);
         assert_eq!(config.scrollback_lines, 5000);
     }
 
