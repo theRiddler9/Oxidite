@@ -42,6 +42,161 @@ pub enum ConfigError {
     Theme(#[from] crate::theme::ThemeError),
 }
 
+/// Configurable keyboard shortcuts mapping to terminal actions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct KeybindingsConfig {
+    /// Copy selection to clipboard.
+    pub copy: String,
+    /// Paste clipboard text into PTY.
+    pub paste: String,
+    /// Increase font size.
+    pub zoom_in: String,
+    /// Decrease font size.
+    pub zoom_out: String,
+    /// Reset font size to default.
+    pub zoom_reset: String,
+    /// Scroll up in history.
+    pub scroll_up: String,
+    /// Scroll down in history.
+    pub scroll_down: String,
+    /// Scroll to top of history.
+    pub scroll_to_top: String,
+    /// Scroll to bottom of history.
+    pub scroll_to_bottom: String,
+    /// Cycle to next available theme.
+    pub cycle_theme: String,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self {
+            copy: "Ctrl+Shift+C".to_string(),
+            paste: "Ctrl+Shift+V".to_string(),
+            zoom_in: "Ctrl+=".to_string(),
+            zoom_out: "Ctrl+-".to_string(),
+            zoom_reset: "Ctrl+0".to_string(),
+            scroll_up: "Shift+PageUp".to_string(),
+            scroll_down: "Shift+PageDown".to_string(),
+            scroll_to_top: "Shift+Home".to_string(),
+            scroll_to_bottom: "Shift+End".to_string(),
+            cycle_theme: "Ctrl+Shift+T".to_string(),
+        }
+    }
+}
+
+/// Matches a string keybinding specification (e.g. `"Ctrl+Shift+C"`) against a `KeyEvent`.
+#[must_use]
+pub fn matches_keybinding(binding: &str, event: &crate::input::KeyEvent) -> bool {
+    if event.state != winit::event::ElementState::Pressed {
+        return false;
+    }
+
+    let mut need_ctrl = false;
+    let mut need_shift = false;
+    let mut need_alt = false;
+    let mut need_super = false;
+    let mut key_part = "";
+
+    for part in binding.split('+') {
+        let trimmed = part.trim();
+        if trimmed.eq_ignore_ascii_case("ctrl") || trimmed.eq_ignore_ascii_case("control") {
+            need_ctrl = true;
+        } else if trimmed.eq_ignore_ascii_case("shift") {
+            need_shift = true;
+        } else if trimmed.eq_ignore_ascii_case("alt")
+            || trimmed.eq_ignore_ascii_case("opt")
+            || trimmed.eq_ignore_ascii_case("option")
+        {
+            need_alt = true;
+        } else if trimmed.eq_ignore_ascii_case("super")
+            || trimmed.eq_ignore_ascii_case("cmd")
+            || trimmed.eq_ignore_ascii_case("command")
+            || trimmed.eq_ignore_ascii_case("win")
+        {
+            need_super = true;
+        } else {
+            key_part = trimmed;
+        }
+    }
+
+    if event.modifiers.control_key() != need_ctrl
+        || event.modifiers.shift_key() != need_shift
+        || event.modifiers.alt_key() != need_alt
+        || event.modifiers.super_key() != need_super
+    {
+        return false;
+    }
+
+    match &event.logical_key {
+        winit::keyboard::Key::Named(named) => match named {
+            winit::keyboard::NamedKey::PageUp => {
+                key_part.eq_ignore_ascii_case("pageup") || key_part.eq_ignore_ascii_case("page_up")
+            }
+            winit::keyboard::NamedKey::PageDown => {
+                key_part.eq_ignore_ascii_case("pagedown")
+                    || key_part.eq_ignore_ascii_case("page_down")
+            }
+            winit::keyboard::NamedKey::Home => key_part.eq_ignore_ascii_case("home"),
+            winit::keyboard::NamedKey::End => key_part.eq_ignore_ascii_case("end"),
+            _ => false,
+        },
+        winit::keyboard::Key::Character(ch) => {
+            if ch.eq_ignore_ascii_case(key_part) {
+                return true;
+            }
+            if ((key_part == "+" || key_part == "=") && (ch == "+" || ch == "="))
+                || (key_part == "-" && (ch == "-" || ch == "_"))
+            {
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+impl KeybindingsConfig {
+    /// Maps a key event to an `InputAction` based on configured bindings.
+    #[must_use]
+    pub fn check_action(
+        &self,
+        event: &crate::input::KeyEvent,
+    ) -> Option<crate::input::InputAction> {
+        if matches_keybinding(&self.copy, event) {
+            return Some(crate::input::InputAction::Copy);
+        }
+        if matches_keybinding(&self.paste, event) {
+            return Some(crate::input::InputAction::Paste);
+        }
+        if matches_keybinding(&self.zoom_in, event) {
+            return Some(crate::input::InputAction::ZoomIn);
+        }
+        if matches_keybinding(&self.zoom_out, event) {
+            return Some(crate::input::InputAction::ZoomOut);
+        }
+        if matches_keybinding(&self.zoom_reset, event) {
+            return Some(crate::input::InputAction::ZoomReset);
+        }
+        if matches_keybinding(&self.scroll_up, event) {
+            return Some(crate::input::InputAction::ScrollUp(12));
+        }
+        if matches_keybinding(&self.scroll_down, event) {
+            return Some(crate::input::InputAction::ScrollDown(12));
+        }
+        if matches_keybinding(&self.scroll_to_top, event) {
+            return Some(crate::input::InputAction::ScrollToTop);
+        }
+        if matches_keybinding(&self.scroll_to_bottom, event) {
+            return Some(crate::input::InputAction::ScrollToBottom);
+        }
+        if matches_keybinding(&self.cycle_theme, event) {
+            return Some(crate::input::InputAction::CycleTheme);
+        }
+        None
+    }
+}
+
 /// Representation of `config.toml` structure for serde deserialization.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -62,6 +217,8 @@ pub struct ConfigFile {
     pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
+    /// Configurable keybindings.
+    pub keybindings: KeybindingsConfig,
 }
 
 impl Default for ConfigFile {
@@ -75,6 +232,7 @@ impl Default for ConfigFile {
             shell: None,
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -98,6 +256,8 @@ pub struct Config {
     pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
+    /// Configurable keybindings.
+    pub keybindings: KeybindingsConfig,
 }
 
 impl Default for Config {
@@ -112,6 +272,7 @@ impl Default for Config {
             shell: None,
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -214,6 +375,7 @@ impl Config {
             shell: file.shell,
             shell_args: file.shell_args,
             scrollback_lines: file.scrollback_lines,
+            keybindings: file.keybindings,
         })
     }
 
@@ -334,5 +496,44 @@ theme = "nonexistent-theme-xyz"
         assert_eq!(nord.name, "nord");
 
         assert!(load_theme_by_name("completely-missing-theme-name").is_none());
+    }
+
+    #[test]
+    fn config_keybindings_parsing_and_action_dispatch() {
+        let toml_str = r#"
+[keybindings]
+copy = "Ctrl+Shift+X"
+paste = "Ctrl+Shift+Y"
+cycle_theme = "Ctrl+Shift+Space"
+"#;
+        let config =
+            Config::from_toml(toml_str).expect("config with custom keybindings should parse");
+        assert_eq!(config.keybindings.copy, "Ctrl+Shift+X");
+        assert_eq!(config.keybindings.paste, "Ctrl+Shift+Y");
+        assert_eq!(config.keybindings.cycle_theme, "Ctrl+Shift+Space");
+
+        let mut modifiers = winit::keyboard::ModifiersState::empty();
+        modifiers |= winit::keyboard::ModifiersState::CONTROL;
+        modifiers |= winit::keyboard::ModifiersState::SHIFT;
+
+        let ev_x = crate::input::KeyEvent::new(
+            winit::keyboard::Key::Character("x".into()),
+            Some("x".to_string()),
+            modifiers,
+            winit::event::ElementState::Pressed,
+        );
+        assert_eq!(
+            config.keybindings.check_action(&ev_x),
+            Some(crate::input::InputAction::Copy)
+        );
+
+        let ev_c = crate::input::KeyEvent::new(
+            winit::keyboard::Key::Character("c".into()),
+            Some("c".to_string()),
+            modifiers,
+            winit::event::ElementState::Pressed,
+        );
+        // Default C is overridden by X in this config
+        assert_eq!(config.keybindings.check_action(&ev_c), None);
     }
 }

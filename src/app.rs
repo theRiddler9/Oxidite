@@ -142,6 +142,8 @@ pub struct App {
     pub last_bell_count: u64,
     /// Timestamp when visual bell was triggered, if currently active.
     pub bell_triggered_at: Option<std::time::Instant>,
+    /// Active application configuration.
+    pub config: crate::config::Config,
 }
 
 impl App {
@@ -193,6 +195,7 @@ impl App {
             has_focus: true,
             last_bell_count,
             bell_triggered_at: None,
+            config: crate::config::Config::default(),
         }
     }
 
@@ -218,7 +221,13 @@ impl App {
             key_ev.state,
         );
 
-        if let Some(action) = check_input_action(&key_event) {
+        let action = self
+            .config
+            .keybindings
+            .check_action(&key_event)
+            .or_else(|| check_input_action(&key_event));
+
+        if let Some(action) = action {
             match action {
                 InputAction::ScrollUp(lines) => {
                     let delta = isize::try_from(lines).unwrap_or(12);
@@ -256,6 +265,9 @@ impl App {
                 }
                 InputAction::ZoomReset => {
                     self.zoom_reset();
+                }
+                InputAction::CycleTheme => {
+                    self.cycle_theme(win);
                 }
             }
             return;
@@ -402,6 +414,26 @@ impl App {
     pub fn zoom_reset(&mut self) {
         self.base_font_size = Self::DEFAULT_FONT_SIZE;
         self.update_scale();
+    }
+
+    /// Cycles to the next available color theme.
+    pub fn cycle_theme(&mut self, win: &Window) {
+        let themes = crate::config::available_themes();
+        if themes.is_empty() {
+            return;
+        }
+        let current_index = themes
+            .iter()
+            .position(|name| name == &self.config.theme.name)
+            .unwrap_or(0);
+        let next_index = (current_index + 1) % themes.len();
+        let next_theme_name = &themes[next_index];
+        if let Some(next_theme) = crate::config::load_theme_by_name(next_theme_name) {
+            log::info!("Switched theme to '{}'", next_theme.name);
+            self.config.theme = next_theme;
+            self.terminal.mark_all_dirty();
+            win.request_redraw();
+        }
     }
 
     /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
