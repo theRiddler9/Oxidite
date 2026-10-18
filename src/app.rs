@@ -15,8 +15,8 @@ use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
     DEFAULT_PALETTE, DEFAULT_SELECTION_COLOR, DrawContext, GlyphPipeline, QuadPipeline,
-    build_cell_background_vertices, build_cursor_vertices_with_width, build_selection_vertices,
-    build_text_decoration_vertices,
+    build_cell_background_vertices, build_cursor_vertices_with_width, build_quad_vertices,
+    build_selection_vertices, build_text_decoration_vertices,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -128,6 +128,10 @@ pub struct App {
     pub cursor_blink_visible: bool,
     /// Whether the window currently has keyboard focus.
     pub has_focus: bool,
+    /// Last seen bell count from the terminal.
+    pub last_bell_count: u64,
+    /// Timestamp when visual bell was triggered, if currently active.
+    pub bell_triggered_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -139,6 +143,8 @@ impl App {
     pub const MAX_FONT_SIZE: f32 = 48.0;
     /// Base font size change per zoom step.
     pub const FONT_SIZE_STEP: f32 = 1.0;
+    /// Duration of the visual bell flash.
+    pub const VISUAL_BELL_DURATION: Duration = Duration::from_millis(100);
 
     /// Creates a new `App` instance with the given event loop proxy, terminal, and optional PTY writer.
     pub fn new(
@@ -150,6 +156,7 @@ impl App {
         let scale_factor = 1.0;
         let mut font_system = glyphon::FontSystem::new();
         let cell_metrics = CellMetrics::measure(&mut font_system, base_font_size, 1.2);
+        let last_bell_count = terminal.bell_count;
 
         Self {
             proxy,
@@ -174,6 +181,8 @@ impl App {
             last_blink: std::time::Instant::now(),
             cursor_blink_visible: true,
             has_focus: true,
+            last_bell_count,
+            bell_triggered_at: None,
         }
     }
 
@@ -413,6 +422,15 @@ impl App {
             }
         }
 
+        // Trigger visual bell if bell count increased
+        if self.terminal.bell_count != self.last_bell_count {
+            self.last_bell_count = self.terminal.bell_count;
+            self.bell_triggered_at = Some(std::time::Instant::now());
+            if let Some(ref win) = self.window {
+                win.request_redraw();
+            }
+        }
+
         if self.terminal.has_damage()
             && let Some(ref win) = self.window
         {
@@ -426,6 +444,8 @@ impl App {
         metrics: &CellMetrics,
         cursor_blink_visible: bool,
         has_focus: bool,
+        bell_active: bool,
+        screen_size: [f32; 2],
     ) -> Vec<crate::renderer::draw::QuadVertex> {
         let mut quad_vertices = build_cell_background_vertices(
             &terminal.grid,
@@ -464,6 +484,16 @@ impl App {
             metrics.cell_height,
             DEFAULT_SELECTION_COLOR,
         ));
+
+        if bell_active {
+            quad_vertices.extend_from_slice(&build_quad_vertices(
+                0.0,
+                0.0,
+                screen_size[0],
+                screen_size[1],
+                [1.0, 1.0, 1.0, 0.25],
+            ));
+        }
 
         quad_vertices
     }
@@ -505,12 +535,18 @@ impl App {
                 label: Some("render-encoder"),
             });
 
+        let is_bell_active = self
+            .bell_triggered_at
+            .is_some_and(|t| t.elapsed() < Self::VISUAL_BELL_DURATION);
+
         let quad_vertices = Self::assemble_quad_vertices(
             &self.terminal,
             self.selection.as_ref(),
             &self.cell_metrics,
             self.cursor_blink_visible,
             self.has_focus,
+            is_bell_active,
+            [gpu.config.width as f32, gpu.config.height as f32],
         );
 
         {
@@ -684,6 +720,21 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut wait_duration: Option<Duration> = None;
+
+        if let Some(triggered) = self.bell_triggered_at {
+            let elapsed = triggered.elapsed();
+            if elapsed >= Self::VISUAL_BELL_DURATION {
+                self.bell_triggered_at = None;
+                if let Some(ref win) = self.window {
+                    win.request_redraw();
+                }
+            } else {
+                let remaining = Self::VISUAL_BELL_DURATION.saturating_sub(elapsed);
+                wait_duration = Some(remaining);
+            }
+        }
+
         if self.terminal.cursor_blinking && self.has_focus {
             let elapsed = self.last_blink.elapsed();
             if elapsed >= Duration::from_millis(500) {
@@ -694,7 +745,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             let remaining = Duration::from_millis(500).saturating_sub(self.last_blink.elapsed());
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::wait_duration(remaining));
+            wait_duration = Some(wait_duration.map_or(remaining, |w| w.min(remaining)));
+        }
+
+        if let Some(duration) = wait_duration {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::wait_duration(duration));
         } else {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
@@ -833,5 +888,52 @@ mod tests {
         app.handle_pty_output(b"\x1b]2;Another Terminal Title\x07");
         assert_eq!(app.title, "Another Terminal Title");
         assert_eq!(app.terminal.title, "Another Terminal Title");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn visual_bell_triggers_on_bel_control_char() {
+        let term = Terminal::new(80, 24);
+        let mut app = App::new(None, term, None);
+        assert_eq!(app.terminal.bell_count, 0);
+        assert!(app.bell_triggered_at.is_none());
+
+        // Feeding \x07 (BEL) increments terminal.bell_count and activates visual bell
+        app.handle_pty_output(b"\x07");
+        assert_eq!(app.terminal.bell_count, 1);
+        assert_eq!(app.last_bell_count, 1);
+        assert!(app.bell_triggered_at.is_some());
+
+        // Verify that assemble_quad_vertices appends the visual bell quad when bell_active is true
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let quads_no_bell = App::assemble_quad_vertices(
+            &app.terminal,
+            None,
+            &metrics,
+            true,
+            true,
+            false,
+            [800.0, 480.0],
+        );
+        let quads_with_bell = App::assemble_quad_vertices(
+            &app.terminal,
+            None,
+            &metrics,
+            true,
+            true,
+            true,
+            [800.0, 480.0],
+        );
+
+        // Quads with bell should have 6 extra vertices (1 extra quad covering 800x480)
+        assert_eq!(quads_with_bell.len(), quads_no_bell.len() + 6);
+        let bell_vertex = quads_with_bell.last().unwrap();
+        assert_eq!(bell_vertex.position, [800.0, 480.0]);
+        assert_eq!(bell_vertex.color, [1.0, 1.0, 1.0, 0.25]);
     }
 }
