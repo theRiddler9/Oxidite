@@ -29,6 +29,9 @@ pub const DEFAULT_PALETTE: [[f32; 4]; 16] = [
     [1.0, 1.0, 1.0, 1.0],    // 15: Bright White
 ];
 
+/// Default selection highlight quad color (semi-transparent blue).
+pub const DEFAULT_SELECTION_COLOR: [f32; 4] = [0.25, 0.45, 0.85, 0.4];
+
 /// Standard 6x6x6 color cube normalized component steps for xterm 256-color palette.
 pub const CUBE_STEPS: [f32; 6] = [
     0.0,
@@ -251,6 +254,45 @@ pub fn build_text_decoration_vertices(
                     line_color,
                 ));
             }
+        }
+    }
+
+    vertices
+}
+
+/// Builds quad vertices for highlighted selection text regions.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_selection_vertices(
+    grid: &Grid,
+    selection: Option<&crate::input::Selection>,
+    cell_width: f32,
+    cell_height: f32,
+    color: [f32; 4],
+) -> Vec<QuadVertex> {
+    let mut vertices = Vec::new();
+    let Some(sel) = selection else {
+        return vertices;
+    };
+
+    let (min, max) = sel.normalized();
+    for row in min.row..=max.row {
+        if row >= grid.rows {
+            break;
+        }
+
+        let start_col = if row == min.row { min.col } else { 0 };
+        let end_col = if row == max.row {
+            max.col.min(grid.cols.saturating_sub(1))
+        } else {
+            grid.cols.saturating_sub(1)
+        };
+
+        if start_col <= end_col {
+            let x = start_col as f32 * cell_width;
+            let y = row as f32 * cell_height;
+            let w = (end_col - start_col + 1) as f32 * cell_width;
+            let h = cell_height;
+            vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, color));
         }
     }
 
@@ -1046,5 +1088,40 @@ mod tests {
             gray_end,
             [238.0 / 255.0, 238.0 / 255.0, 238.0 / 255.0, 1.0]
         ));
+    }
+
+    #[test]
+    fn build_selection_vertices_shapes_and_bounds() {
+        let grid = Grid::new(10, 5);
+        // None selection -> empty
+        assert_eq!(
+            build_selection_vertices(&grid, None, 10.0, 20.0, DEFAULT_SELECTION_COLOR),
+            Vec::<QuadVertex>::new()
+        );
+
+        // Single line selection: cols 2..=5 on row 1 -> 1 quad = 6 vertices
+        let sel_single = crate::input::Selection::new(
+            crate::input::GridPoint::new(2, 1),
+            crate::input::GridPoint::new(5, 1),
+        );
+        let verts_single = build_selection_vertices(
+            &grid,
+            Some(&sel_single),
+            10.0,
+            20.0,
+            DEFAULT_SELECTION_COLOR,
+        );
+        assert_eq!(verts_single.len(), 6);
+        assert!(approx_eq(verts_single[0].position, [20.0, 20.0]));
+        assert!(approx_eq(verts_single[5].position, [60.0, 40.0])); // (5 - 2 + 1) * 10 = 40w -> x: 20..60
+
+        // Multi-line selection: rows 1 to 2 -> 2 quads = 12 vertices
+        let sel_multi = crate::input::Selection::new(
+            crate::input::GridPoint::new(8, 1),
+            crate::input::GridPoint::new(3, 2),
+        );
+        let verts_multi =
+            build_selection_vertices(&grid, Some(&sel_multi), 10.0, 20.0, DEFAULT_SELECTION_COLOR);
+        assert_eq!(verts_multi.len(), 12);
     }
 }

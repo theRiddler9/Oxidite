@@ -14,8 +14,9 @@ use crate::input::{
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
-    DEFAULT_PALETTE, DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
-    build_cursor_vertices, build_quad_vertices, build_text_decoration_vertices,
+    DEFAULT_PALETTE, DEFAULT_SELECTION_COLOR, DrawContext, GlyphPipeline, QuadPipeline,
+    build_cell_background_vertices, build_cursor_vertices, build_selection_vertices,
+    build_text_decoration_vertices,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -168,34 +169,6 @@ impl App {
             col.min(self.terminal.grid.cols.saturating_sub(1)),
             row.min(self.terminal.grid.rows.saturating_sub(1)),
         )
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn build_selection_vertices(
-        grid: &crate::grid::Grid,
-        selection: Option<&Selection>,
-        metrics: &CellMetrics,
-    ) -> Vec<crate::renderer::draw::QuadVertex> {
-        let mut verts = Vec::new();
-        let Some(sel) = selection else {
-            return verts;
-        };
-        for row in 0..grid.rows {
-            let Some(row_cells) = grid.display_row(row) else {
-                continue;
-            };
-            for (col, cell) in row_cells.iter().enumerate() {
-                if sel.contains(row, col) {
-                    let x = col as f32 * metrics.cell_width;
-                    let y = row as f32 * metrics.cell_height;
-                    let w = f32::from(cell.width.max(1)) * metrics.cell_width;
-                    let h = metrics.cell_height;
-                    let sel_color = [0.2, 0.4, 0.8, 0.4];
-                    verts.extend_from_slice(&build_quad_vertices(x, y, w, h, sel_color));
-                }
-            }
-        }
-        verts
     }
 
     fn handle_keyboard_input(&mut self, key_ev: &winit::event::KeyEvent, win: &Window) {
@@ -358,6 +331,46 @@ impl App {
         }
     }
 
+fn assemble_quad_vertices(
+    terminal: &Terminal,
+    selection: Option<&Selection>,
+    metrics: &CellMetrics,
+    cursor_blink_visible: bool,
+    has_focus: bool,
+) -> Vec<crate::renderer::draw::QuadVertex> {
+    let mut quad_vertices = build_cell_background_vertices(
+        &terminal.grid,
+        metrics.cell_width,
+        metrics.cell_height,
+        &DEFAULT_PALETTE,
+    );
+    quad_vertices.extend_from_slice(&build_text_decoration_vertices(
+        &terminal.grid,
+        metrics.cell_width,
+        metrics.cell_height,
+        &DEFAULT_PALETTE,
+    ));
+    let should_draw_cursor = terminal.grid.display_offset == 0
+        && terminal.grid.cursor.visible
+        && (!terminal.cursor_blinking || cursor_blink_visible || !has_focus);
+
+    if should_draw_cursor {
+        let cursor_vertices =
+            build_cursor_vertices(&terminal.grid.cursor, metrics, [0.8, 0.8, 0.8, 0.8]);
+        quad_vertices.extend_from_slice(&cursor_vertices);
+    }
+
+    quad_vertices.extend_from_slice(&build_selection_vertices(
+        &terminal.grid,
+        selection,
+        metrics.cell_width,
+        metrics.cell_height,
+        DEFAULT_SELECTION_COLOR,
+    ));
+
+    quad_vertices
+}
+
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
     #[allow(clippy::cast_precision_loss)]
     pub fn render(&mut self) {
@@ -395,36 +408,13 @@ impl App {
                 label: Some("render-encoder"),
             });
 
-        let mut quad_vertices = build_cell_background_vertices(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &DEFAULT_PALETTE,
-        );
-        quad_vertices.extend_from_slice(&build_text_decoration_vertices(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &DEFAULT_PALETTE,
-        ));
-        let should_draw_cursor = self.terminal.grid.display_offset == 0
-            && self.terminal.grid.cursor.visible
-            && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
-
-        if should_draw_cursor {
-            let cursor_vertices = build_cursor_vertices(
-                &self.terminal.grid.cursor,
-                &self.cell_metrics,
-                [0.8, 0.8, 0.8, 0.8],
-            );
-            quad_vertices.extend_from_slice(&cursor_vertices);
-        }
-
-        quad_vertices.extend_from_slice(&Self::build_selection_vertices(
-            &self.terminal.grid,
+        let quad_vertices = Self::assemble_quad_vertices(
+            &self.terminal,
             self.selection.as_ref(),
             &self.cell_metrics,
-        ));
+            self.cursor_blink_visible,
+            self.has_focus,
+        );
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
