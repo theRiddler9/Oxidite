@@ -419,6 +419,34 @@ impl Config {
         })?;
         Self::from_toml(&content)
     }
+
+    /// Loads configuration from the standard platform config file path, falling back
+    /// to defaults on missing file or parse error.
+    #[must_use]
+    pub fn load() -> Self {
+        if let Some(path) = config_path()
+            && path.exists()
+        {
+            return Self::load_or_default(&path);
+        }
+        Self::default()
+    }
+
+    /// Loads configuration from a given file path, falling back to defaults and logging
+    /// a warning on any I/O or syntax error.
+    #[must_use]
+    pub fn load_or_default(path: &std::path::Path) -> Self {
+        match Self::load_from_path(path) {
+            Ok(config) => config,
+            Err(err) => {
+                log::warn!(
+                    "Failed to load configuration from '{}': {err}. Falling back to default configuration.",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
