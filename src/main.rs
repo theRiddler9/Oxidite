@@ -192,7 +192,14 @@ fn run_grid_dump(cmd: Option<pty::ShellCommand>) -> anyhow::Result<i32> {
 
 /// Runs Oxidite in interactive GPU window mode: creates event loop, spawns PTY,
 /// and runs the winit application handler.
-fn run_gui(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
+fn run_gui(default_cmd: pty::ShellCommand) -> anyhow::Result<i32> {
+    let cfg = config::Config::load();
+    let cmd = if let Some(custom_shell) = &cfg.shell {
+        pty::ShellCommand::with_args(custom_shell.clone(), cfg.shell_args.clone())
+    } else {
+        default_cmd
+    };
+
     let event_loop = renderer::window::create_event_loop::<app::AppEvent>()
         .map_err(|e| anyhow::anyhow!("failed to create event loop: {e}"))?;
     let proxy = event_loop.create_proxy();
@@ -212,6 +219,9 @@ fn run_gui(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
     app::spawn_pty_forwarder(reader, Arc::clone(&writer), proxy.clone());
 
     let mut application = app::App::new(Some(proxy), term, Some(writer));
+    application.config = cfg;
+    application.base_font_size = application.config.font_size;
+    application.update_scale();
     event_loop.run_app(&mut application)?;
 
     Ok(application.pty_exit_code.unwrap_or(0))
@@ -219,6 +229,7 @@ fn run_gui(cmd: pty::ShellCommand) -> anyhow::Result<i32> {
 
 /// Entry point for Oxidite.
 fn main() -> anyhow::Result<()> {
+    env_logger::try_init().ok();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("Oxidite terminal emulator");

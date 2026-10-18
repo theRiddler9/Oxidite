@@ -226,6 +226,8 @@ pub enum InputAction {
     ZoomOut,
     /// Reset font size to default.
     ZoomReset,
+    /// Switch to next available color theme.
+    CycleTheme,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
@@ -259,6 +261,9 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch.eq_ignore_ascii_case("v") {
             return Some(InputAction::Paste);
+        }
+        if ch.eq_ignore_ascii_case("t") {
+            return Some(InputAction::CycleTheme);
         }
     }
 
