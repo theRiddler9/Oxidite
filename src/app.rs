@@ -40,6 +40,9 @@ pub enum AppEvent {
     ThemeChanged(String),
 }
 
+/// Maximum byte batch size forwarded in a single `AppEvent::PtyOutput` to optimize large-output throughput.
+pub const PTY_BATCH_BYTE_LIMIT: usize = 65_536;
+
 /// Spawns a background thread that forwards PTY reader output chunks to the event loop.
 pub fn spawn_pty_forwarder(
     mut reader: PtyReader,
@@ -49,7 +52,14 @@ pub fn spawn_pty_forwarder(
     thread::Builder::new()
         .name("pty-event-forwarder".to_string())
         .spawn(move || {
-            while let Some(bytes) = reader.recv() {
+            while let Some(mut bytes) = reader.recv() {
+                // Coalesce immediately available pending chunks to maximize throughput on bursts (e.g. cat/seq)
+                while bytes.len() < PTY_BATCH_BYTE_LIMIT
+                    && let Some(more) = reader.try_recv()
+                {
+                    bytes.extend_from_slice(&more);
+                }
+
                 if proxy.send_event(AppEvent::PtyOutput(bytes)).is_err() {
                     return;
                 }
@@ -935,5 +945,24 @@ mod tests {
         let bell_vertex = quads_with_bell.last().unwrap();
         assert_eq!(bell_vertex.position, [800.0, 480.0]);
         assert_eq!(bell_vertex.color, [1.0, 1.0, 1.0, 0.25]);
+    }
+
+    #[test]
+    fn pty_batch_coalescing_combines_available_chunks() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(b"chunk1 ".to_vec()).unwrap();
+        sender.send(b"chunk2 ".to_vec()).unwrap();
+        sender.send(b"chunk3".to_vec()).unwrap();
+
+        let mut pty_reader = PtyReader::from_receiver(receiver);
+
+        let mut combined = pty_reader.recv().unwrap();
+        while combined.len() < PTY_BATCH_BYTE_LIMIT
+            && let Some(more) = pty_reader.try_recv()
+        {
+            combined.extend_from_slice(&more);
+        }
+
+        assert_eq!(combined, b"chunk1 chunk2 chunk3");
     }
 }
