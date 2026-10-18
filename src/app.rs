@@ -14,9 +14,9 @@ use crate::input::{
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
-    DEFAULT_PALETTE, DEFAULT_SELECTION_COLOR, DrawContext, GlyphPipeline, QuadPipeline,
-    build_cell_background_vertices, build_cursor_vertices_with_width, build_quad_vertices,
-    build_selection_vertices, build_text_decoration_vertices,
+    DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
+    build_cursor_vertices_with_width, build_quad_vertices, build_selection_vertices,
+    build_text_decoration_vertices,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -492,51 +492,52 @@ impl App {
         }
     }
 
-    fn assemble_quad_vertices(
-        terminal: &Terminal,
-        selection: Option<&Selection>,
-        metrics: &CellMetrics,
-        cursor_blink_visible: bool,
-        has_focus: bool,
+    pub fn assemble_quad_vertices(
+        &self,
         bell_active: bool,
         screen_size: [f32; 2],
     ) -> Vec<crate::renderer::draw::QuadVertex> {
+        let palette = self.config.theme.to_f32_palette();
+        let cursor_color = self.config.theme.cursor.to_rgba_array(1.0);
+        let selection_color = self.config.theme.selection_bg.to_rgba_array(1.0);
+
         let mut quad_vertices = build_cell_background_vertices(
-            &terminal.grid,
-            metrics.cell_width,
-            metrics.cell_height,
-            &DEFAULT_PALETTE,
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &palette,
         );
         quad_vertices.extend_from_slice(&build_text_decoration_vertices(
-            &terminal.grid,
-            metrics.cell_width,
-            metrics.cell_height,
-            &DEFAULT_PALETTE,
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &palette,
         ));
-        let should_draw_cursor = terminal.grid.display_offset == 0
-            && terminal.grid.cursor.visible
-            && (!terminal.cursor_blinking || cursor_blink_visible || !has_focus);
+        let should_draw_cursor = self.terminal.grid.display_offset == 0
+            && self.terminal.grid.cursor.visible
+            && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
 
         if should_draw_cursor {
-            let cursor_width = terminal
+            let cursor_width = self
+                .terminal
                 .grid
-                .get(terminal.grid.cursor.row, terminal.grid.cursor.col)
+                .get(self.terminal.grid.cursor.row, self.terminal.grid.cursor.col)
                 .map_or(1, |c| c.width.max(1));
             let cursor_vertices = build_cursor_vertices_with_width(
-                &terminal.grid.cursor,
-                metrics,
-                [0.8, 0.8, 0.8, 0.8],
+                &self.terminal.grid.cursor,
+                &self.cell_metrics,
+                cursor_color,
                 cursor_width,
             );
             quad_vertices.extend_from_slice(&cursor_vertices);
         }
 
         quad_vertices.extend_from_slice(&build_selection_vertices(
-            &terminal.grid,
-            selection,
-            metrics.cell_width,
-            metrics.cell_height,
-            DEFAULT_SELECTION_COLOR,
+            &self.terminal.grid,
+            self.selection.as_ref(),
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            selection_color,
         ));
 
         if bell_active {
@@ -555,6 +556,19 @@ impl App {
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
     #[allow(clippy::cast_precision_loss)]
     pub fn render(&mut self) {
+        let is_bell_active = self
+            .bell_triggered_at
+            .is_some_and(|t| t.elapsed() < Self::VISUAL_BELL_DURATION);
+
+        let screen_size = match self.gpu {
+            Some(ref gpu) => [gpu.config.width as f32, gpu.config.height as f32],
+            None => return,
+        };
+        let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
+
+        let palette = self.config.theme.to_f32_palette();
+        let bg_color = self.config.theme.background.to_rgba_array(1.0);
+
         let (Some(gpu), Some(quad_pipeline), Some(glyph_pipeline)) = (
             &mut self.gpu,
             &mut self.quad_pipeline,
@@ -589,20 +603,6 @@ impl App {
                 label: Some("render-encoder"),
             });
 
-        let is_bell_active = self
-            .bell_triggered_at
-            .is_some_and(|t| t.elapsed() < Self::VISUAL_BELL_DURATION);
-
-        let quad_vertices = Self::assemble_quad_vertices(
-            &self.terminal,
-            self.selection.as_ref(),
-            &self.cell_metrics,
-            self.cursor_blink_visible,
-            self.has_focus,
-            is_bell_active,
-            [gpu.config.width as f32, gpu.config.height as f32],
-        );
-
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("terminal-render-pass"),
@@ -611,9 +611,9 @@ impl App {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.05,
-                            b: 0.05,
+                            r: f64::from(bg_color[0]),
+                            g: f64::from(bg_color[1]),
+                            b: f64::from(bg_color[2]),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -640,7 +640,7 @@ impl App {
                 queue: &gpu.queue,
                 screen_size: [gpu.config.width, gpu.config.height],
                 metrics: &self.cell_metrics,
-                palette: &DEFAULT_PALETTE,
+                palette: &palette,
                 dirty_rows: Some(&self.terminal.dirty_rows),
             };
             let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
@@ -992,24 +992,9 @@ mod tests {
             font_size: 14.0,
             line_height: 20.0,
         };
-        let quads_no_bell = App::assemble_quad_vertices(
-            &app.terminal,
-            None,
-            &metrics,
-            true,
-            true,
-            false,
-            [800.0, 480.0],
-        );
-        let quads_with_bell = App::assemble_quad_vertices(
-            &app.terminal,
-            None,
-            &metrics,
-            true,
-            true,
-            true,
-            [800.0, 480.0],
-        );
+        app.cell_metrics = metrics;
+        let quads_no_bell = app.assemble_quad_vertices(false, [800.0, 480.0]);
+        let quads_with_bell = app.assemble_quad_vertices(true, [800.0, 480.0]);
 
         // Quads with bell should have 6 extra vertices (1 extra quad covering 800x480)
         assert_eq!(quads_with_bell.len(), quads_no_bell.len() + 6);
