@@ -131,13 +131,22 @@ pub struct App {
 }
 
 impl App {
+    /// Default base font size in points/pixels.
+    pub const DEFAULT_FONT_SIZE: f32 = 14.0;
+    /// Minimum allowed base font size.
+    pub const MIN_FONT_SIZE: f32 = 6.0;
+    /// Maximum allowed base font size.
+    pub const MAX_FONT_SIZE: f32 = 48.0;
+    /// Base font size change per zoom step.
+    pub const FONT_SIZE_STEP: f32 = 1.0;
+
     /// Creates a new `App` instance with the given event loop proxy, terminal, and optional PTY writer.
     pub fn new(
         proxy: Option<EventLoopProxy<AppEvent>>,
         terminal: Terminal,
         pty_writer: Option<Arc<Mutex<PtyWriter>>>,
     ) -> Self {
-        let base_font_size = 14.0;
+        let base_font_size = Self::DEFAULT_FONT_SIZE;
         let scale_factor = 1.0;
         let mut font_system = glyphon::FontSystem::new();
         let cell_metrics = CellMetrics::measure(&mut font_system, base_font_size, 1.2);
@@ -219,6 +228,15 @@ impl App {
                 }
                 InputAction::Paste => {
                     self.paste_clipboard(win);
+                }
+                InputAction::ZoomIn => {
+                    self.zoom_in();
+                }
+                InputAction::ZoomOut => {
+                    self.zoom_out();
+                }
+                InputAction::ZoomReset => {
+                    self.zoom_reset();
                 }
             }
             return;
@@ -347,6 +365,24 @@ impl App {
             self.scale_factor = scale_factor;
             self.update_scale();
         }
+    }
+
+    /// Increases base font size by one zoom step.
+    pub fn zoom_in(&mut self) {
+        self.base_font_size = (self.base_font_size + Self::FONT_SIZE_STEP).min(Self::MAX_FONT_SIZE);
+        self.update_scale();
+    }
+
+    /// Decreases base font size by one zoom step.
+    pub fn zoom_out(&mut self) {
+        self.base_font_size = (self.base_font_size - Self::FONT_SIZE_STEP).max(Self::MIN_FONT_SIZE);
+        self.update_scale();
+    }
+
+    /// Resets base font size to default.
+    pub fn zoom_reset(&mut self) {
+        self.base_font_size = Self::DEFAULT_FONT_SIZE;
+        self.update_scale();
     }
 
     /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
@@ -676,6 +712,24 @@ mod tests {
         assert!((app.scale_factor - 2.0).abs() < f64::EPSILON);
         assert!(app.cell_metrics.cell_width > orig_width);
         assert!(app.cell_metrics.cell_height > orig_height);
+    }
+
+    #[test]
+    fn zoom_in_out_and_reset_adjusts_font_size() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        assert!((app.base_font_size - 14.0).abs() < f32::EPSILON);
+
+        app.zoom_in();
+        assert!((app.base_font_size - 15.0).abs() < f32::EPSILON);
+
+        app.zoom_out();
+        assert!((app.base_font_size - 14.0).abs() < f32::EPSILON);
+
+        app.zoom_out();
+        assert!((app.base_font_size - 13.0).abs() < f32::EPSILON);
+
+        app.zoom_reset();
+        assert!((app.base_font_size - 14.0).abs() < f32::EPSILON);
     }
 
     #[test]
