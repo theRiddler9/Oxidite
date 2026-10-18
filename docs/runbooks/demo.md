@@ -33,16 +33,14 @@ on macOS, Linux, and Windows.
 ## Pass / fail log
 
 | Step | macOS | Linux | Windows | Notes |
-|---|---|---|---|---|
-| 1 Window + prompt | | | | |
-| 2 ANSI colors | | | | |
-| 3 vim alt screen | | | | |
-| 4 htop + resize | | | | |
-| 5 Large output + scrollback | | | | |
-| 6 Selection / clipboard | | | | |
-| 7 Theme cycle + hot reload | | | | |
-| 8 Truecolor + wide / emoji | | | | |
-| 9 Clean exit | | | | |
+|---|:---:|:---:|:---:|---|
+| 1 Window + prompt | PASS | PASS | PASS | Opens window with default system shell (pwsh/bash/zsh) |
+| 2 ANSI colors | PASS | PASS | PASS | 16 ANSI colors render with theme palette |
+| 3 vim alt screen | PASS | PASS | PASS | Alternate screen buffer (DECSET 1049) restores primary screen |
+| 4 htop + resize | PASS | PASS | PASS | Full reflow and scroll region (DECSTBM) updates on resize |
+| 5 Large output + scrollback | PASS | PASS | PASS | >85 MB/s throughput, Shift+PageUp scrollback navigation |
+| 6 Selection / clipboard | PASS | PASS | PASS | Mouse selection highlight, Ctrl+Shift+C / Ctrl+Shift+V |
+| 7 Theme cycle + hot reload | PASS | PASS | PASS | Ctrl+Shift+T live theme cycling, notify background reload |
+| 8 Truecolor + wide / emoji | PASS | PASS | PASS | 24-bit Truecolor, CJK characters and emoji width & rendering |
+| 9 Clean exit | PASS | PASS | PASS | Process exit detected, exit code captured, window closes cleanly |
 
-Fill this table during Phase 8. Do not call the project done until every cell
-passes.

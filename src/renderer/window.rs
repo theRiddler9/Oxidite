@@ -28,9 +28,23 @@ pub const DEFAULT_HEIGHT: f64 = 600.0;
 
 /// Builds the default window attributes for Oxidite.
 pub fn default_window_attributes(title: &str) -> WindowAttributes {
-    WindowAttributes::default()
+    #[allow(unused_mut)]
+    let mut attrs = WindowAttributes::default()
         .with_title(title)
-        .with_inner_size(LogicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT))
+        .with_inner_size(LogicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // On Linux, set X11 WM_CLASS and Wayland App ID so window managers and compositors
+        // correctly match desktop files, dock icons, and window grouping.
+        use winit::platform::x11::WindowAttributesExtX11;
+        attrs = attrs.with_name("oxidite", "Oxidite");
+
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        attrs = attrs.with_name("oxidite", "Oxidite");
+    }
+
+    attrs
 }
 
 /// Creates a new `winit` window wrapped in an `Arc`.
@@ -53,7 +67,16 @@ pub fn create_event_loop<T: 'static>() -> Result<EventLoop<T>, WindowError> {
         let event_loop = builder.build()?;
         Ok(event_loop)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // On Linux X11, enable any_thread to support headless testing and worker threads.
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut builder = EventLoop::<T>::with_user_event();
+        builder.with_any_thread(true);
+        let event_loop = builder.build()?;
+        Ok(event_loop)
+    }
+    #[cfg(target_os = "macos")]
     {
         let event_loop = EventLoop::<T>::with_user_event().build()?;
         Ok(event_loop)
@@ -71,7 +94,11 @@ pub fn window_size_to_grid_dimensions(
     size: winit::dpi::PhysicalSize<u32>,
     metrics: &crate::renderer::font::CellMetrics,
 ) -> (u16, u16) {
-    if metrics.cell_width <= 0.0 || metrics.cell_height <= 0.0 {
+    if metrics.cell_width <= 0.0
+        || metrics.cell_height <= 0.0
+        || size.width == 0
+        || size.height == 0
+    {
         return (1, 1);
     }
 
@@ -91,8 +118,8 @@ pub fn window_size_to_pty_size(
     metrics: &crate::renderer::font::CellMetrics,
 ) -> crate::pty::PtySize {
     let (cols, rows) = window_size_to_grid_dimensions(size, metrics);
-    let px_w = u16::try_from(size.width).unwrap_or(u16::MAX);
-    let px_h = u16::try_from(size.height).unwrap_or(u16::MAX);
+    let px_w = u16::try_from(size.width).unwrap_or(u16::MAX).max(1);
+    let px_h = u16::try_from(size.height).unwrap_or(u16::MAX).max(1);
 
     crate::pty::PtySize {
         rows,
@@ -150,5 +177,26 @@ mod tests {
         assert_eq!(pty_size.rows, 30);
         assert_eq!(pty_size.px_w, 640);
         assert_eq!(pty_size.px_h, 480);
+    }
+
+    #[test]
+    fn window_size_zero_dimensions_graceful_fallback() {
+        let metrics = CellMetrics {
+            cell_width: 8.0,
+            cell_height: 16.0,
+            font_size: 14.0,
+            line_height: 16.0,
+        };
+
+        let zero_size = PhysicalSize::new(0, 0);
+        let (cols, rows) = window_size_to_grid_dimensions(zero_size, &metrics);
+        assert_eq!(cols, 1);
+        assert_eq!(rows, 1);
+
+        let pty_size = window_size_to_pty_size(zero_size, &metrics);
+        assert_eq!(pty_size.cols, 1);
+        assert_eq!(pty_size.rows, 1);
+        assert_eq!(pty_size.px_w, 1);
+        assert_eq!(pty_size.px_h, 1);
     }
 }

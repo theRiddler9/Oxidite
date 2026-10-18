@@ -20,8 +20,10 @@ pub struct PtySize {
 impl From<PtySize> for NativePtySize {
     fn from(size: PtySize) -> Self {
         Self {
-            rows: size.rows,
-            cols: size.cols,
+            // Windows ConPTY and Unix PTYs require positive non-zero geometry (min 1x1)
+            // to avoid E_INVALIDARG errors in CreatePseudoConsole / TIOCSWINSZ.
+            rows: size.rows.max(1),
+            cols: size.cols.max(1),
             pixel_width: size.px_w,
             pixel_height: size.px_h,
         }
@@ -56,6 +58,8 @@ fn detect_default_shell() -> (String, Vec<String>) {
         ("pwsh.exe".to_string(), Vec::new())
     } else if which_in_path("powershell.exe") {
         ("powershell.exe".to_string(), Vec::new())
+    } else if let Ok(comspec) = std::env::var("COMSPEC") {
+        (comspec, Vec::new())
     } else {
         ("cmd.exe".to_string(), Vec::new())
     }
@@ -248,6 +252,15 @@ pub fn spawn(cmd: ShellCommand, size: PtySize) -> Result<(PtyWriter, PtyReader),
     builder.args(cmd.args);
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
+    builder.env("TERM_PROGRAM", "Oxidite");
+    builder.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    #[cfg(windows)]
+    {
+        // ConPTY and modern PowerShell utilities check for WT_SESSION to activate full VT capabilities.
+        if std::env::var_os("WT_SESSION").is_none() {
+            builder.env("WT_SESSION", "00000000-0000-0000-0000-000000000000");
+        }
+    }
 
     let child = pair
         .slave
@@ -372,5 +385,33 @@ mod tests {
             text.contains("oxidite_pty_test"),
             "expected output to contain 'oxidite_pty_test', got: {text}"
         );
+    }
+
+    #[test]
+    fn pty_size_clamping_prevents_zero_dimensions_for_conpty() {
+        let zero_size = PtySize {
+            rows: 0,
+            cols: 0,
+            px_w: 0,
+            px_h: 0,
+        };
+        let native: NativePtySize = zero_size.into();
+        assert_eq!(native.rows, 1, "ConPTY requires rows >= 1");
+        assert_eq!(native.cols, 1, "ConPTY requires cols >= 1");
+    }
+
+    #[test]
+    fn pty_size_preserves_valid_dimensions() {
+        let size = PtySize {
+            rows: 50,
+            cols: 120,
+            px_w: 960,
+            px_h: 800,
+        };
+        let native: NativePtySize = size.into();
+        assert_eq!(native.rows, 50);
+        assert_eq!(native.cols, 120);
+        assert_eq!(native.pixel_width, 960);
+        assert_eq!(native.pixel_height, 800);
     }
 }
