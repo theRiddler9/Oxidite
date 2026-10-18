@@ -184,6 +184,9 @@ pub fn build_cell_background_vertices(
             continue;
         };
         for (col, cell) in row_cells.iter().enumerate() {
+            if cell.width == 0 {
+                continue;
+            }
             let (_, bg_color, has_visible_bg) =
                 resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.0, 0.0, 0.0, 1.0], palette);
             if has_visible_bg {
@@ -306,21 +309,33 @@ pub fn build_cursor_vertices(
     metrics: &CellMetrics,
     color: [f32; 4],
 ) -> Vec<QuadVertex> {
+    build_cursor_vertices_with_width(cursor, metrics, color, 1)
+}
+
+/// Builds quad vertices for the cursor with specified cell width multiplier (for wide characters).
+#[allow(clippy::cast_precision_loss)]
+pub fn build_cursor_vertices_with_width(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+    cell_width_multiplier: u8,
+) -> Vec<QuadVertex> {
     if !cursor.visible {
         return Vec::new();
     }
 
     let x = cursor.col as f32 * metrics.cell_width;
     let y = cursor.row as f32 * metrics.cell_height;
+    let cursor_w = f32::from(cell_width_multiplier.max(1)) * metrics.cell_width;
 
     let (pos_x, pos_y, w, h) = match cursor.shape {
-        CursorShape::Block => (x, y, metrics.cell_width, metrics.cell_height),
+        CursorShape::Block => (x, y, cursor_w, metrics.cell_height),
         CursorShape::Underline => {
             let underline_height = (metrics.cell_height * 0.15).max(2.0);
             (
                 x,
                 y + metrics.cell_height - underline_height,
-                metrics.cell_width,
+                cursor_w,
                 underline_height,
             )
         }
@@ -1146,5 +1161,75 @@ mod tests {
 
         assert!(is_row_0_dirty);
         assert!(!is_row_1_dirty);
+    }
+
+    #[test]
+    fn wide_characters_and_emoji_rendering() {
+        use crate::grid::{Attrs, Color, Grid};
+
+        let mut grid = Grid::new(10, 2);
+        // Col 0: '🦀' (width 2), Col 1: spacer (width 0) with background color
+        grid.put_char(
+            '🦀',
+            Color::Indexed(1),
+            Color::Indexed(2),
+            Attrs::UNDERLINE,
+            false,
+        );
+        // Col 2: 'A' (width 1) with background color
+        grid.put_char(
+            'A',
+            Color::Indexed(3),
+            Color::Indexed(4),
+            Attrs::empty(),
+            false,
+        );
+
+        // 1. Background quads: wide char + spacer should only produce ONE quad of width 20.0
+        let bg_verts = build_cell_background_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        // Exactly 2 quads (12 vertices): one for '🦀' (width 20.0), one for 'A' (width 10.0)
+        assert_eq!(bg_verts.len(), 12);
+        // '🦀' quad has width 20.0: x from 0.0 to 20.0
+        assert!(approx_eq(bg_verts[0].position, [0.0, 0.0]));
+        assert!(approx_eq(bg_verts[5].position, [20.0, 20.0]));
+        // 'A' quad starts at x = 20.0 with width 10.0
+        assert!(approx_eq(bg_verts[6].position, [20.0, 0.0]));
+        assert!(approx_eq(bg_verts[11].position, [30.0, 20.0]));
+
+        // 2. Cursor over wide character (width_multiplier = 2) spans 20.0
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let cursor = Cursor {
+            col: 0,
+            row: 0,
+            shape: CursorShape::Block,
+            ..Cursor::default()
+        };
+        let wide_cursor = build_cursor_vertices_with_width(&cursor, &metrics, [1.0; 4], 2);
+        assert_eq!(wide_cursor.len(), 6);
+        assert!(approx_eq(wide_cursor[5].position, [20.0, 20.0]));
+
+        // 3. Text spans collection with CJK and emoji
+        let mut cjk_grid = Grid::new(12, 1);
+        cjk_grid.put_char('日', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('本', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('語', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char(' ', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('🦀', Color::Default, Color::Default, Attrs::empty(), false);
+
+        let row_cells = cjk_grid.display_row(0).unwrap();
+        let spans = collect_single_row_spans(row_cells, &DEFAULT_PALETTE);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "日本語 🦀");
+
+        // 4. Underline decoration on wide char spans 2 cells
+        let deco_verts = build_text_decoration_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        assert_eq!(deco_verts.len(), 6);
+        assert!(approx_eq(deco_verts[0].position, [0.0, 18.0]));
+        assert!(approx_eq(deco_verts[5].position, [20.0, 20.0]));
     }
 }

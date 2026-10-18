@@ -15,7 +15,7 @@ use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
     DEFAULT_PALETTE, DEFAULT_SELECTION_COLOR, DrawContext, GlyphPipeline, QuadPipeline,
-    build_cell_background_vertices, build_cursor_vertices, build_selection_vertices,
+    build_cell_background_vertices, build_cursor_vertices_with_width, build_selection_vertices,
     build_text_decoration_vertices,
 };
 use crate::renderer::font::CellMetrics;
@@ -430,8 +430,16 @@ impl App {
             && (!terminal.cursor_blinking || cursor_blink_visible || !has_focus);
 
         if should_draw_cursor {
-            let cursor_vertices =
-                build_cursor_vertices(&terminal.grid.cursor, metrics, [0.8, 0.8, 0.8, 0.8]);
+            let cursor_width = terminal
+                .grid
+                .get(terminal.grid.cursor.row, terminal.grid.cursor.col)
+                .map_or(1, |c| c.width.max(1));
+            let cursor_vertices = build_cursor_vertices_with_width(
+                &terminal.grid.cursor,
+                metrics,
+                [0.8, 0.8, 0.8, 0.8],
+                cursor_width,
+            );
             quad_vertices.extend_from_slice(&cursor_vertices);
         }
 
