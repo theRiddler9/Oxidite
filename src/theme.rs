@@ -1,7 +1,38 @@
-//! Color themes (stub — Phase 7).
+//! Color themes, RGB representation, and palette presets.
+
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
+
+/// Error occurring when parsing an RGB color from a hex string.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParseRgbError {
+    /// The string length is invalid for a hex color (expected 6 or 7 characters).
+    #[error("invalid hex color length (expected 6 or 7 characters, got {0})")]
+    InvalidLength(usize),
+    /// Hex byte parsing failed for one of the color channels.
+    #[error("failed to parse hex channel in color '{0}'")]
+    InvalidHex(String),
+}
+
+/// Error occurring when deserializing or validating a theme from TOML.
+#[derive(Debug, Error)]
+pub enum ThemeError {
+    /// Failed to parse the TOML string.
+    #[error("failed to parse theme TOML: {0}")]
+    TomlParse(#[from] toml::de::Error),
+    /// Required color field is missing.
+    #[error("missing required color field in theme: {0}")]
+    MissingField(&'static str),
+    /// An ANSI color list was provided with a length other than 16.
+    #[error("invalid ANSI palette size (expected 16 colors, got {0})")]
+    InvalidAnsiCount(usize),
+}
 
 /// 8-bit RGB color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rgb {
     /// Red color component (0–255).
     pub r: u8,
@@ -13,13 +44,76 @@ pub struct Rgb {
 
 impl Rgb {
     /// Creates an RGB color from 8-bit channels.
+    #[must_use]
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
+
+    /// Converts to a normalized RGBA float array with the specified alpha.
+    #[must_use]
+    pub fn to_rgba_array(self, alpha: f32) -> [f32; 4] {
+        [
+            f32::from(self.r) / 255.0,
+            f32::from(self.g) / 255.0,
+            f32::from(self.b) / 255.0,
+            alpha,
+        ]
+    }
+
+    /// Parses an RGB color from a hex string (e.g. `"#RRGGBB"` or `"RRGGBB"`).
+    pub fn from_hex(s: &str) -> Result<Self, ParseRgbError> {
+        let clean = s.trim();
+        let hex = clean.strip_prefix('#').unwrap_or(clean);
+        if hex.len() != 6 {
+            return Err(ParseRgbError::InvalidLength(clean.len()));
+        }
+
+        let r = u8::from_str_radix(&hex[0..2], 16)
+            .map_err(|_| ParseRgbError::InvalidHex(clean.to_string()))?;
+        let g = u8::from_str_radix(&hex[2..4], 16)
+            .map_err(|_| ParseRgbError::InvalidHex(clean.to_string()))?;
+        let b = u8::from_str_radix(&hex[4..6], 16)
+            .map_err(|_| ParseRgbError::InvalidHex(clean.to_string()))?;
+
+        Ok(Self::new(r, g, b))
+    }
 }
 
-/// Named theme palette.
-#[derive(Debug, Clone)]
+impl fmt::Display for Rgb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+}
+
+impl FromStr for Rgb {
+    type Err = ParseRgbError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
+    }
+}
+
+impl Serialize for Rgb {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Rgb {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Named theme palette with foreground, background, cursor, selection, and 16 ANSI colors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
     /// Human-readable theme name.
     pub name: String,
@@ -35,13 +129,145 @@ pub struct Theme {
     pub ansi: [Rgb; 16],
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ThemeFile {
+    name: Option<String>,
+    colors: Option<ColorsTable>,
+    foreground: Option<Rgb>,
+    background: Option<Rgb>,
+    cursor: Option<Rgb>,
+    selection_bg: Option<Rgb>,
+    ansi: Option<AnsiColorsInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ColorsTable {
+    foreground: Option<Rgb>,
+    background: Option<Rgb>,
+    cursor: Option<Rgb>,
+    selection_bg: Option<Rgb>,
+    ansi: Option<AnsiColorsInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum AnsiColorsInput {
+    List(Vec<Rgb>),
+    Named(NamedAnsiTable),
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct NamedAnsiTable {
+    black: Option<Rgb>,
+    red: Option<Rgb>,
+    green: Option<Rgb>,
+    yellow: Option<Rgb>,
+    blue: Option<Rgb>,
+    magenta: Option<Rgb>,
+    cyan: Option<Rgb>,
+    white: Option<Rgb>,
+    bright_black: Option<Rgb>,
+    bright_red: Option<Rgb>,
+    bright_green: Option<Rgb>,
+    bright_yellow: Option<Rgb>,
+    bright_blue: Option<Rgb>,
+    bright_magenta: Option<Rgb>,
+    bright_cyan: Option<Rgb>,
+    bright_white: Option<Rgb>,
+}
+
 impl Theme {
-    /// Minimal dark default used until built-in presets land in Phase 7.
-    ///
-    /// The 16 ANSI entries are distinct so indexed colors are never
-    /// black-on-black before real theme files load.
+    /// Parses a `Theme` from a TOML string representation.
+    pub fn from_toml(content: &str) -> Result<Self, ThemeError> {
+        let file: ThemeFile = toml::from_str(content)?;
+        let name = file.name.unwrap_or_else(|| "custom".to_string());
+
+        let (fg, bg, cursor, sel_bg, ansi_input) = if let Some(colors) = file.colors {
+            (
+                colors.foreground.or(file.foreground),
+                colors.background.or(file.background),
+                colors.cursor.or(file.cursor),
+                colors.selection_bg.or(file.selection_bg),
+                colors.ansi.or(file.ansi),
+            )
+        } else {
+            (
+                file.foreground,
+                file.background,
+                file.cursor,
+                file.selection_bg,
+                file.ansi,
+            )
+        };
+
+        let default_theme = Self::default_dark();
+
+        let foreground = fg.unwrap_or(default_theme.foreground);
+        let background = bg.unwrap_or(default_theme.background);
+        let cursor = cursor.unwrap_or(default_theme.cursor);
+        let selection_bg = sel_bg.unwrap_or(default_theme.selection_bg);
+
+        let ansi = match ansi_input {
+            Some(AnsiColorsInput::List(list)) => {
+                if list.len() != 16 {
+                    return Err(ThemeError::InvalidAnsiCount(list.len()));
+                }
+                let mut arr = [Rgb::default(); 16];
+                arr.copy_from_slice(&list);
+                arr
+            }
+            Some(AnsiColorsInput::Named(table)) => {
+                let d = default_theme.ansi;
+                [
+                    table.black.unwrap_or(d[0]),
+                    table.red.unwrap_or(d[1]),
+                    table.green.unwrap_or(d[2]),
+                    table.yellow.unwrap_or(d[3]),
+                    table.blue.unwrap_or(d[4]),
+                    table.magenta.unwrap_or(d[5]),
+                    table.cyan.unwrap_or(d[6]),
+                    table.white.unwrap_or(d[7]),
+                    table.bright_black.unwrap_or(d[8]),
+                    table.bright_red.unwrap_or(d[9]),
+                    table.bright_green.unwrap_or(d[10]),
+                    table.bright_yellow.unwrap_or(d[11]),
+                    table.bright_blue.unwrap_or(d[12]),
+                    table.bright_magenta.unwrap_or(d[13]),
+                    table.bright_cyan.unwrap_or(d[14]),
+                    table.bright_white.unwrap_or(d[15]),
+                ]
+            }
+            None => default_theme.ansi,
+        };
+
+        Ok(Self {
+            name,
+            foreground,
+            background,
+            cursor,
+            selection_bg,
+            ansi,
+        })
+    }
+
+    /// Serializes the theme to a formatted TOML string.
+    pub fn to_toml_string(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
+    }
+
+    /// Converts the theme's 16 ANSI colors into float RGBA arrays for renderer draw passes.
+    #[must_use]
+    pub fn to_f32_palette(&self) -> [[f32; 4]; 16] {
+        let mut palette = [[0.0; 4]; 16];
+        for (i, rgb) in self.ansi.iter().enumerate() {
+            palette[i] = rgb.to_rgba_array(1.0);
+        }
+        palette
+    }
+
+    /// Built-in default dark theme.
+    #[must_use]
     pub fn default_dark() -> Self {
-        // xterm-ish dark palette; Phase 7 presets may replace this.
         let ansi = [
             Rgb::new(0x1c, 0x1c, 0x22), // 0 black
             Rgb::new(0xff, 0x5c, 0x7a), // 1 red
@@ -75,7 +301,108 @@ impl Theme {
 mod tests {
     use super::*;
 
-    /// Verifies that `default_dark` provides 16 distinct ANSI colors with contrast against background.
+    #[test]
+    fn rgb_from_hex_valid_and_invalid() {
+        assert_eq!(Rgb::from_hex("#ffffff"), Ok(Rgb::new(255, 255, 255)));
+        assert_eq!(Rgb::from_hex("000000"), Ok(Rgb::new(0, 0, 0)));
+        assert_eq!(Rgb::from_hex("#1c1c22"), Ok(Rgb::new(28, 28, 34)));
+        assert_eq!(Rgb::from_hex("#1C1C22"), Ok(Rgb::new(28, 28, 34)));
+
+        assert_eq!(Rgb::from_hex("#fff"), Err(ParseRgbError::InvalidLength(4)));
+        assert_eq!(
+            Rgb::from_hex("#gggggg"),
+            Err(ParseRgbError::InvalidHex("#gggggg".to_string()))
+        );
+    }
+
+    #[test]
+    fn rgb_display_and_from_str() {
+        let color = Rgb::new(0xab, 0xcd, 0xef);
+        assert_eq!(color.to_string(), "#abcdef");
+        assert_eq!(Rgb::from_str("#abcdef"), Ok(color));
+    }
+
+    #[test]
+    fn rgb_serde_toml_roundtrip() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Wrapper {
+            color: Rgb,
+        }
+        let original = Wrapper {
+            color: Rgb::new(10, 20, 30),
+        };
+        let toml_str = toml::to_string(&original).unwrap();
+        let decoded: Wrapper = toml::from_str(&toml_str).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn theme_from_toml_with_colors_table() {
+        let toml_content = r##"
+name = "test-theme"
+
+[colors]
+foreground = "#ffffff"
+background = "#111111"
+cursor = "#ff0000"
+selection_bg = "#333333"
+
+[colors.ansi]
+black = "#000000"
+red = "#ff0000"
+green = "#00ff00"
+yellow = "#ffff00"
+blue = "#0000ff"
+magenta = "#ff00ff"
+cyan = "#00ffff"
+white = "#ffffff"
+bright_black = "#888888"
+bright_red = "#ff8888"
+bright_green = "#88ff88"
+bright_yellow = "#ffff88"
+bright_blue = "#8888ff"
+bright_magenta = "#ff88ff"
+bright_cyan = "#88ffff"
+bright_white = "#ffffff"
+"##;
+        let theme = Theme::from_toml(toml_content).unwrap();
+        assert_eq!(theme.name, "test-theme");
+        assert_eq!(theme.foreground, Rgb::new(255, 255, 255));
+        assert_eq!(theme.background, Rgb::new(17, 17, 17));
+        assert_eq!(theme.cursor, Rgb::new(255, 0, 0));
+        assert_eq!(theme.selection_bg, Rgb::new(51, 51, 51));
+        assert_eq!(theme.ansi[1], Rgb::new(255, 0, 0));
+        assert_eq!(theme.ansi[2], Rgb::new(0, 255, 0));
+
+        let palette = theme.to_f32_palette();
+        let color_1 = palette[1];
+        assert!((color_1[0] - 1.0).abs() < 1e-4);
+        assert!(color_1[1].abs() < 1e-4);
+        assert!(color_1[2].abs() < 1e-4);
+        assert!((color_1[3] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn theme_from_toml_with_array_ansi() {
+        let toml_content = r##"
+name = "array-theme"
+foreground = "#aaaaaa"
+background = "#222222"
+cursor = "#ffffff"
+selection_bg = "#444444"
+ansi = [
+    "#000000", "#111111", "#222222", "#333333",
+    "#444444", "#555555", "#666666", "#777777",
+    "#888888", "#999999", "#aaaaaa", "#bbbbbb",
+    "#cccccc", "#dddddd", "#eeeeee", "#ffffff"
+]
+"##;
+        let theme = Theme::from_toml(toml_content).unwrap();
+        assert_eq!(theme.name, "array-theme");
+        assert_eq!(theme.ansi[0], Rgb::new(0, 0, 0));
+        assert_eq!(theme.ansi[15], Rgb::new(255, 255, 255));
+    }
+
     #[test]
     fn default_dark_ansi_palette_usable() {
         let theme = Theme::default_dark();
