@@ -325,6 +325,66 @@ impl Theme {
             ],
         }
     }
+
+    /// Built-in Solarized Dark preset theme.
+    #[must_use]
+    pub fn solarized_dark() -> Self {
+        Self {
+            name: "solarized-dark".to_string(),
+            foreground: Rgb::new(0x83, 0x94, 0x96),
+            background: Rgb::new(0x00, 0x2b, 0x36),
+            cursor: Rgb::new(0x83, 0x94, 0x96),
+            selection_bg: Rgb::new(0x07, 0x36, 0x42),
+            ansi: [
+                Rgb::new(0x07, 0x36, 0x42), // 0 black
+                Rgb::new(0xdc, 0x32, 0x2f), // 1 red
+                Rgb::new(0x85, 0x99, 0x00), // 2 green
+                Rgb::new(0xb5, 0x89, 0x00), // 3 yellow
+                Rgb::new(0x26, 0x8b, 0xd2), // 4 blue
+                Rgb::new(0xd3, 0x36, 0x82), // 5 magenta
+                Rgb::new(0x2a, 0xa1, 0x98), // 6 cyan
+                Rgb::new(0xee, 0xe8, 0xd5), // 7 white
+                Rgb::new(0x00, 0x2b, 0x36), // 8 bright black
+                Rgb::new(0xcb, 0x4b, 0x16), // 9 bright red
+                Rgb::new(0x58, 0x6e, 0x75), // 10 bright green
+                Rgb::new(0x65, 0x7b, 0x83), // 11 bright yellow
+                Rgb::new(0x83, 0x94, 0x96), // 12 bright blue
+                Rgb::new(0x6c, 0x71, 0xc4), // 13 bright magenta
+                Rgb::new(0x93, 0xa1, 0xa1), // 14 bright cyan
+                Rgb::new(0xfd, 0xf6, 0xe3), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Solarized Light preset theme.
+    #[must_use]
+    pub fn solarized_light() -> Self {
+        Self {
+            name: "solarized-light".to_string(),
+            foreground: Rgb::new(0x65, 0x7b, 0x83),
+            background: Rgb::new(0xfd, 0xf6, 0xe3),
+            cursor: Rgb::new(0x65, 0x7b, 0x83),
+            selection_bg: Rgb::new(0xee, 0xe8, 0xd5),
+            ansi: [
+                Rgb::new(0x07, 0x36, 0x42), // 0 black
+                Rgb::new(0xdc, 0x32, 0x2f), // 1 red
+                Rgb::new(0x85, 0x99, 0x00), // 2 green
+                Rgb::new(0xb5, 0x89, 0x00), // 3 yellow
+                Rgb::new(0x26, 0x8b, 0xd2), // 4 blue
+                Rgb::new(0xd3, 0x36, 0x82), // 5 magenta
+                Rgb::new(0x2a, 0xa1, 0x98), // 6 cyan
+                Rgb::new(0xee, 0xe8, 0xd5), // 7 white
+                Rgb::new(0x00, 0x2b, 0x36), // 8 bright black
+                Rgb::new(0xcb, 0x4b, 0x16), // 9 bright red
+                Rgb::new(0x58, 0x6e, 0x75), // 10 bright green
+                Rgb::new(0x65, 0x7b, 0x83), // 11 bright yellow
+                Rgb::new(0x83, 0x94, 0x96), // 12 bright blue
+                Rgb::new(0x6c, 0x71, 0xc4), // 13 bright magenta
+                Rgb::new(0x93, 0xa1, 0xa1), // 14 bright cyan
+                Rgb::new(0xfd, 0xf6, 0xe3), // 15 bright white
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -471,5 +531,29 @@ ansi = [
         assert_eq!(parsed.cursor, expected.cursor);
         assert_eq!(parsed.selection_bg, expected.selection_bg);
         assert_eq!(parsed.ansi, expected.ansi);
+    }
+
+    #[test]
+    fn solarized_dark_toml_matches_preset() {
+        let toml_str = include_str!("../themes/solarized-dark.toml");
+        let parsed = Theme::from_toml(toml_str).expect("solarized-dark.toml should parse");
+        let expected = Theme::solarized_dark();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.ansi, expected.ansi);
+        assert_ne!(parsed.foreground, parsed.background);
+    }
+
+    #[test]
+    fn solarized_light_toml_matches_preset() {
+        let toml_str = include_str!("../themes/solarized-light.toml");
+        let parsed = Theme::from_toml(toml_str).expect("solarized-light.toml should parse");
+        let expected = Theme::solarized_light();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.ansi, expected.ansi);
+        assert_ne!(parsed.foreground, parsed.background);
     }
 }
