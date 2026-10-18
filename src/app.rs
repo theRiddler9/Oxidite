@@ -144,6 +144,8 @@ pub struct App {
     pub bell_triggered_at: Option<std::time::Instant>,
     /// Active application configuration.
     pub config: crate::config::Config,
+    /// Background file watcher keeping track of config.toml modifications.
+    pub _config_watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl App {
@@ -169,6 +171,15 @@ impl App {
         let mut font_system = glyphon::FontSystem::new();
         let cell_metrics = CellMetrics::measure(&mut font_system, base_font_size, 1.2);
         let last_bell_count = terminal.bell_count;
+
+        let mut config_watcher = None;
+        if let (Some(prx), Some(cfg_path)) = (&proxy, crate::config::config_path()) {
+            let prx_clone = prx.clone();
+            config_watcher = crate::config::watch_config(&cfg_path, move || {
+                let _ = prx_clone.send_event(AppEvent::ConfigReloaded);
+            })
+            .ok();
+        }
 
         Self {
             proxy,
@@ -196,6 +207,7 @@ impl App {
             last_bell_count,
             bell_triggered_at: None,
             config: crate::config::Config::default(),
+            _config_watcher: config_watcher,
         }
     }
 
@@ -683,7 +695,34 @@ impl ApplicationHandler<AppEvent> for App {
                     win.request_redraw();
                 }
             }
-            AppEvent::ConfigReloaded | AppEvent::ThemeChanged(_) => {}
+            AppEvent::ConfigReloaded => {
+                log::info!("Configuration file reloaded from disk");
+                if let Some(path) = crate::config::config_path() {
+                    match crate::config::Config::load_from_path(&path) {
+                        Ok(new_config) => {
+                            self.config = new_config;
+                            self.base_font_size = self.config.font_size;
+                            self.update_scale();
+                            self.terminal.mark_all_dirty();
+                            if let Some(ref win) = self.window {
+                                win.request_redraw();
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("Failed to reload config from '{}': {err}", path.display());
+                        }
+                    }
+                }
+            }
+            AppEvent::ThemeChanged(theme_name) => {
+                if let Some(new_theme) = crate::config::load_theme_by_name(&theme_name) {
+                    self.config.theme = new_theme;
+                    self.terminal.mark_all_dirty();
+                    if let Some(ref win) = self.window {
+                        win.request_redraw();
+                    }
+                }
+            }
         }
     }
 
@@ -996,5 +1035,14 @@ mod tests {
         }
 
         assert_eq!(combined, b"chunk1 chunk2 chunk3");
+    }
+
+    #[test]
+    fn theme_changed_updates_app_theme() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        assert_eq!(app.config.theme.name, "default-dark");
+        let dracula = crate::config::load_theme_by_name("dracula").expect("dracula theme");
+        app.config.theme = dracula;
+        assert_eq!(app.config.theme.name, "dracula");
     }
 }

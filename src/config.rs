@@ -24,6 +24,38 @@ pub fn themes_dir() -> Option<PathBuf> {
     config_dir().map(|p| p.join("themes"))
 }
 
+/// Sets up a file watcher for configuration changes that triggers a callback on file modifications.
+pub fn watch_config<F>(
+    path: &std::path::Path,
+    on_change: F,
+) -> Result<notify::RecommendedWatcher, notify::Error>
+where
+    F: Fn() + Send + 'static,
+{
+    use notify::{Event, EventKind, RecursiveMode, Watcher};
+
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        if let Ok(event) = res {
+            match event.kind {
+                EventKind::Modify(_) | EventKind::Create(_) => {
+                    on_change();
+                }
+                _ => {}
+            }
+        }
+    })?;
+
+    if path.exists() {
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+    } else if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        watcher.watch(parent, RecursiveMode::NonRecursive)?;
+    }
+
+    Ok(watcher)
+}
+
 /// Errors that can occur during configuration loading and parsing.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -535,5 +567,19 @@ cycle_theme = "Ctrl+Shift+Space"
         );
         // Default C is overridden by X in this config
         assert_eq!(config.keybindings.check_action(&ev_c), None);
+    }
+
+    #[test]
+    fn watch_config_initializes_successfully_on_temp_file() {
+        let temp_dir = std::env::temp_dir().join(format!("oxidite_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config_file = temp_dir.join("config.toml");
+        std::fs::write(&config_file, "theme = \"nord\"\n").expect("write temp config");
+
+        let watcher = watch_config(&config_file, || {});
+        assert!(watcher.is_ok());
+
+        let _ = std::fs::remove_file(&config_file);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
