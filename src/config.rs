@@ -24,7 +24,47 @@ pub fn themes_dir() -> Option<PathBuf> {
     config_dir().map(|p| p.join("themes"))
 }
 
-/// User-facing config (defaults only for now).
+/// Errors that can occur during configuration loading and parsing.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// File I/O failure when reading the configuration file.
+    #[error("failed to read config file '{path}': {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// TOML parsing failure.
+    #[error("failed to parse config TOML: {0}")]
+    Toml(#[from] toml::de::Error),
+    /// Theme parsing failure.
+    #[error("theme error: {0}")]
+    Theme(#[from] crate::theme::ThemeError),
+}
+
+/// Representation of `config.toml` structure for serde deserialization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ConfigFile {
+    /// Active theme name.
+    pub theme: String,
+    /// Font size in points.
+    pub font_size: f32,
+    /// Scrollback capacity in lines.
+    pub scrollback_lines: usize,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            theme: "default-dark".to_string(),
+            font_size: 14.0,
+            scrollback_lines: 10_000,
+        }
+    }
+}
+
+/// User-facing config.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Active color theme.
@@ -36,13 +76,39 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Built-in defaults used until `config.toml` loading lands in Phase 7.
+    /// Built-in defaults.
     fn default() -> Self {
         Self {
             theme: Theme::default_dark(),
             font_size: 14.0,
             scrollback_lines: 10_000,
         }
+    }
+}
+
+impl Config {
+    /// Parses configuration from a TOML string.
+    pub fn from_toml(content: &str) -> Result<Self, ConfigError> {
+        let file: ConfigFile = toml::from_str(content)?;
+        let theme = Theme::preset_by_name(&file.theme).unwrap_or_else(|| {
+            log::warn!("theme '{}' not found, using default-dark", file.theme);
+            Theme::default_dark()
+        });
+
+        Ok(Self {
+            theme,
+            font_size: file.font_size,
+            scrollback_lines: file.scrollback_lines,
+        })
+    }
+
+    /// Loads configuration from a given file path.
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self, ConfigError> {
+        let content = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Self::from_toml(&content)
     }
 }
 
@@ -75,5 +141,41 @@ mod tests {
             assert!(themes.ends_with("themes"));
             assert_eq!(themes.file_name().and_then(|n| n.to_str()), Some("themes"));
         }
+    }
+
+    #[test]
+    fn config_from_toml_empty_uses_defaults() {
+        let config = Config::from_toml("").expect("empty config should parse to defaults");
+        assert_eq!(config.theme.name, "default-dark");
+        assert!((config.font_size - 14.0).abs() < f32::EPSILON);
+        assert_eq!(config.scrollback_lines, 10_000);
+    }
+
+    #[test]
+    fn config_from_toml_custom_values() {
+        let toml_str = r#"
+theme = "dracula"
+font_size = 16.5
+scrollback_lines = 5000
+"#;
+        let config = Config::from_toml(toml_str).expect("custom config should parse");
+        assert_eq!(config.theme.name, "dracula");
+        assert!((config.font_size - 16.5).abs() < f32::EPSILON);
+        assert_eq!(config.scrollback_lines, 5000);
+    }
+
+    #[test]
+    fn config_from_toml_unknown_theme_falls_back_to_default_dark() {
+        let toml_str = r#"
+theme = "nonexistent-theme-xyz"
+"#;
+        let config = Config::from_toml(toml_str).expect("config should parse with fallback theme");
+        assert_eq!(config.theme.name, "default-dark");
+    }
+
+    #[test]
+    fn config_from_toml_invalid_toml_returns_err() {
+        let toml_str = "invalid [ toml syntax";
+        assert!(Config::from_toml(toml_str).is_err());
     }
 }
