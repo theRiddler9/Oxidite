@@ -1,0 +1,36 @@
+# Oxidite example configuration file
+# Copy this file to your configuration directory:
+#   Linux/macOS: ~/.config/oxidite/config.toml
+#   Windows:     %APPDATA%\oxidite\config.toml
+
+# Active theme name.
+# Options: "dracula", "solarized-dark", "solarized-light", "gruvbox-dark", "nord", "one-dark", "default-dark"
+# Or the name of any custom theme file in ~/.config/oxidite/themes/<theme_name>.toml
+theme = "dracula"
+
+# Monospace font family name
+font_family = "monospace"
+
+# Font size in points
+font_size = 14.0
+
+# Window inner padding in pixels
+padding_x = 4.0
+padding_y = 4.0
+
+# Shell command and arguments (uncomment to override default system shell)
+# shell = "/bin/bash"
+# shell_args = ["-l"]
+
+# Scrollback history buffer size in lines
+scrollback_lines = 10000
+
+[keybindings]
+copy = "Ctrl+Shift+C"
+paste = "Ctrl+Shift+V"
+zoom_in = "Ctrl+="
+zoom_out = "Ctrl+-"
+zoom_reset = "Ctrl+0"
+scroll_page_up = "Shift+PageUp"
+scroll_page_down = "Shift+PageDown"
+cycle_theme = "Ctrl+Shift+T"
