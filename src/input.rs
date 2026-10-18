@@ -220,9 +220,15 @@ pub enum InputAction {
     Copy,
     /// Paste text from system clipboard to PTY.
     Paste,
+    /// Increase font size (zoom in).
+    ZoomIn,
+    /// Decrease font size (zoom out).
+    ZoomOut,
+    /// Reset font size to default.
+    ZoomReset,
 }
 
-/// Checks if a key event corresponds to a terminal internal action (e.g. scrollback).
+/// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
 #[must_use]
 pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
     if event.state != ElementState::Pressed {
@@ -253,6 +259,18 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch.eq_ignore_ascii_case("v") {
             return Some(InputAction::Paste);
+        }
+    }
+
+    if ctrl
+        && !alt
+        && let Key::Character(ref ch) = event.logical_key
+    {
+        match ch.as_str() {
+            "+" | "=" => return Some(InputAction::ZoomIn),
+            "-" | "_" => return Some(InputAction::ZoomOut),
+            "0" => return Some(InputAction::ZoomReset),
+            _ => {}
         }
     }
 
@@ -1007,6 +1025,45 @@ mod tests {
             ElementState::Pressed,
         );
         assert_eq!(check_input_action(&ctrl_c), None);
+    }
+
+    #[test]
+    fn check_font_zoom_keybindings() {
+        // Ctrl+= -> ZoomIn
+        let ctrl_equal = KeyEvent::new(
+            Key::Character(SmolStr::new("=")),
+            Some("=".to_string()),
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_equal), Some(InputAction::ZoomIn));
+
+        // Ctrl++ -> ZoomIn
+        let ctrl_plus = KeyEvent::new(
+            Key::Character(SmolStr::new("+")),
+            Some("+".to_string()),
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_plus), Some(InputAction::ZoomIn));
+
+        // Ctrl+- -> ZoomOut
+        let ctrl_minus = KeyEvent::new(
+            Key::Character(SmolStr::new("-")),
+            Some("-".to_string()),
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_minus), Some(InputAction::ZoomOut));
+
+        // Ctrl+0 -> ZoomReset
+        let ctrl_zero = KeyEvent::new(
+            Key::Character(SmolStr::new("0")),
+            Some("0".to_string()),
+            ModifiersState::CONTROL,
+            ElementState::Pressed,
+        );
+        assert_eq!(check_input_action(&ctrl_zero), Some(InputAction::ZoomReset));
     }
 
     #[test]

@@ -92,11 +92,11 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 6 — Rendering polish
 
-- [ ] Glyph cache, bold/italic, underline/strike, attrs, 256/truecolor
-- [ ] Cursor shapes/blink, selection, damage redraw, HiDPI, zoom
-- [ ] Wide/emoji, OSC title, visual bell, throughput
-- [ ] `docs/learn/phase-6.md`
-- [ ] Tag: `phase-6-polish`
+- [x] Glyph cache, bold/italic, underline/strike, attrs, 256/truecolor
+- [x] Cursor shapes/blink, selection, damage redraw, HiDPI, zoom
+- [x] Wide/emoji, OSC title, visual bell, throughput
+- [x] `docs/learn/phase-6.md`
+- [x] Tag: `phase-6-polish`
 
 ### Phase 7 — Config and themes
 

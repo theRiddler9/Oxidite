@@ -83,6 +83,8 @@ pub struct Terminal {
     pub bell_count: u64,
     /// Flags marking which visible rows need redrawing.
     pub dirty_rows: Vec<bool>,
+    /// Whether the cursor is currently configured to blink.
+    pub cursor_blinking: bool,
 }
 
 impl Default for Terminal {
@@ -105,6 +107,7 @@ impl Terminal {
             attrs: Attrs::empty(),
             bell_count: 0,
             dirty_rows: vec![true; rows],
+            cursor_blinking: true,
         }
     }
 
@@ -281,6 +284,14 @@ impl Handler for Terminal {
     /// Sets the window title from an OSC sequence.
     fn set_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    /// Sets the cursor shape and blinking state (`CSI Ps SP q`, DECSCUSR).
+    fn set_cursor_shape(&mut self, shape: crate::grid::CursorShape, blinking: bool) {
+        self.grid.cursor.shape = shape;
+        self.alternate_grid.cursor.shape = shape;
+        self.cursor_blinking = blinking;
+        self.mark_row_dirty(self.grid.cursor.row);
     }
 
     /// Saves the current cursor position and attributes (`ESC 7`, DECSC).
@@ -537,5 +548,22 @@ mod tests {
         parser.advance(&mut term, b"\x1b[?1049l");
         assert!(!term.modes.alternate_screen);
         assert_eq!(term.grid.row(0).unwrap()[0].ch, 'L');
+    }
+
+    #[test]
+    fn terminal_set_cursor_shape_and_blinking() {
+        let mut term = Terminal::new(10, 4);
+        assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Block);
+        assert!(term.cursor_blinking);
+
+        // Underline steady
+        term.set_cursor_shape(crate::grid::CursorShape::Underline, false);
+        assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Underline);
+        assert!(!term.cursor_blinking);
+
+        // Bar blinking
+        term.set_cursor_shape(crate::grid::CursorShape::Bar, true);
+        assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Bar);
+        assert!(term.cursor_blinking);
     }
 }

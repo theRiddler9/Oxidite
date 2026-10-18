@@ -180,25 +180,9 @@ impl vte::Perform for Dispatcher<'_> {
                 _ => {}
             }
         } else if intermediates == b"?" {
-            // DECSET (h) / DECRST (l)
-            let enabled = match action {
-                'h' => true,
-                'l' => false,
-                _ => return,
-            };
-            for subparams in params {
-                let code = subparams.first().copied().unwrap_or(0);
-                let mode = match code {
-                    1 => crate::handler::Mode::ApplicationCursorKeys,
-                    7 => crate::handler::Mode::Autowrap,
-                    25 => crate::handler::Mode::CursorVisible,
-                    1000 | 1002 | 1003 | 1006 => crate::handler::Mode::MouseReporting,
-                    47 | 1047 | 1049 => crate::handler::Mode::AlternateScreen,
-                    2004 => crate::handler::Mode::BracketedPaste,
-                    _ => continue,
-                };
-                self.handler.set_mode(mode, enabled);
-            }
+            self.dispatch_decset_decrst(params, action);
+        } else if intermediates == b" " && action == 'q' {
+            self.dispatch_decscusr(params);
         }
     }
 
@@ -215,6 +199,40 @@ impl vte::Perform for Dispatcher<'_> {
 }
 
 impl Dispatcher<'_> {
+    fn dispatch_decset_decrst(&mut self, params: &vte::Params, action: char) {
+        let enabled = match action {
+            'h' => true,
+            'l' => false,
+            _ => return,
+        };
+        for subparams in params {
+            let code = subparams.first().copied().unwrap_or(0);
+            let mode = match code {
+                1 => crate::handler::Mode::ApplicationCursorKeys,
+                7 => crate::handler::Mode::Autowrap,
+                25 => crate::handler::Mode::CursorVisible,
+                1000 | 1002 | 1003 | 1006 => crate::handler::Mode::MouseReporting,
+                47 | 1047 | 1049 => crate::handler::Mode::AlternateScreen,
+                2004 => crate::handler::Mode::BracketedPaste,
+                _ => continue,
+            };
+            self.handler.set_mode(mode, enabled);
+        }
+    }
+
+    fn dispatch_decscusr(&mut self, params: &vte::Params) {
+        let ps = param_or(params, 0, 1);
+        let (shape, blinking) = match ps {
+            2 => (crate::grid::CursorShape::Block, false),
+            3 => (crate::grid::CursorShape::Underline, true),
+            4 => (crate::grid::CursorShape::Underline, false),
+            5 => (crate::grid::CursorShape::Bar, true),
+            6 => (crate::grid::CursorShape::Bar, false),
+            _ => (crate::grid::CursorShape::Block, true),
+        };
+        self.handler.set_cursor_shape(shape, blinking);
+    }
+
     fn dispatch_sgr(&mut self, params: &vte::Params) {
         if params.is_empty() {
             self.handler.set_sgr(crate::handler::SgrAttr::Reset);
@@ -433,6 +451,11 @@ impl Handler for LoggingHandler {
 
     fn set_title(&mut self, title: String) {
         self.events.push(format!("set_title({title:?})"));
+    }
+
+    fn set_cursor_shape(&mut self, shape: crate::grid::CursorShape, blinking: bool) {
+        self.events
+            .push(format!("set_cursor_shape({shape:?}, {blinking})"));
     }
 
     fn save_cursor(&mut self) {
@@ -968,6 +991,29 @@ mod tests {
                 "set_title(\"Split Title\")",
                 "set_sgr(Foreground(Rgb(255, 100, 0)))",
                 "print('🦀')",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_decscusr_cursor_shapes() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        parser.advance(
+            &mut handler,
+            b"\x1b[1 q\x1b[2 q\x1b[3 q\x1b[4 q\x1b[5 q\x1b[6 q",
+        );
+
+        assert_eq!(
+            handler.events,
+            vec![
+                "set_cursor_shape(Block, true)",
+                "set_cursor_shape(Block, false)",
+                "set_cursor_shape(Underline, true)",
+                "set_cursor_shape(Underline, false)",
+                "set_cursor_shape(Bar, true)",
+                "set_cursor_shape(Bar, false)",
             ]
         );
     }

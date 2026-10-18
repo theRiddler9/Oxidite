@@ -4,8 +4,8 @@ use crate::grid::{Color, Cursor, CursorShape, Grid};
 use crate::renderer::font::CellMetrics;
 use glyphon::{
     Attrs as FontAttrs, Buffer as FontBuffer, Cache, Color as GlyphonColor, Family, FontSystem,
-    Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
+    Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport, Weight,
 };
 use std::borrow::Cow;
 
@@ -29,6 +29,35 @@ pub const DEFAULT_PALETTE: [[f32; 4]; 16] = [
     [1.0, 1.0, 1.0, 1.0],    // 15: Bright White
 ];
 
+/// Default selection highlight quad color (semi-transparent blue).
+pub const DEFAULT_SELECTION_COLOR: [f32; 4] = [0.25, 0.45, 0.85, 0.4];
+
+/// Standard 6x6x6 color cube normalized component steps for xterm 256-color palette.
+pub const CUBE_STEPS: [f32; 6] = [
+    0.0,
+    95.0 / 255.0,
+    135.0 / 255.0,
+    175.0 / 255.0,
+    215.0 / 255.0,
+    1.0,
+];
+
+/// Converts an 8-bit indexed terminal color (0..255) into normalized `[r, g, b, a]`.
+pub fn indexed_to_rgba(idx: u8, palette_16: &[[f32; 4]; 16]) -> [f32; 4] {
+    if (idx as usize) < 16 {
+        palette_16[idx as usize]
+    } else if idx < 232 {
+        let q = idx - 16;
+        let r = CUBE_STEPS[(q / 36) as usize % 6];
+        let g = CUBE_STEPS[(q / 6) as usize % 6];
+        let b = CUBE_STEPS[q as usize % 6];
+        [r, g, b, 1.0]
+    } else {
+        let gray = (f32::from(idx - 232) * 10.0 + 8.0) / 255.0;
+        [gray, gray, gray, 1.0]
+    }
+}
+
 /// Converts a terminal `Color` into a normalized `[r, g, b, a]` slice.
 pub fn color_to_rgba(color: Color, default_color: [f32; 4], palette: &[[f32; 4]; 16]) -> [f32; 4] {
     match color {
@@ -39,27 +68,7 @@ pub fn color_to_rgba(color: Color, default_color: [f32; 4], palette: &[[f32; 4];
             f32::from(b) / 255.0,
             1.0,
         ],
-        Color::Indexed(idx) => {
-            if (idx as usize) < 16 {
-                palette[idx as usize]
-            } else if (16..=231).contains(&idx) {
-                let q = idx - 16;
-                let r = (q / 36) % 6;
-                let g = (q / 6) % 6;
-                let b = q % 6;
-                let conv = |c: u8| {
-                    if c == 0 {
-                        0.0
-                    } else {
-                        (f32::from(c) * 40.0 + 55.0) / 255.0
-                    }
-                };
-                [conv(r), conv(g), conv(b), 1.0]
-            } else {
-                let gray = (f32::from(idx - 232) * 10.0 + 8.0) / 255.0;
-                [gray, gray, gray, 1.0]
-            }
-        }
+        Color::Indexed(idx) => indexed_to_rgba(idx, palette),
     }
 }
 
@@ -122,6 +131,44 @@ pub fn build_quad_vertices(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> [
     ]
 }
 
+/// Computes the effective foreground and background colors for a cell considering SGR attributes
+/// (such as INVERSE and DIM), returning `(effective_fg, effective_bg, has_visible_bg)`.
+#[allow(clippy::similar_names)]
+pub fn resolve_cell_colors(
+    cell: &crate::grid::Cell,
+    default_fg: [f32; 4],
+    default_bg: [f32; 4],
+    palette: &[[f32; 4]; 16],
+) -> ([f32; 4], [f32; 4], bool) {
+    let raw_fg = color_to_rgba(cell.fg, default_fg, palette);
+    let raw_bg = color_to_rgba(cell.bg, default_bg, palette);
+
+    let is_inverse = cell.attrs.contains(crate::grid::Attrs::INVERSE);
+    let (mut fg, bg, has_visible_bg) = if is_inverse {
+        let effective_fg = if cell.bg == Color::Default {
+            default_bg
+        } else {
+            raw_bg
+        };
+        let effective_bg = if cell.fg == Color::Default {
+            default_fg
+        } else {
+            raw_fg
+        };
+        (effective_fg, effective_bg, true)
+    } else {
+        (raw_fg, raw_bg, cell.bg != Color::Default)
+    };
+
+    if cell.attrs.contains(crate::grid::Attrs::DIM) {
+        fg[0] *= 0.65;
+        fg[1] *= 0.65;
+        fg[2] *= 0.65;
+    }
+
+    (fg, bg, has_visible_bg)
+}
+
 /// Gathers background quad vertices for all cells in `grid` that differ from default background.
 #[allow(clippy::cast_precision_loss)]
 pub fn build_cell_background_vertices(
@@ -136,17 +183,119 @@ pub fn build_cell_background_vertices(
         let Some(row_cells) = grid.display_row(row) else {
             continue;
         };
-        for col in 0..grid.cols {
-            let cell = &row_cells[col];
-            // Only draw background if cell background is not default
-            if cell.bg != Color::Default {
+        for (col, cell) in row_cells.iter().enumerate() {
+            if cell.width == 0 {
+                continue;
+            }
+            let (_, bg_color, has_visible_bg) =
+                resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.0, 0.0, 0.0, 1.0], palette);
+            if has_visible_bg {
                 let x = col as f32 * cell_width;
                 let y = row as f32 * cell_height;
                 let w = f32::from(cell.width.max(1)) * cell_width;
                 let h = cell_height;
-                let color = color_to_rgba(cell.bg, [0.0, 0.0, 0.0, 1.0], palette);
-                vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, color));
+                vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, bg_color));
             }
+        }
+    }
+
+    vertices
+}
+
+/// Builds quad vertices for text decorations (underline and strikethrough) in the visible grid.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_text_decoration_vertices(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+) -> Vec<QuadVertex> {
+    let mut vertices = Vec::new();
+
+    for row in 0..grid.rows {
+        let Some(row_cells) = grid.display_row(row) else {
+            continue;
+        };
+        for (col, cell) in row_cells.iter().enumerate() {
+            if cell.attrs.is_empty() || cell.width == 0 {
+                continue;
+            }
+
+            let has_underline = cell.attrs.contains(crate::grid::Attrs::UNDERLINE);
+            let has_strike = cell.attrs.contains(crate::grid::Attrs::STRIKETHROUGH);
+
+            if !has_underline && !has_strike {
+                continue;
+            }
+
+            let x = col as f32 * cell_width;
+            let y = row as f32 * cell_height;
+            let w = f32::from(cell.width.max(1)) * cell_width;
+            let (line_color, _, _) =
+                resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.05, 0.05, 0.05, 1.0], palette);
+
+            if has_underline {
+                let underline_thickness = (cell_height * 0.08).round().max(1.0);
+                let underline_y = y + cell_height - underline_thickness;
+                vertices.extend_from_slice(&build_quad_vertices(
+                    x,
+                    underline_y,
+                    w,
+                    underline_thickness,
+                    line_color,
+                ));
+            }
+
+            if has_strike {
+                let strike_thickness = (cell_height * 0.08).round().max(1.0);
+                let strike_y = y + (cell_height * 0.55).round();
+                vertices.extend_from_slice(&build_quad_vertices(
+                    x,
+                    strike_y,
+                    w,
+                    strike_thickness,
+                    line_color,
+                ));
+            }
+        }
+    }
+
+    vertices
+}
+
+/// Builds quad vertices for highlighted selection text regions.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_selection_vertices(
+    grid: &Grid,
+    selection: Option<&crate::input::Selection>,
+    cell_width: f32,
+    cell_height: f32,
+    color: [f32; 4],
+) -> Vec<QuadVertex> {
+    let mut vertices = Vec::new();
+    let Some(sel) = selection else {
+        return vertices;
+    };
+
+    let (min, max) = sel.normalized();
+    for row in min.row..=max.row {
+        if row >= grid.rows {
+            break;
+        }
+
+        let start_col = if row == min.row { min.col } else { 0 };
+        let end_col = if row == max.row {
+            max.col.min(grid.cols.saturating_sub(1))
+        } else {
+            grid.cols.saturating_sub(1)
+        };
+
+        if start_col <= end_col {
+            let x = start_col as f32 * cell_width;
+            let y = row as f32 * cell_height;
+            let w = (end_col - start_col + 1) as f32 * cell_width;
+            let h = cell_height;
+            vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, color));
         }
     }
 
@@ -160,21 +309,33 @@ pub fn build_cursor_vertices(
     metrics: &CellMetrics,
     color: [f32; 4],
 ) -> Vec<QuadVertex> {
+    build_cursor_vertices_with_width(cursor, metrics, color, 1)
+}
+
+/// Builds quad vertices for the cursor with specified cell width multiplier (for wide characters).
+#[allow(clippy::cast_precision_loss)]
+pub fn build_cursor_vertices_with_width(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+    cell_width_multiplier: u8,
+) -> Vec<QuadVertex> {
     if !cursor.visible {
         return Vec::new();
     }
 
     let x = cursor.col as f32 * metrics.cell_width;
     let y = cursor.row as f32 * metrics.cell_height;
+    let cursor_w = f32::from(cell_width_multiplier.max(1)) * metrics.cell_width;
 
     let (pos_x, pos_y, w, h) = match cursor.shape {
-        CursorShape::Block => (x, y, metrics.cell_width, metrics.cell_height),
+        CursorShape::Block => (x, y, cursor_w, metrics.cell_height),
         CursorShape::Underline => {
             let underline_height = (metrics.cell_height * 0.15).max(2.0);
             (
                 x,
                 y + metrics.cell_height - underline_height,
-                metrics.cell_width,
+                cursor_w,
                 underline_height,
             )
         }
@@ -342,6 +503,50 @@ impl QuadPipeline {
     }
 }
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+/// A cached shaped text row buffer with its content hash signature.
+struct CachedRowBuffer {
+    signature: u64,
+    buffer: FontBuffer,
+}
+
+/// Cache of shaped text buffers across terminal rows to avoid reshapes on unchanged lines.
+#[derive(Default)]
+pub struct GlyphCache {
+    rows: Vec<Option<CachedRowBuffer>>,
+}
+
+impl GlyphCache {
+    /// Creates a new empty glyph cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { rows: Vec::new() }
+    }
+
+    /// Resizes the cache entry storage to accommodate the visible grid rows.
+    pub fn resize(&mut self, row_count: usize) {
+        self.rows.resize_with(row_count, || None);
+    }
+
+    /// Clears all cached row buffers.
+    pub fn clear(&mut self) {
+        self.rows.clear();
+    }
+
+    /// Returns the number of cached row entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Returns whether the cache is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
 /// WGPU graphics pipeline for rendering text glyphs via glyphon.
 pub struct GlyphPipeline {
     /// Font system containing loaded font faces.
@@ -354,6 +559,8 @@ pub struct GlyphPipeline {
     pub atlas: TextAtlas,
     /// Text renderer for drawing text quads.
     pub text_renderer: TextRenderer,
+    /// Cache of shaped row text buffers.
+    pub glyph_cache: GlyphCache,
 }
 
 impl GlyphPipeline {
@@ -366,6 +573,7 @@ impl GlyphPipeline {
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        let glyph_cache = GlyphCache::new();
 
         Self {
             font_system,
@@ -373,6 +581,7 @@ impl GlyphPipeline {
             viewport,
             atlas,
             text_renderer,
+            glyph_cache,
         }
     }
 }
@@ -395,66 +604,95 @@ pub struct DrawContext<'a> {
     pub metrics: &'a CellMetrics,
     /// 16-color ANSI palette.
     pub palette: &'a [[f32; 4]; 16],
+    /// Optional damage tracking flags for visible rows.
+    pub dirty_rows: Option<&'a [bool]>,
 }
 
+fn collect_single_row_spans(
+    row_cells: &[crate::grid::Cell],
+    palette: &[[f32; 4]; 16],
+) -> Vec<(String, FontAttrs<'static>)> {
+    let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
+        return Vec::new();
+    };
+
+    let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_style: Option<(GlyphonColor, bool, bool)> = None;
+
+    for cell in &row_cells[..=last_col] {
+        if cell.width == 0 {
+            continue;
+        }
+
+        let (fg_rgba, _, _) =
+            resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.05, 0.05, 0.05, 1.0], palette);
+        let color = GlyphonColor::rgba(
+            float_to_u8(fg_rgba[0]),
+            float_to_u8(fg_rgba[1]),
+            float_to_u8(fg_rgba[2]),
+            255,
+        );
+        let is_bold = cell.attrs.contains(crate::grid::Attrs::BOLD);
+        let is_italic = cell.attrs.contains(crate::grid::Attrs::ITALIC);
+        let cell_style = (color, is_bold, is_italic);
+        let ch = if cell.attrs.contains(crate::grid::Attrs::HIDDEN) {
+            ' '
+        } else {
+            cell.ch
+        };
+
+        if current_style == Some(cell_style) {
+            current_text.push(ch);
+        } else {
+            if !current_text.is_empty()
+                && let Some((c, bold, italic)) = current_style
+            {
+                let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
+                if bold {
+                    attrs = attrs.weight(Weight::BOLD);
+                }
+                if italic {
+                    attrs = attrs.style(Style::Italic);
+                }
+                spans.push((current_text, attrs));
+                current_text = String::new();
+            }
+            current_style = Some(cell_style);
+            current_text.push(ch);
+        }
+    }
+
+    if !current_text.is_empty()
+        && let Some((c, bold, italic)) = current_style
+    {
+        let mut attrs = FontAttrs::new().family(Family::Monospace).color(c);
+        if bold {
+            attrs = attrs.weight(Weight::BOLD);
+        }
+        if italic {
+            attrs = attrs.style(Style::Italic);
+        }
+        spans.push((current_text, attrs));
+    }
+
+    spans
+}
+
+#[cfg(test)]
 fn collect_row_spans(
     grid: &Grid,
     palette: &[[f32; 4]; 16],
 ) -> Vec<(usize, Vec<(String, FontAttrs<'static>)>)> {
     let mut row_spans = Vec::new();
-
     for row_idx in 0..grid.rows {
-        let Some(row_cells) = grid.display_row(row_idx) else {
-            continue;
-        };
-        let Some(last_col) = row_cells.iter().rposition(|c| c.ch != ' ') else {
-            continue;
-        };
-
-        let mut spans: Vec<(String, FontAttrs<'static>)> = Vec::new();
-        let mut current_text = String::new();
-        let mut current_color = None;
-
-        for cell in &row_cells[..=last_col] {
-            if cell.width == 0 {
-                continue;
+        if let Some(row_cells) = grid.display_row(row_idx) {
+            let spans = collect_single_row_spans(row_cells, palette);
+            if !spans.is_empty() {
+                row_spans.push((row_idx, spans));
             }
-
-            let fg_rgba = color_to_rgba(cell.fg, [0.9, 0.9, 0.9, 1.0], palette);
-            let color = GlyphonColor::rgba(
-                float_to_u8(fg_rgba[0]),
-                float_to_u8(fg_rgba[1]),
-                float_to_u8(fg_rgba[2]),
-                255,
-            );
-
-            if current_color == Some(color) {
-                current_text.push(cell.ch);
-            } else {
-                if !current_text.is_empty() {
-                    let attrs = FontAttrs::new()
-                        .family(Family::Monospace)
-                        .color(current_color.unwrap_or(color));
-                    spans.push((current_text, attrs));
-                    current_text = String::new();
-                }
-                current_color = Some(color);
-                current_text.push(cell.ch);
-            }
-        }
-
-        if !current_text.is_empty() {
-            let attrs = FontAttrs::new()
-                .family(Family::Monospace)
-                .color(current_color.unwrap_or(GlyphonColor::rgb(255, 255, 255)));
-            spans.push((current_text, attrs));
-        }
-
-        if !spans.is_empty() {
-            row_spans.push((row_idx, spans));
         }
     }
-
     row_spans
 }
 
@@ -467,36 +705,81 @@ impl GlyphPipeline {
         rpass: &mut wgpu::RenderPass<'pass>,
         grid: &Grid,
     ) -> Result<(), glyphon::RenderError> {
-        let row_spans = collect_row_spans(grid, ctx.palette);
+        self.glyph_cache.resize(grid.rows);
 
-        let mut buffers = Vec::with_capacity(row_spans.len());
-        for (row_idx, spans) in &row_spans {
-            let mut buffer = FontBuffer::new(
-                &mut self.font_system,
-                Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
-            );
-            let rich_spans: Vec<(&str, FontAttrs)> = spans
-                .iter()
-                .map(|(text, attrs)| (text.as_str(), attrs.clone()))
-                .collect();
-            buffer.set_rich_text(
-                rich_spans,
-                &FontAttrs::new().family(Family::Monospace),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            buffers.push((*row_idx, buffer));
+        for row_idx in 0..grid.rows {
+            let is_dirty = ctx
+                .dirty_rows
+                .is_none_or(|dirty| dirty.get(row_idx).copied().unwrap_or(true));
+
+            if !is_dirty && self.glyph_cache.rows[row_idx].is_some() {
+                continue;
+            }
+
+            let Some(row_cells) = grid.display_row(row_idx) else {
+                self.glyph_cache.rows[row_idx] = None;
+                continue;
+            };
+
+            if !row_cells.iter().any(|c| c.ch != ' ') {
+                self.glyph_cache.rows[row_idx] = None;
+                continue;
+            }
+
+            let mut hasher = DefaultHasher::new();
+            row_idx.hash(&mut hasher);
+            ctx.metrics.font_size.to_bits().hash(&mut hasher);
+            ctx.metrics.line_height.to_bits().hash(&mut hasher);
+            row_cells.hash(&mut hasher);
+            let signature = hasher.finish();
+
+            let needs_update = match &self.glyph_cache.rows[row_idx] {
+                Some(cached) => cached.signature != signature,
+                None => true,
+            };
+
+            if needs_update {
+                let spans = collect_single_row_spans(row_cells, ctx.palette);
+                let mut buffer = match self.glyph_cache.rows[row_idx].take() {
+                    Some(mut c) => {
+                        c.buffer.set_metrics(Metrics::new(
+                            ctx.metrics.font_size,
+                            ctx.metrics.line_height,
+                        ));
+                        c.buffer
+                    }
+                    None => FontBuffer::new(
+                        &mut self.font_system,
+                        Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
+                    ),
+                };
+                let rich_spans: Vec<(&str, FontAttrs)> = spans
+                    .iter()
+                    .map(|(text, attrs)| (text.as_str(), attrs.clone()))
+                    .collect();
+                buffer.set_rich_text(
+                    rich_spans,
+                    &FontAttrs::new().family(Family::Monospace),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.font_system, false);
+                self.glyph_cache.rows[row_idx] = Some(CachedRowBuffer { signature, buffer });
+            }
         }
 
         let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
         let max_h = i32::try_from(ctx.screen_size[1]).unwrap_or(i32::MAX);
-        let text_areas: Vec<TextArea> = buffers
+        let text_areas: Vec<TextArea> = self
+            .glyph_cache
+            .rows
             .iter()
-            .map(|(row_idx, buffer)| {
-                let top = *row_idx as f32 * ctx.metrics.cell_height;
-                TextArea {
-                    buffer,
+            .enumerate()
+            .filter_map(|(row_idx, entry)| {
+                let cached = entry.as_ref()?;
+                let top = row_idx as f32 * ctx.metrics.cell_height;
+                Some(TextArea {
+                    buffer: &cached.buffer,
                     left: 0.0,
                     top,
                     scale: 1.0,
@@ -508,7 +791,7 @@ impl GlyphPipeline {
                     },
                     default_color: GlyphonColor::rgb(255, 255, 255),
                     custom_glyphs: &[],
-                }
+                })
             })
             .collect();
 
@@ -656,5 +939,297 @@ mod tests {
         let bar_verts = build_cursor_vertices(&cursor, &metrics, color);
         assert_eq!(bar_verts.len(), 6);
         assert!(approx_eq(bar_verts[5].position, [22.0, 40.0])); // 20 + 2.0 width
+    }
+
+    #[test]
+    fn glyph_cache_lifecycle_and_invalidation() {
+        let mut cache = GlyphCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.resize(24);
+        assert_eq!(cache.len(), 24);
+        assert!(!cache.is_empty());
+
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn collect_row_spans_applies_bold_and_italic_styles() {
+        let mut grid = Grid::new(10, 1);
+        grid[0][0] = crate::grid::Cell::new(
+            'B',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::BOLD,
+            1,
+        );
+        grid[0][1] = crate::grid::Cell::new(
+            'I',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::ITALIC,
+            1,
+        );
+        grid[0][2] = crate::grid::Cell::new(
+            'X',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::BOLD | crate::grid::Attrs::ITALIC,
+            1,
+        );
+
+        let spans = collect_row_spans(&grid, &DEFAULT_PALETTE);
+        assert_eq!(spans.len(), 1);
+        let row_spans = &spans[0].1;
+        assert_eq!(row_spans.len(), 3);
+
+        assert_eq!(row_spans[0].0, "B");
+        assert_eq!(row_spans[0].1.weight, Weight::BOLD);
+        assert_eq!(row_spans[0].1.style, Style::Normal);
+
+        assert_eq!(row_spans[1].0, "I");
+        assert_eq!(row_spans[1].1.weight, Weight::NORMAL);
+        assert_eq!(row_spans[1].1.style, Style::Italic);
+
+        assert_eq!(row_spans[2].0, "X");
+        assert_eq!(row_spans[2].1.weight, Weight::BOLD);
+        assert_eq!(row_spans[2].1.style, Style::Italic);
+    }
+
+    #[test]
+    fn build_text_decoration_vertices_underline_and_strikethrough() {
+        let mut grid = Grid::new(4, 1);
+        grid[0][0] = crate::grid::Cell::new(
+            'U',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::UNDERLINE,
+            1,
+        );
+        grid[0][1] = crate::grid::Cell::new(
+            'S',
+            Color::Indexed(2),
+            Color::Default,
+            crate::grid::Attrs::STRIKETHROUGH,
+            1,
+        );
+        grid[0][2] = crate::grid::Cell::new(
+            'B',
+            Color::Indexed(3),
+            Color::Default,
+            crate::grid::Attrs::UNDERLINE | crate::grid::Attrs::STRIKETHROUGH,
+            1,
+        );
+        grid[0][3] = crate::grid::Cell::new(
+            'N',
+            Color::Default,
+            Color::Default,
+            crate::grid::Attrs::empty(),
+            1,
+        );
+
+        let vertices = build_text_decoration_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        // Cell 0: 1 quad (6 verts) for underline
+        // Cell 1: 1 quad (6 verts) for strike
+        // Cell 2: 2 quads (12 verts) for both
+        // Cell 3: 0 quads
+        assert_eq!(vertices.len(), 24);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn resolve_cell_colors_inverse_dim_and_hidden() {
+        let default_fg = [0.9, 0.9, 0.9, 1.0];
+        let default_bg = [0.0, 0.0, 0.0, 1.0];
+
+        // Normal cell
+        let normal = crate::grid::Cell::new(
+            'A',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::empty(),
+            1,
+        );
+        let (fg, bg, has_bg) =
+            resolve_cell_colors(&normal, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(!has_bg);
+        assert!(approx_eq4(fg, DEFAULT_PALETTE[1]));
+        assert!(approx_eq4(bg, default_bg));
+
+        // Inverse cell: swaps fg and bg, forces visible bg
+        let inverse = crate::grid::Cell::new(
+            'B',
+            Color::Indexed(1),
+            Color::Default,
+            crate::grid::Attrs::INVERSE,
+            1,
+        );
+        let (inv_fg, inv_bg, inv_has_bg) =
+            resolve_cell_colors(&inverse, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(inv_has_bg);
+        assert!(approx_eq4(inv_fg, default_bg));
+        assert!(approx_eq4(inv_bg, DEFAULT_PALETTE[1]));
+
+        // Dim cell: reduces fg brightness
+        let dim = crate::grid::Cell::new(
+            'C',
+            Color::Indexed(7),
+            Color::Default,
+            crate::grid::Attrs::DIM,
+            1,
+        );
+        let (dim_fg, _, _) = resolve_cell_colors(&dim, default_fg, default_bg, &DEFAULT_PALETTE);
+        assert!(dim_fg[0] < DEFAULT_PALETTE[7][0]);
+    }
+
+    #[test]
+    fn full_256_palette_and_truecolor_conversions() {
+        // Truecolor
+        let orange = color_to_rgba(
+            Color::Rgb(255, 100, 0),
+            [0.0, 0.0, 0.0, 1.0],
+            &DEFAULT_PALETTE,
+        );
+        assert!(approx_eq4(orange, [1.0, 100.0 / 255.0, 0.0, 1.0]));
+
+        // 256-color cube corners
+        let black_cube = indexed_to_rgba(16, &DEFAULT_PALETTE);
+        assert!(approx_eq4(black_cube, [0.0, 0.0, 0.0, 1.0]));
+
+        let white_cube = indexed_to_rgba(231, &DEFAULT_PALETTE);
+        assert!(approx_eq4(white_cube, [1.0, 1.0, 1.0, 1.0]));
+
+        // Grayscale ramp
+        let gray_start = indexed_to_rgba(232, &DEFAULT_PALETTE);
+        assert!(approx_eq4(
+            gray_start,
+            [8.0 / 255.0, 8.0 / 255.0, 8.0 / 255.0, 1.0]
+        ));
+
+        let gray_end = indexed_to_rgba(255, &DEFAULT_PALETTE);
+        assert!(approx_eq4(
+            gray_end,
+            [238.0 / 255.0, 238.0 / 255.0, 238.0 / 255.0, 1.0]
+        ));
+    }
+
+    #[test]
+    fn build_selection_vertices_shapes_and_bounds() {
+        let grid = Grid::new(10, 5);
+        // None selection -> empty
+        assert_eq!(
+            build_selection_vertices(&grid, None, 10.0, 20.0, DEFAULT_SELECTION_COLOR),
+            Vec::<QuadVertex>::new()
+        );
+
+        // Single line selection: cols 2..=5 on row 1 -> 1 quad = 6 vertices
+        let sel_single = crate::input::Selection::new(
+            crate::input::GridPoint::new(2, 1),
+            crate::input::GridPoint::new(5, 1),
+        );
+        let verts_single = build_selection_vertices(
+            &grid,
+            Some(&sel_single),
+            10.0,
+            20.0,
+            DEFAULT_SELECTION_COLOR,
+        );
+        assert_eq!(verts_single.len(), 6);
+        assert!(approx_eq(verts_single[0].position, [20.0, 20.0]));
+        assert!(approx_eq(verts_single[5].position, [60.0, 40.0])); // (5 - 2 + 1) * 10 = 40w -> x: 20..60
+
+        // Multi-line selection: rows 1 to 2 -> 2 quads = 12 vertices
+        let sel_multi = crate::input::Selection::new(
+            crate::input::GridPoint::new(8, 1),
+            crate::input::GridPoint::new(3, 2),
+        );
+        let verts_multi =
+            build_selection_vertices(&grid, Some(&sel_multi), 10.0, 20.0, DEFAULT_SELECTION_COLOR);
+        assert_eq!(verts_multi.len(), 12);
+    }
+
+    #[test]
+    fn dirty_rows_damage_tracking_skips_clean_rows() {
+        let mut cache = GlyphCache::new();
+        cache.resize(4);
+
+        let dirty = [true, false, true, false];
+        let is_row_0_dirty = dirty.first().copied().unwrap_or(true);
+        let is_row_1_dirty = dirty.get(1).copied().unwrap_or(true);
+
+        assert!(is_row_0_dirty);
+        assert!(!is_row_1_dirty);
+    }
+
+    #[test]
+    fn wide_characters_and_emoji_rendering() {
+        use crate::grid::{Attrs, Color, Grid};
+
+        let mut grid = Grid::new(10, 2);
+        // Col 0: '🦀' (width 2), Col 1: spacer (width 0) with background color
+        grid.put_char(
+            '🦀',
+            Color::Indexed(1),
+            Color::Indexed(2),
+            Attrs::UNDERLINE,
+            false,
+        );
+        // Col 2: 'A' (width 1) with background color
+        grid.put_char(
+            'A',
+            Color::Indexed(3),
+            Color::Indexed(4),
+            Attrs::empty(),
+            false,
+        );
+
+        // 1. Background quads: wide char + spacer should only produce ONE quad of width 20.0
+        let bg_verts = build_cell_background_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        // Exactly 2 quads (12 vertices): one for '🦀' (width 20.0), one for 'A' (width 10.0)
+        assert_eq!(bg_verts.len(), 12);
+        // '🦀' quad has width 20.0: x from 0.0 to 20.0
+        assert!(approx_eq(bg_verts[0].position, [0.0, 0.0]));
+        assert!(approx_eq(bg_verts[5].position, [20.0, 20.0]));
+        // 'A' quad starts at x = 20.0 with width 10.0
+        assert!(approx_eq(bg_verts[6].position, [20.0, 0.0]));
+        assert!(approx_eq(bg_verts[11].position, [30.0, 20.0]));
+
+        // 2. Cursor over wide character (width_multiplier = 2) spans 20.0
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let cursor = Cursor {
+            col: 0,
+            row: 0,
+            shape: CursorShape::Block,
+            ..Cursor::default()
+        };
+        let wide_cursor = build_cursor_vertices_with_width(&cursor, &metrics, [1.0; 4], 2);
+        assert_eq!(wide_cursor.len(), 6);
+        assert!(approx_eq(wide_cursor[5].position, [20.0, 20.0]));
+
+        // 3. Text spans collection with CJK and emoji
+        let mut cjk_grid = Grid::new(12, 1);
+        cjk_grid.put_char('日', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('本', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('語', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char(' ', Color::Default, Color::Default, Attrs::empty(), false);
+        cjk_grid.put_char('🦀', Color::Default, Color::Default, Attrs::empty(), false);
+
+        let row_cells = cjk_grid.display_row(0).unwrap();
+        let spans = collect_single_row_spans(row_cells, &DEFAULT_PALETTE);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "日本語 🦀");
+
+        // 4. Underline decoration on wide char spans 2 cells
+        let deco_verts = build_text_decoration_vertices(&grid, 10.0, 20.0, &DEFAULT_PALETTE);
+        assert_eq!(deco_verts.len(), 6);
+        assert!(approx_eq(deco_verts[0].position, [0.0, 18.0]));
+        assert!(approx_eq(deco_verts[5].position, [20.0, 20.0]));
     }
 }

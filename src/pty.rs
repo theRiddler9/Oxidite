@@ -225,6 +225,16 @@ impl PtyReader {
     pub fn receiver(&self) -> &Receiver<Vec<u8>> {
         &self.receiver
     }
+
+    /// Creates a `PtyReader` wrapping a channel receiver for testing.
+    #[cfg(test)]
+    #[must_use]
+    pub fn from_receiver(receiver: Receiver<Vec<u8>>) -> Self {
+        Self {
+            receiver,
+            reader_thread: None,
+        }
+    }
 }
 
 /// Spawns a shell on a PTY with the given size.

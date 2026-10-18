@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthChar;
 pub const DEFAULT_MAX_SCROLLBACK: usize = 10_000;
 
 /// Cell foreground / background color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum Color {
     /// Use the theme default foreground or background.
     #[default]
@@ -22,7 +22,7 @@ pub enum Color {
 
 bitflags::bitflags! {
     /// Text attributes for a cell (SGR styles).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
     pub struct Attrs: u16 {
         /// Bold text attribute (SGR 1).
         const BOLD          = 1 << 0;
@@ -42,7 +42,7 @@ bitflags::bitflags! {
 }
 
 /// Cursor display shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum CursorShape {
     /// Filled block cursor (default).
     #[default]
@@ -54,7 +54,7 @@ pub enum CursorShape {
 }
 
 /// One character cell on the grid.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cell {
     /// Character stored in this cell.
     pub ch: char,
