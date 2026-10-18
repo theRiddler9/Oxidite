@@ -100,12 +100,12 @@ See `AGENTS.md` for the full mission, non-goals, tech stack, and coding standard
 
 ### Phase 7 — Config and themes
 
-- [ ] Theme struct + built-in presets
-- [ ] Config load, options, keybindings, hot reload
-- [ ] Live theme switch + invalid-config fallback
-- [ ] Config tests + format docs
-- [ ] `docs/learn/phase-7.md`
-- [ ] Tag: `phase-7-config`
+- [x] Theme struct + built-in presets
+- [x] Config load, options, keybindings, hot reload
+- [x] Live theme switch + invalid-config fallback
+- [x] Config tests + format docs
+- [x] `docs/learn/phase-7.md`
+- [x] Tag: `phase-7-config`
 
 ### Phase 8 — Hardening and release
 
