@@ -138,4 +138,7 @@ pub trait Handler {
 
     /// Erases `count` characters starting at the cursor (`CSI Ps X`, ECH).
     fn erase_chars(&mut self, _count: usize) {}
+
+    /// Sets the cursor shape/style and blinking state (`CSI Ps SP q`, DECSCUSR).
+    fn set_cursor_shape(&mut self, _shape: crate::grid::CursorShape, _blinking: bool) {}
 }

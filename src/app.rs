@@ -117,6 +117,12 @@ pub struct App {
     pub cursor_pixel_pos: (f64, f64),
     /// System clipboard interface for copying and pasting text.
     pub clipboard: Option<arboard::Clipboard>,
+    /// Timestamp of last cursor blink phase toggle.
+    pub last_blink: std::time::Instant,
+    /// Whether the cursor is currently in its visible blink phase.
+    pub cursor_blink_visible: bool,
+    /// Whether the window currently has keyboard focus.
+    pub has_focus: bool,
 }
 
 impl App {
@@ -147,6 +153,9 @@ impl App {
             mouse_down_pos: None,
             cursor_pixel_pos: (0.0, 0.0),
             clipboard: arboard::Clipboard::new().ok(),
+            last_blink: std::time::Instant::now(),
+            cursor_blink_visible: true,
+            has_focus: true,
         }
     }
 
@@ -190,6 +199,9 @@ impl App {
     }
 
     fn handle_keyboard_input(&mut self, key_ev: &winit::event::KeyEvent, win: &Window) {
+        self.cursor_blink_visible = true;
+        self.last_blink = std::time::Instant::now();
+
         let key_event = KeyEvent::new(
             key_ev.logical_key.clone(),
             key_ev.text.as_ref().map(ToString::to_string),
@@ -395,7 +407,11 @@ impl App {
             self.cell_metrics.cell_height,
             &DEFAULT_PALETTE,
         ));
-        if self.terminal.grid.display_offset == 0 {
+        let should_draw_cursor = self.terminal.grid.display_offset == 0
+            && self.terminal.grid.cursor.visible
+            && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
+
+        if should_draw_cursor {
             let cursor_vertices = build_cursor_vertices(
                 &self.terminal.grid.cursor,
                 &self.cell_metrics,
@@ -561,7 +577,30 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
             }
+            WindowEvent::Focused(focused) => {
+                self.has_focus = focused;
+                self.cursor_blink_visible = true;
+                self.last_blink = std::time::Instant::now();
+                win.request_redraw();
+            }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.terminal.cursor_blinking && self.has_focus {
+            let elapsed = self.last_blink.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                self.cursor_blink_visible = !self.cursor_blink_visible;
+                self.last_blink = std::time::Instant::now();
+                if let Some(ref win) = self.window {
+                    win.request_redraw();
+                }
+            }
+            let remaining = Duration::from_millis(500).saturating_sub(self.last_blink.elapsed());
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::wait_duration(remaining));
+        } else {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
     }
 }
