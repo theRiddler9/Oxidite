@@ -108,7 +108,13 @@ impl GpuContext {
             .get_default_config(&adapter, width, height)
             .ok_or(GpuError::NoSurfaceConfig)?;
 
-        config.present_mode = wgpu::PresentMode::AutoVsync;
+        let caps = surface.get_capabilities(&adapter);
+        if caps.present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+            config.present_mode = wgpu::PresentMode::AutoVsync;
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            config.present_mode = wgpu::PresentMode::Fifo;
+        }
+
         surface.configure(&device, &config);
 
         Ok(Self {
