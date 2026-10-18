@@ -610,4 +610,74 @@ cycle_theme = "Ctrl+Shift+Space"
         let _ = std::fs::remove_file(&config_file);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn load_or_default_on_missing_file_returns_default() {
+        let nonexistent = std::env::temp_dir().join("oxidite_nonexistent_config_file_12345.toml");
+        let cfg = Config::load_or_default(&nonexistent);
+        assert_eq!(cfg.theme.name, "default-dark");
+        assert_eq!(cfg.font_family, "monospace");
+        assert_eq!(cfg.scrollback_lines, 10_000);
+    }
+
+    #[test]
+    fn load_or_default_on_invalid_syntax_returns_default() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("oxidite_invalid_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config_file = temp_dir.join("invalid_config.toml");
+        std::fs::write(&config_file, "invalid [[[ toml syntax ::::").expect("write temp config");
+
+        let cfg = Config::load_or_default(&config_file);
+        assert_eq!(cfg.theme.name, "default-dark");
+        assert_eq!(cfg.font_family, "monospace");
+
+        let _ = std::fs::remove_file(&config_file);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_or_default_on_valid_file_returns_parsed_config() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("oxidite_valid_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config_file = temp_dir.join("valid_config.toml");
+        let toml_data = r#"
+theme = "solarized-dark"
+font_family = "Consolas"
+font_size = 18.0
+padding_x = 10.0
+padding_y = 10.0
+scrollback_lines = 20000
+"#;
+        std::fs::write(&config_file, toml_data).expect("write valid config");
+
+        let cfg = Config::load_or_default(&config_file);
+        assert_eq!(cfg.theme.name, "solarized-dark");
+        assert_eq!(cfg.font_family, "Consolas");
+        assert!((cfg.font_size - 18.0).abs() < f32::EPSILON);
+        assert_eq!(cfg.scrollback_lines, 20_000);
+
+        let _ = std::fs::remove_file(&config_file);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_from_path_missing_file_returns_error() {
+        let nonexistent = std::env::temp_dir().join("oxidite_missing_file_err_54321.toml");
+        assert!(Config::load_from_path(&nonexistent).is_err());
+    }
+
+    #[test]
+    fn partial_config_preserves_defaults() {
+        let toml_data = r"
+padding_x = 24.0
+";
+        let cfg = Config::from_toml(toml_data).expect("partial config parses");
+        assert!((cfg.padding_x - 24.0).abs() < f32::EPSILON);
+        assert!((cfg.padding_y - 4.0).abs() < f32::EPSILON);
+        assert_eq!(cfg.font_family, "monospace");
+        assert_eq!(cfg.theme.name, "default-dark");
+        assert_eq!(cfg.scrollback_lines, 10_000);
+    }
 }
