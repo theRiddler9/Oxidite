@@ -295,6 +295,36 @@ impl Theme {
             ansi,
         }
     }
+
+    /// Built-in Dracula preset theme.
+    #[must_use]
+    pub fn dracula() -> Self {
+        Self {
+            name: "dracula".to_string(),
+            foreground: Rgb::new(0xf8, 0xf8, 0xf2),
+            background: Rgb::new(0x28, 0x2a, 0x36),
+            cursor: Rgb::new(0xf8, 0xf8, 0xf2),
+            selection_bg: Rgb::new(0x44, 0x47, 0x5a),
+            ansi: [
+                Rgb::new(0x21, 0x22, 0x2c), // 0 black
+                Rgb::new(0xff, 0x55, 0x55), // 1 red
+                Rgb::new(0x50, 0xfa, 0x7b), // 2 green
+                Rgb::new(0xf1, 0xfa, 0x8c), // 3 yellow
+                Rgb::new(0xbd, 0x93, 0xf9), // 4 blue
+                Rgb::new(0xff, 0x79, 0xc6), // 5 magenta
+                Rgb::new(0x8b, 0xe9, 0xfd), // 6 cyan
+                Rgb::new(0xf8, 0xf8, 0xf2), // 7 white
+                Rgb::new(0x62, 0x72, 0xa4), // 8 bright black
+                Rgb::new(0xff, 0x6e, 0x6e), // 9 bright red
+                Rgb::new(0x69, 0xff, 0x94), // 10 bright green
+                Rgb::new(0xff, 0xff, 0xa5), // 11 bright yellow
+                Rgb::new(0xd6, 0xac, 0xff), // 12 bright blue
+                Rgb::new(0xff, 0x92, 0xdf), // 13 bright magenta
+                Rgb::new(0xa4, 0xff, 0xff), // 14 bright cyan
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -414,5 +444,32 @@ ansi = [
             );
         }
         assert_ne!(theme.foreground, theme.background);
+    }
+
+    #[test]
+    fn dracula_preset_valid_and_distinct() {
+        let theme = Theme::dracula();
+        assert_eq!(theme.name, "dracula");
+        assert_eq!(theme.ansi.len(), 16);
+        for (i, color) in theme.ansi.iter().enumerate() {
+            assert_ne!(
+                *color, theme.background,
+                "ANSI color {i} must not match background"
+            );
+        }
+        assert_ne!(theme.foreground, theme.background);
+    }
+
+    #[test]
+    fn dracula_toml_matches_dracula_preset() {
+        let toml_str = include_str!("../themes/dracula.toml");
+        let parsed = Theme::from_toml(toml_str).expect("dracula.toml should parse");
+        let expected = Theme::dracula();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.cursor, expected.cursor);
+        assert_eq!(parsed.selection_bg, expected.selection_bg);
+        assert_eq!(parsed.ansi, expected.ansi);
     }
 }
