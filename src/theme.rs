@@ -385,6 +385,125 @@ impl Theme {
             ],
         }
     }
+
+    /// Built-in Gruvbox Dark preset theme.
+    #[must_use]
+    pub fn gruvbox_dark() -> Self {
+        Self {
+            name: "gruvbox-dark".to_string(),
+            foreground: Rgb::new(0xeb, 0xdb, 0xb2),
+            background: Rgb::new(0x28, 0x28, 0x28),
+            cursor: Rgb::new(0xeb, 0xdb, 0xb2),
+            selection_bg: Rgb::new(0x50, 0x49, 0x45),
+            ansi: [
+                Rgb::new(0x28, 0x28, 0x28), // 0 black
+                Rgb::new(0xcc, 0x24, 0x1d), // 1 red
+                Rgb::new(0x98, 0x97, 0x1a), // 2 green
+                Rgb::new(0xd7, 0x99, 0x21), // 3 yellow
+                Rgb::new(0x45, 0x85, 0x88), // 4 blue
+                Rgb::new(0xb1, 0x62, 0x86), // 5 magenta
+                Rgb::new(0x68, 0x9d, 0x6a), // 6 cyan
+                Rgb::new(0xa8, 0x99, 0x84), // 7 white
+                Rgb::new(0x92, 0x83, 0x74), // 8 bright black
+                Rgb::new(0xfb, 0x49, 0x34), // 9 bright red
+                Rgb::new(0xb8, 0xbb, 0x26), // 10 bright green
+                Rgb::new(0xfa, 0xbd, 0x2f), // 11 bright yellow
+                Rgb::new(0x83, 0xa5, 0x98), // 12 bright blue
+                Rgb::new(0xd3, 0x86, 0x9b), // 13 bright magenta
+                Rgb::new(0x8e, 0xc0, 0x7c), // 14 bright cyan
+                Rgb::new(0xeb, 0xdb, 0xb2), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Nord preset theme.
+    #[must_use]
+    pub fn nord() -> Self {
+        Self {
+            name: "nord".to_string(),
+            foreground: Rgb::new(0xd8, 0xde, 0xe9),
+            background: Rgb::new(0x2e, 0x34, 0x40),
+            cursor: Rgb::new(0xd8, 0xde, 0xe9),
+            selection_bg: Rgb::new(0x43, 0x4c, 0x5e),
+            ansi: [
+                Rgb::new(0x3b, 0x42, 0x52), // 0 black
+                Rgb::new(0xbf, 0x61, 0x6a), // 1 red
+                Rgb::new(0xa3, 0xbe, 0x8c), // 2 green
+                Rgb::new(0xeb, 0xcb, 0x8b), // 3 yellow
+                Rgb::new(0x81, 0xa1, 0xc1), // 4 blue
+                Rgb::new(0xb4, 0x8e, 0xad), // 5 magenta
+                Rgb::new(0x88, 0xc0, 0xd0), // 6 cyan
+                Rgb::new(0xe5, 0xe9, 0xf0), // 7 white
+                Rgb::new(0x4c, 0x56, 0x6a), // 8 bright black
+                Rgb::new(0xbf, 0x61, 0x6a), // 9 bright red
+                Rgb::new(0xa3, 0xbe, 0x8c), // 10 bright green
+                Rgb::new(0xeb, 0xcb, 0x8b), // 11 bright yellow
+                Rgb::new(0x81, 0xa1, 0xc1), // 12 bright blue
+                Rgb::new(0xb4, 0x8e, 0xad), // 13 bright magenta
+                Rgb::new(0x8f, 0xbc, 0xbb), // 14 bright cyan
+                Rgb::new(0xec, 0xef, 0xf4), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in One Dark preset theme.
+    #[must_use]
+    pub fn one_dark() -> Self {
+        Self {
+            name: "one-dark".to_string(),
+            foreground: Rgb::new(0xab, 0xb2, 0xbf),
+            background: Rgb::new(0x28, 0x2c, 0x34),
+            cursor: Rgb::new(0x52, 0x8b, 0xff),
+            selection_bg: Rgb::new(0x3e, 0x44, 0x51),
+            ansi: [
+                Rgb::new(0x28, 0x2c, 0x34), // 0 black
+                Rgb::new(0xe0, 0x6c, 0x75), // 1 red
+                Rgb::new(0x98, 0xc3, 0x79), // 2 green
+                Rgb::new(0xe5, 0xc0, 0x7b), // 3 yellow
+                Rgb::new(0x61, 0xaf, 0xef), // 4 blue
+                Rgb::new(0xc6, 0x78, 0xdd), // 5 magenta
+                Rgb::new(0x56, 0xb6, 0xc2), // 6 cyan
+                Rgb::new(0xab, 0xb2, 0xbf), // 7 white
+                Rgb::new(0x5c, 0x63, 0x70), // 8 bright black
+                Rgb::new(0xe0, 0x6c, 0x75), // 9 bright red
+                Rgb::new(0x98, 0xc3, 0x79), // 10 bright green
+                Rgb::new(0xe5, 0xc0, 0x7b), // 11 bright yellow
+                Rgb::new(0x61, 0xaf, 0xef), // 12 bright blue
+                Rgb::new(0xc6, 0x78, 0xdd), // 13 bright magenta
+                Rgb::new(0x56, 0xb6, 0xc2), // 14 bright cyan
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
+
+    /// Returns a list of all built-in preset theme names.
+    #[must_use]
+    pub fn builtin_presets() -> &'static [&'static str] {
+        &[
+            "default-dark",
+            "dracula",
+            "solarized-dark",
+            "solarized-light",
+            "gruvbox-dark",
+            "nord",
+            "one-dark",
+        ]
+    }
+
+    /// Looks up a built-in preset theme by its name.
+    #[must_use]
+    pub fn preset_by_name(name: &str) -> Option<Self> {
+        match name {
+            "default-dark" => Some(Self::default_dark()),
+            "dracula" => Some(Self::dracula()),
+            "solarized-dark" => Some(Self::solarized_dark()),
+            "solarized-light" => Some(Self::solarized_light()),
+            "gruvbox-dark" => Some(Self::gruvbox_dark()),
+            "nord" => Some(Self::nord()),
+            "one-dark" => Some(Self::one_dark()),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -555,5 +674,54 @@ ansi = [
         assert_eq!(parsed.background, expected.background);
         assert_eq!(parsed.ansi, expected.ansi);
         assert_ne!(parsed.foreground, parsed.background);
+    }
+
+    #[test]
+    fn gruvbox_dark_toml_matches_preset() {
+        let toml_str = include_str!("../themes/gruvbox-dark.toml");
+        let parsed = Theme::from_toml(toml_str).expect("gruvbox-dark.toml should parse");
+        let expected = Theme::gruvbox_dark();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.ansi, expected.ansi);
+        assert_ne!(parsed.foreground, parsed.background);
+    }
+
+    #[test]
+    fn nord_toml_matches_preset() {
+        let toml_str = include_str!("../themes/nord.toml");
+        let parsed = Theme::from_toml(toml_str).expect("nord.toml should parse");
+        let expected = Theme::nord();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.ansi, expected.ansi);
+        assert_ne!(parsed.foreground, parsed.background);
+    }
+
+    #[test]
+    fn one_dark_toml_matches_preset() {
+        let toml_str = include_str!("../themes/one-dark.toml");
+        let parsed = Theme::from_toml(toml_str).expect("one-dark.toml should parse");
+        let expected = Theme::one_dark();
+        assert_eq!(parsed.name, expected.name);
+        assert_eq!(parsed.foreground, expected.foreground);
+        assert_eq!(parsed.background, expected.background);
+        assert_eq!(parsed.ansi, expected.ansi);
+        assert_ne!(parsed.foreground, parsed.background);
+    }
+
+    #[test]
+    fn all_builtin_presets_are_valid_and_resolvable() {
+        let presets = Theme::builtin_presets();
+        assert_eq!(presets.len(), 7);
+        for name in presets {
+            let theme = Theme::preset_by_name(name).expect("preset should resolve");
+            assert_eq!(theme.name, *name);
+            assert_eq!(theme.ansi.len(), 16);
+            assert_ne!(theme.foreground, theme.background);
+        }
+        assert!(Theme::preset_by_name("nonexistent-theme").is_none());
     }
 }
