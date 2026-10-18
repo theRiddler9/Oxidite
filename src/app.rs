@@ -399,6 +399,20 @@ impl App {
         }
 
         self.parser.advance(&mut self.terminal, bytes);
+
+        // Apply OSC window title changes
+        if !self.terminal.title.is_empty() && self.terminal.title != self.title {
+            self.title = self.terminal.title.clone();
+            if let Some(ref win) = self.window {
+                win.set_title(&self.title);
+            }
+        } else if self.terminal.title.is_empty() && self.title != DEFAULT_TITLE {
+            self.title = DEFAULT_TITLE.to_string();
+            if let Some(ref win) = self.window {
+                win.set_title(&self.title);
+            }
+        }
+
         if self.terminal.has_damage()
             && let Some(ref win) = self.window
         {
@@ -582,7 +596,12 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::PtyExited(code) => {
                 self.pty_exited = true;
                 self.pty_exit_code = code;
+                let exit_msg = match code {
+                    Some(c) => format!("{} [Process exited - {c}]", self.title),
+                    None => format!("{} [Process exited]", self.title),
+                };
                 if let Some(ref win) = self.window {
+                    win.set_title(&exit_msg);
                     win.request_redraw();
                 }
             }
@@ -799,5 +818,20 @@ mod tests {
         assert_eq!(app.terminal.grid[0][1].ch, 'e');
         assert_eq!(app.terminal.grid[0][6].ch, 'O');
         assert!(app.terminal.has_damage());
+    }
+
+    #[test]
+    fn handle_pty_output_applies_osc_title() {
+        let term = Terminal::new(80, 24);
+        let mut app = App::new(None, term, None);
+        assert_eq!(app.title, DEFAULT_TITLE);
+
+        app.handle_pty_output(b"\x1b]0;My Custom Title\x07");
+        assert_eq!(app.title, "My Custom Title");
+        assert_eq!(app.terminal.title, "My Custom Title");
+
+        app.handle_pty_output(b"\x1b]2;Another Terminal Title\x07");
+        assert_eq!(app.title, "Another Terminal Title");
+        assert_eq!(app.terminal.title, "Another Terminal Title");
     }
 }
