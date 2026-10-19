@@ -147,7 +147,7 @@ impl Default for Cursor {
             row: 0,
             col: 0,
             visible: true,
-            shape: CursorShape::Block,
+            shape: CursorShape::Bar,
         }
     }
 }

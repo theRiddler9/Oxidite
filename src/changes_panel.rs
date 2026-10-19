@@ -179,7 +179,7 @@ pub fn assemble_changes_panel_quads(
     // 5. Render depending on active tab: Changes vs History
     match state.active_tab {
         ChangesTab::Changes => {
-            // Stage All button background quad (#101217)
+            // Stage All button background and crisp 1px border (#101217)
             let stage_all_btn_x = panel_x + panel_width - 80.0;
             let stage_all_btn_y = panel_y + CHANGES_HEADER_HEIGHT + 6.0;
             quads.extend_from_slice(&build_quad_vertices(
@@ -187,7 +187,35 @@ pub fn assemble_changes_panel_quads(
                 stage_all_btn_y,
                 70.0,
                 20.0,
-                [0.06, 0.07, 0.09, 0.9],
+                [0.08, 0.10, 0.14, 0.95],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                stage_all_btn_x,
+                stage_all_btn_y,
+                70.0,
+                1.0,
+                [0.22, 0.28, 0.38, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                stage_all_btn_x,
+                stage_all_btn_y + 19.0,
+                70.0,
+                1.0,
+                [0.22, 0.28, 0.38, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                stage_all_btn_x,
+                stage_all_btn_y,
+                1.0,
+                20.0,
+                [0.22, 0.28, 0.38, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                stage_all_btn_x + 69.0,
+                stage_all_btn_y,
+                1.0,
+                20.0,
+                [0.22, 0.28, 0.38, 0.9],
             ));
 
             // Changed files rows and checkboxes
@@ -248,13 +276,43 @@ pub fn assemble_changes_panel_quads(
                 [0.04, 0.045, 0.06, 0.95],
             ));
 
-            // Commit button quad (#14161F)
+            // Commit button quad (#14161F) with border
+            let commit_btn_x = panel_x + panel_width - 120.0;
+            let commit_btn_y = commit_y + 66.0;
             quads.extend_from_slice(&build_quad_vertices(
-                panel_x + panel_width - 120.0,
-                commit_y + 66.0,
+                commit_btn_x,
+                commit_btn_y,
                 110.0,
                 24.0,
-                [0.07, 0.08, 0.11, 0.95],
+                [0.08, 0.12, 0.18, 0.95],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                commit_btn_x,
+                commit_btn_y,
+                110.0,
+                1.0,
+                [0.24, 0.35, 0.50, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                commit_btn_x,
+                commit_btn_y + 23.0,
+                110.0,
+                1.0,
+                [0.24, 0.35, 0.50, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                commit_btn_x,
+                commit_btn_y,
+                1.0,
+                24.0,
+                [0.24, 0.35, 0.50, 0.9],
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                commit_btn_x + 109.0,
+                commit_btn_y,
+                1.0,
+                24.0,
+                [0.24, 0.35, 0.50, 0.9],
             ));
         }
         ChangesTab::History => {
@@ -410,7 +468,7 @@ pub fn build_changes_panel_labels(
                 let stat_text = if file.additions > 0 || file.deletions > 0 {
                     format!("+{} -{}", file.additions, file.deletions)
                 } else {
-                    "±0".to_string()
+                    "+0 -0".to_string()
                 };
                 labels.push(TabLabel {
                     text: stat_text,
@@ -421,11 +479,11 @@ pub fn build_changes_panel_labels(
                     max_width: 50.0,
                 });
 
-                // Checkbox checkmark symbol
+                // Checkbox mark symbol
                 if file.staged {
                     labels.push(TabLabel {
-                        text: "✓".to_string(),
-                        x: panel_x + panel_width - 23.0,
+                        text: "x".to_string(),
+                        x: panel_x + panel_width - 21.0,
                         y: row_y + 2.0,
                         color: GlyphonColor::rgb(0, 0, 0),
                         bold: true,
@@ -436,7 +494,7 @@ pub fn build_changes_panel_labels(
 
             // Commit Area controls
             let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
-            let branch_text = format!(" {} · Fetch", state.git_branch);
+            let branch_text = format!("Branch: {} | Fetch", state.git_branch);
             labels.push(TabLabel {
                 text: branch_text,
                 x: panel_x + 10.0,
@@ -496,7 +554,7 @@ pub fn build_changes_panel_labels(
                     max_width: 60.0,
                 });
 
-                let meta_text = format!("{} · {}", commit.relative_time, commit.author);
+                let meta_text = format!("{} | {}", commit.relative_time, commit.author);
                 labels.push(TabLabel {
                     text: meta_text,
                     x: panel_x + 76.0,

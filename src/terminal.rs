@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn terminal_set_cursor_shape_and_blinking() {
         let mut term = Terminal::new(10, 4);
-        assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Block);
+        assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Bar);
         assert!(term.cursor_blinking);
 
         // Underline steady

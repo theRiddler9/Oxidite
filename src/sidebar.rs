@@ -232,9 +232,9 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
 
     // 2. Active Workspace Name & Branch
     let ws_text = if let Some(ref branch) = state.git_branch {
-        format!("📁 {} ·  {}", state.workspace_name, branch)
+        format!("{} | Branch: {}", state.workspace_name, branch)
     } else {
-        format!("📁 {}", state.workspace_name)
+        state.workspace_name.clone()
     };
     labels.push(TabLabel {
         text: ws_text,
@@ -264,9 +264,9 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
         last_y = item_y + SIDEBAR_ITEM_HEIGHT;
         let is_active = idx == state.active_tab_index;
         let (dot, dot_color) = if is_active {
-            ("●", GlyphonColor::rgb(0, 255, 136)) // Retro neon phosphor green
+            ("*", GlyphonColor::rgb(0, 255, 136)) // Retro neon phosphor green
         } else {
-            ("○", GlyphonColor::rgb(120, 125, 140))
+            ("-", GlyphonColor::rgb(120, 125, 140))
         };
         let text_color = if is_active {
             GlyphonColor::rgb(240, 245, 255)
@@ -310,9 +310,9 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
         for (c_idx, chat) in state.chats.iter().enumerate() {
             let row_y = chats_header_y + 18.0 + (c_idx as f32 * CHAT_ROW_HEIGHT);
             let (status_icon, status_color) = match chat.status {
-                ChatStatus::Working => ("⚡", GlyphonColor::rgb(0, 240, 255)), // Cyan working
-                ChatStatus::Idle => ("◌", GlyphonColor::rgb(140, 145, 160)),
-                ChatStatus::Done => ("✓", GlyphonColor::rgb(53, 208, 127)), // Green done
+                ChatStatus::Working => ("*", GlyphonColor::rgb(0, 240, 255)), // Cyan working
+                ChatStatus::Idle => ("-", GlyphonColor::rgb(140, 145, 160)),
+                ChatStatus::Done => ("[x]", GlyphonColor::rgb(53, 208, 127)), // Green done
             };
 
             // Status icon

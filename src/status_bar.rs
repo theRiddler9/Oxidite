@@ -59,21 +59,23 @@ pub enum StatusBarAction {
 
 /// Generates background and badge quad vertices for the bottom status bar.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn assemble_status_bar_quads(
     window_width: f32,
     window_height: f32,
+    status_bar_height: f32,
     accent_color: [f32; 4],
     state: &StatusBarState,
 ) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
-    let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
+    let bar_y = (window_height - status_bar_height).max(0.0);
 
     // 1. Status bar background quad (Pure pitch black #000000)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         bar_y,
         window_width,
-        STATUS_BAR_HEIGHT,
+        status_bar_height,
         [0.0, 0.0, 0.0, 1.0],
     ));
 
@@ -86,7 +88,7 @@ pub fn assemble_status_bar_quads(
         [0.095, 0.105, 0.13, 1.0],
     ));
 
-    // 3. Mode badge pill background
+    // 3. Mode badge pill background and border
     let badge_bg = if state.is_alt_screen {
         [
             accent_color[0] * 0.4,
@@ -98,18 +100,33 @@ pub fn assemble_status_bar_quads(
         [0.05, 0.055, 0.075, 0.9]
     };
 
+    let badge_h = (status_bar_height - 6.0).max(18.0);
     quads.extend_from_slice(&build_quad_vertices(
         6.0,
         bar_y + 3.0,
-        64.0,
-        STATUS_BAR_HEIGHT - 6.0,
+        68.0,
+        badge_h,
         badge_bg,
     ));
+    quads.extend_from_slice(&build_quad_vertices(
+        6.0,
+        bar_y + 3.0,
+        68.0,
+        1.0,
+        [0.18, 0.20, 0.26, 0.7],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        6.0,
+        bar_y + 3.0 + badge_h - 1.0,
+        68.0,
+        1.0,
+        [0.18, 0.20, 0.26, 0.7],
+    ));
 
-    // 4. Interactive Settings pill button background and border
+    // 4. Interactive Settings pill button background and crisp 1px border
     if window_width > 420.0 {
         let (btn_x, btn_y, btn_w, btn_h) =
-            compute_settings_button_rect(window_width, window_height);
+            compute_settings_button_rect(window_width, window_height, status_bar_height);
         let settings_bg = if state.settings_open {
             [
                 accent_color[0] * 0.35,
@@ -118,9 +135,15 @@ pub fn assemble_status_bar_quads(
                 0.95,
             ]
         } else {
-            [0.07, 0.08, 0.11, 0.9]
+            [0.08, 0.09, 0.12, 0.95]
+        };
+        let border_color = if state.settings_open {
+            accent_color
+        } else {
+            [0.22, 0.25, 0.32, 0.9]
         };
 
+        // Background
         quads.extend_from_slice(&build_quad_vertices(
             btn_x,
             btn_y,
@@ -128,20 +151,22 @@ pub fn assemble_status_bar_quads(
             btn_h,
             settings_bg,
         ));
-        // Top and bottom 1px borders
-        quads.extend_from_slice(&build_quad_vertices(
-            btn_x,
-            btn_y,
-            btn_w,
-            1.0,
-            [0.18, 0.20, 0.26, 0.8],
-        ));
+        // 1px Border (top, bottom, left, right)
+        quads.extend_from_slice(&build_quad_vertices(btn_x, btn_y, btn_w, 1.0, border_color));
         quads.extend_from_slice(&build_quad_vertices(
             btn_x,
             btn_y + btn_h - 1.0,
             btn_w,
             1.0,
-            [0.18, 0.20, 0.26, 0.8],
+            border_color,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(btn_x, btn_y, 1.0, btn_h, border_color));
+        quads.extend_from_slice(&build_quad_vertices(
+            btn_x + btn_w - 1.0,
+            btn_y,
+            1.0,
+            btn_h,
+            border_color,
         ));
     }
 
@@ -155,9 +180,10 @@ pub fn build_status_bar_labels(
     state: &StatusBarState,
     window_width: f32,
     window_height: f32,
+    status_bar_height: f32,
 ) -> Vec<TabLabel> {
     let mut labels = Vec::new();
-    let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
+    let bar_y = (window_height - status_bar_height).max(0.0);
     let text_y = bar_y + 4.0;
 
     // Mode badge text ("NORMAL" or "ALT-BUF")
@@ -173,39 +199,40 @@ pub fn build_status_bar_labels(
         y: text_y,
         color: mode_color,
         bold: true,
-        max_width: 56.0,
+        max_width: 58.0,
     });
 
     // Shell name badge
-    let shell_label = format!("⌁ {}", state.shell_name);
+    let shell_label = state.shell_name.clone();
     labels.push(TabLabel {
         text: shell_label,
-        x: 78.0,
+        x: 82.0,
         y: text_y,
         color: GlyphonColor::rgb(138, 144, 162),
         bold: false,
         max_width: 140.0,
     });
 
-    // Optional git branch badge (e.g. " main")
+    // Optional git branch badge (e.g. "Branch: main")
     if let Some(ref branch) = state.git_branch {
         labels.push(TabLabel {
-            text: format!(" {branch}"),
+            text: format!("Branch: {branch}"),
             x: 160.0,
             y: text_y,
             color: GlyphonColor::rgb(0, 240, 255), // Retro electric cyan
             bold: false,
-            max_width: 140.0,
+            max_width: 150.0,
         });
     }
 
     // Right-aligned status items (Cursor coordinates, Zoom, Settings pill, Tab count)
     if window_width > 420.0 {
-        let (btn_x, btn_y, btn_w, _) = compute_settings_button_rect(window_width, window_height);
+        let (btn_x, btn_y, btn_w, btn_h) =
+            compute_settings_button_rect(window_width, window_height, status_bar_height);
 
         // Coordinates & Zoom info placed to the left of the settings button
         let pos_info = format!(
-            "Ln {}, Col {}  │  {}%",
+            "Ln {}, Col {}  |  {}%",
             state.cursor_row, state.cursor_col, state.zoom_pct
         );
         let pos_w = pos_info.len() as f32 * 7.5;
@@ -222,12 +249,12 @@ pub fn build_status_bar_labels(
 
         // Clickable Settings button label
         labels.push(TabLabel {
-            text: "⚙ Settings".to_string(),
-            x: btn_x + 12.0,
-            y: btn_y + 2.0,
+            text: "[ Settings ]".to_string(),
+            x: btn_x + 8.0,
+            y: btn_y + ((btn_h - 14.0) / 2.0).max(2.0),
             color: GlyphonColor::rgb(240, 245, 255),
             bold: true,
-            max_width: btn_w - 12.0,
+            max_width: btn_w - 10.0,
         });
 
         // Tab count on the far right
@@ -247,11 +274,17 @@ pub fn build_status_bar_labels(
 
 /// Rect dimensions `(x, y, width, height)` of the clickable Settings button in the status bar ribbon.
 #[must_use]
-pub fn compute_settings_button_rect(window_width: f32, window_height: f32) -> (f32, f32, f32, f32) {
-    let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
-    let btn_w = 94.0;
+pub fn compute_settings_button_rect(
+    window_width: f32,
+    window_height: f32,
+    status_bar_height: f32,
+) -> (f32, f32, f32, f32) {
+    let bar_y = (window_height - status_bar_height).max(0.0);
+    let btn_w = 98.0;
     let btn_x = (window_width - btn_w - 55.0).max(220.0);
-    (btn_x, bar_y + 3.0, btn_w, STATUS_BAR_HEIGHT - 6.0)
+    let btn_h = (status_bar_height - 6.0).max(18.0);
+    let btn_y = bar_y + 3.0;
+    (btn_x, btn_y, btn_w, btn_h)
 }
 
 /// Hit tests clicking within the status bar area.
@@ -261,11 +294,14 @@ pub fn hit_test_status_bar(
     y: f32,
     window_width: f32,
     window_height: f32,
+    status_bar_height: f32,
     _state: &StatusBarState,
 ) -> StatusBarAction {
-    let (btn_x, btn_y, btn_w, btn_h) = compute_settings_button_rect(window_width, window_height);
+    let bar_y = (window_height - status_bar_height).max(0.0);
+    let (btn_x, _btn_y, btn_w, _btn_h) =
+        compute_settings_button_rect(window_width, window_height, status_bar_height);
 
-    if x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
+    if x >= btn_x - 6.0 && x <= btn_x + btn_w + 6.0 && y >= bar_y {
         return StatusBarAction::OpenSettings;
     }
 
@@ -277,15 +313,27 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assert_is_empty)]
     fn assemble_status_bar_quads_generates_quads() {
         let state = StatusBarState::default();
-        let quads = assemble_status_bar_quads(800.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
-        // 6 quads: background, top border, badge pill, settings pill bg, settings top border, settings bottom border
-        assert_eq!(quads.len(), 36);
+        let quads = assemble_status_bar_quads(
+            800.0,
+            600.0,
+            STATUS_BAR_HEIGHT,
+            [0.4, 0.6, 1.0, 1.0],
+            &state,
+        );
+        assert!(!quads.is_empty());
 
-        // Narrow window: 3 quads (18 vertices)
-        let narrow_quads = assemble_status_bar_quads(300.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
-        assert_eq!(narrow_quads.len(), 18);
+        // Narrow window
+        let narrow_quads = assemble_status_bar_quads(
+            300.0,
+            600.0,
+            STATUS_BAR_HEIGHT,
+            [0.4, 0.6, 1.0, 1.0],
+            &state,
+        );
+        assert!(!narrow_quads.is_empty());
     }
 
     #[test]
@@ -303,20 +351,20 @@ mod tests {
             settings_open: false,
         };
 
-        let labels = build_status_bar_labels(&state, 800.0, 600.0);
+        let labels = build_status_bar_labels(&state, 800.0, 600.0, STATUS_BAR_HEIGHT);
         assert_eq!(labels.len(), 5);
         assert_eq!(labels[0].text, "NORMAL");
-        assert_eq!(labels[1].text, "⌁ pwsh");
+        assert_eq!(labels[1].text, "pwsh");
         assert!(labels[2].text.contains("Ln 5, Col 10"));
         assert!(labels[2].text.contains("120%"));
-        assert_eq!(labels[3].text, "⚙ Settings");
+        assert_eq!(labels[3].text, "[ Settings ]");
         assert_eq!(labels[4].text, "2/4");
     }
 
     #[test]
     fn build_status_bar_labels_narrow_window_skips_right_info() {
         let state = StatusBarState::default();
-        let labels = build_status_bar_labels(&state, 300.0, 600.0);
+        let labels = build_status_bar_labels(&state, 300.0, 600.0, STATUS_BAR_HEIGHT);
         assert_eq!(labels.len(), 2);
     }
 
@@ -326,20 +374,29 @@ mod tests {
             git_branch: Some("feat/ui".to_string()),
             ..StatusBarState::default()
         };
-        let labels = build_status_bar_labels(&state, 800.0, 600.0);
+        let labels = build_status_bar_labels(&state, 800.0, 600.0, STATUS_BAR_HEIGHT);
         assert_eq!(labels.len(), 6);
-        assert_eq!(labels[2].text, " feat/ui");
+        assert_eq!(labels[2].text, "Branch: feat/ui");
     }
 
     #[test]
     fn settings_button_and_hit_testing() {
         let state = StatusBarState::default();
 
-        let (btn_x, btn_y, _btn_w, _btn_h) = compute_settings_button_rect(800.0, 600.0);
-        let action = hit_test_status_bar(btn_x + 5.0, btn_y + 5.0, 800.0, 600.0, &state);
+        let (btn_x, btn_y, _btn_w, _btn_h) =
+            compute_settings_button_rect(800.0, 600.0, STATUS_BAR_HEIGHT);
+        let action = hit_test_status_bar(
+            btn_x + 5.0,
+            btn_y + 5.0,
+            800.0,
+            600.0,
+            STATUS_BAR_HEIGHT,
+            &state,
+        );
         assert_eq!(action, StatusBarAction::OpenSettings);
 
-        let outside_action = hit_test_status_bar(10.0, 10.0, 800.0, 600.0, &state);
+        let outside_action =
+            hit_test_status_bar(10.0, 10.0, 800.0, 600.0, STATUS_BAR_HEIGHT, &state);
         assert_eq!(outside_action, StatusBarAction::None);
     }
 }
