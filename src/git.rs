@@ -85,16 +85,19 @@ pub fn detect_project_type(root: &Path) -> ProjectInfo {
         for line in content.lines() {
             let trimmed = line.trim();
             if name.is_none() && trimmed.starts_with("\"name\":") {
-                name = trimmed
-                    .split(':')
-                    .nth(1)
-                    .map(|s| s.trim().trim_matches(|c| c == '"' || c == ',' || c == ' ').to_string());
+                name = trimmed.split(':').nth(1).map(|s| {
+                    s.trim()
+                        .trim_matches(|c| c == '"' || c == ',' || c == ' ')
+                        .to_string()
+                });
             }
             if version.is_none() && trimmed.starts_with("\"version\":") {
-                version = trimmed
-                    .split(':')
-                    .nth(1)
-                    .map(|s| format!("v{}", s.trim().trim_matches(|c| c == '"' || c == ',' || c == ' ')));
+                version = trimmed.split(':').nth(1).map(|s| {
+                    format!(
+                        "v{}",
+                        s.trim().trim_matches(|c| c == '"' || c == ',' || c == ' ')
+                    )
+                });
             }
         }
         return ProjectInfo {
@@ -158,7 +161,9 @@ pub fn detect_git_branch(cwd: &Path) -> Option<String> {
         .ok()?;
 
     if head_output.status.success() {
-        let rev = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+        let rev = String::from_utf8_lossy(&head_output.stdout)
+            .trim()
+            .to_string();
         if !rev.is_empty() {
             return Some(format!("({rev})"));
         }
@@ -216,10 +221,8 @@ pub fn query_git_status(cwd: &Path) -> Vec<ChangedFile> {
             };
 
             let is_staged = index_status != b' ' && index_status != b'?';
-            let (mut additions, deletions) = numstat_map
-                .get(target_path)
-                .copied()
-                .unwrap_or((0, 0));
+            let (mut additions, deletions) =
+                numstat_map.get(target_path).copied().unwrap_or((0, 0));
 
             // If untracked file, count lines on disk
             if index_status == b'?' && worktree_status == b'?' && additions == 0 {
@@ -345,11 +348,7 @@ pub fn query_git_history(cwd: &Path, limit: usize) -> Vec<GitCommit> {
     let limit_arg = format!("-n{limit}");
 
     let output = Command::new("git")
-        .args([
-            "log",
-            &limit_arg,
-            "--pretty=format:%h%x1f%an%x1f%ar%x1f%s",
-        ])
+        .args(["log", &limit_arg, "--pretty=format:%h%x1f%an%x1f%ar%x1f%s"])
         .current_dir(cwd)
         .output();
 
@@ -684,13 +683,13 @@ mod tests {
 
     #[test]
     fn parse_unified_diff_builds_matching_side_by_side_lines() {
-        let diff = r#"@@ -1,3 +1,4 @@
+        let diff = r"@@ -1,3 +1,4 @@
 -old line 1
 +new line 1
  context line 2
 +extra added line
  context line 3
-"#;
+";
         let hunks = parse_unified_diff(diff);
         assert_eq!(hunks.len(), 1);
         let hunk = &hunks[0];
