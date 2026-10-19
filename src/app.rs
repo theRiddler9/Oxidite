@@ -289,6 +289,15 @@ impl App {
                     win.request_redraw();
                     return;
                 }
+                Key::Character(c) if c.eq_ignore_ascii_case("d") && self.modifiers.shift_key() => {
+                    let dup_title = self
+                        .tabs
+                        .get(self.active_tab_index)
+                        .map(|t| format!("{} (copy)", t.title));
+                    self.create_tab(dup_title);
+                    win.request_redraw();
+                    return;
+                }
                 Key::Character(c) if c.eq_ignore_ascii_case("w") && self.modifiers.shift_key() => {
                     self.close_tab(self.active_tab_index);
                     win.request_redraw();
@@ -597,10 +606,18 @@ impl App {
                 glyphon::Color::rgb(140, 145, 160)
             };
 
-            // Tab title
+            // Tab title with retro badge prefix
+            let display_title = if tab.title.starts_with("Tab ") {
+                format!("⌁ {}", tab.title)
+            } else if !tab.title.starts_with('⌁') && !tab.title.starts_with('❯') {
+                format!("❯ {}", tab.title)
+            } else {
+                tab.title.clone()
+            };
+
             let max_text_width = (layout.width - crate::tab::TAB_BUTTON_SIZE - 12.0).max(10.0);
             labels.push(TabLabel {
-                text: tab.title.clone(),
+                text: display_title,
                 x: layout.x + 8.0,
                 y: layout.y + 4.0,
                 color,
@@ -957,7 +974,15 @@ impl App {
             ));
         }
 
-        // 7. Visual bell overlay
+        // 7. Scrollbar indicator (rendered when viewing history / display_offset > 0)
+        quad_vertices.extend_from_slice(&self.assemble_scrollbar_quads(
+            screen_size,
+            y_offset,
+            effective_pad_y,
+            accent_color,
+        ));
+
+        // 8. Visual bell overlay
         if bell_active {
             quad_vertices.extend_from_slice(&build_quad_vertices(
                 0.0,
@@ -969,6 +994,59 @@ impl App {
         }
 
         quad_vertices
+    }
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn assemble_scrollbar_quads(
+        &self,
+        screen_size: [f32; 2],
+        y_offset: f32,
+        effective_pad_y: f32,
+        accent_color: [f32; 4],
+    ) -> Vec<crate::renderer::draw::QuadVertex> {
+        if self.terminal.grid.display_offset == 0 || self.terminal.grid.scrollback.is_empty() {
+            return Vec::new();
+        }
+
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let track_top = y_offset;
+        let track_height = (screen_size[1] - track_top - status_bar_px - effective_pad_y).max(10.0);
+        let scrollbar_width = 4.0;
+        let track_x = screen_size[0] - scrollbar_width - 2.0;
+
+        let mut quads = Vec::with_capacity(12);
+
+        // Track background quad (subtle translucent bar)
+        quads.extend_from_slice(&build_quad_vertices(
+            track_x,
+            track_top,
+            scrollbar_width,
+            track_height,
+            [0.05, 0.055, 0.08, 0.5],
+        ));
+
+        // Thumb quad (neon phosphor indicator)
+        let total_lines = (self.terminal.grid.scrollback.len() + self.terminal.grid.rows) as f32;
+        let thumb_height = ((self.terminal.grid.rows as f32 / total_lines) * track_height)
+            .clamp(16.0, track_height);
+        let max_offset = self.terminal.grid.scrollback.len() as f32;
+        let offset_ratio =
+            1.0 - (self.terminal.grid.display_offset as f32 / max_offset).clamp(0.0, 1.0);
+        let thumb_y = track_top + offset_ratio * (track_height - thumb_height);
+
+        quads.extend_from_slice(&build_quad_vertices(
+            track_x,
+            thumb_y,
+            scrollbar_width,
+            thumb_height,
+            [accent_color[0], accent_color[1], accent_color[2], 0.85],
+        ));
+
+        quads
     }
 
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
@@ -1550,9 +1628,9 @@ mod tests {
         let labels = app.build_tab_labels(800.0);
         // 2 tabs * 2 labels (title + close) + 1 plus button = 5 labels
         assert_eq!(labels.len(), 5);
-        assert_eq!(labels[0].text, "Tab 1");
+        assert_eq!(labels[0].text, "⌁ Tab 1");
         assert_eq!(labels[1].text, "×");
-        assert_eq!(labels[2].text, "Workspaces");
+        assert_eq!(labels[2].text, "❯ Workspaces");
         assert_eq!(labels[3].text, "×");
         assert_eq!(labels[4].text, "+");
     }
@@ -1588,5 +1666,29 @@ mod tests {
         assert_eq!(labels[0].text, "NORMAL");
         assert!(labels[1].text.starts_with("⌁"));
         assert!(labels[2].text.contains("Ln 1, Col 1"));
+    }
+
+    #[test]
+    fn scrollbar_quads_rendered_only_when_scrolled_into_history() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        let screen_size = [800.0, 600.0];
+        let accent = [0.0, 1.0, 0.5, 1.0];
+
+        // 1. Initial state: display_offset == 0 -> no scrollbar quads
+        let quads_idle = app.assemble_scrollbar_quads(screen_size, 36.0, 10.0, accent);
+        assert_eq!(quads_idle.len(), 0);
+
+        // 2. Add lines so scrollback is populated and scroll viewport back
+        app.handle_tab_pty_output(
+            0,
+            b"l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\nl21\nl22\nl23\nl24\nl25\nl26\nl27\nl28\nl29\nl30\n",
+        );
+        app.terminal.grid.scroll_display(5);
+        assert!(app.terminal.grid.display_offset > 0);
+        assert!(!app.terminal.grid.scrollback.is_empty());
+
+        // 3. Scrolled state: generates track quad (6 vertices) + thumb quad (6 vertices) = 12 vertices
+        let quads_scrolled = app.assemble_scrollbar_quads(screen_size, 36.0, 10.0, accent);
+        assert_eq!(quads_scrolled.len(), 12);
     }
 }
