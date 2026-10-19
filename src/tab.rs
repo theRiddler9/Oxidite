@@ -71,7 +71,8 @@ impl AgentKind {
         let is_devin_title = t.contains("devin");
 
         // 2. Active cursor prompt command check
-        let is_agy_cmd = cmd.contains("agy ") || cmd.ends_with("agy") || cmd.contains("antigravity");
+        let is_agy_cmd =
+            cmd.contains("agy ") || cmd.ends_with("agy") || cmd.contains("antigravity");
         let is_claude_cmd = cmd.contains("claude ") || cmd.ends_with("claude");
         let is_codex_cmd = cmd.contains("codex ") || cmd.ends_with("codex");
         let is_opencode_cmd = cmd.contains("opencode ") || cmd.ends_with("opencode");
@@ -594,7 +595,10 @@ mod tests {
     #[test]
     fn agent_detection_recognizes_claude_codex_and_agy() {
         assert_eq!(AgentKind::detect("claude", "", ""), AgentKind::Claude);
-        assert_eq!(AgentKind::detect("claude code v1.2", "", ""), AgentKind::Claude);
+        assert_eq!(
+            AgentKind::detect("claude code v1.2", "", ""),
+            AgentKind::Claude
+        );
         assert_eq!(AgentKind::detect("Codex CLI", "", ""), AgentKind::Codex);
         assert_eq!(AgentKind::detect("agy-agent", "", ""), AgentKind::Agy);
         assert_eq!(
@@ -610,7 +614,13 @@ mod tests {
             AgentKind::OpenCode
         );
         assert_eq!(AgentKind::detect("gh copilot", "", ""), AgentKind::Copilot);
-        assert_eq!(AgentKind::detect("Devin workspace", "", ""), AgentKind::Devin);
-        assert_eq!(AgentKind::detect("bash", "", "normal git log containing claude text"), AgentKind::Shell);
+        assert_eq!(
+            AgentKind::detect("Devin workspace", "", ""),
+            AgentKind::Devin
+        );
+        assert_eq!(
+            AgentKind::detect("bash", "", "normal git log containing claude text"),
+            AgentKind::Shell
+        );
     }
 }
