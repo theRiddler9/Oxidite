@@ -169,13 +169,14 @@ pub fn resolve_cell_colors(
     (fg, bg, has_visible_bg)
 }
 
-/// Gathers background quad vertices for all cells in `grid` that differ from default background.
+/// Gathers background quad vertices for all cells in `grid` that differ from default background, with an optional Y offset.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_cell_background_vertices(
+pub fn build_cell_background_vertices_offset(
     grid: &Grid,
     cell_width: f32,
     cell_height: f32,
     palette: &[[f32; 4]; 16],
+    y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
 
@@ -191,7 +192,7 @@ pub fn build_cell_background_vertices(
                 resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.0, 0.0, 0.0, 1.0], palette);
             if has_visible_bg {
                 let x = col as f32 * cell_width;
-                let y = row as f32 * cell_height;
+                let y = y_offset + row as f32 * cell_height;
                 let w = f32::from(cell.width.max(1)) * cell_width;
                 let h = cell_height;
                 vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, bg_color));
@@ -202,13 +203,25 @@ pub fn build_cell_background_vertices(
     vertices
 }
 
-/// Builds quad vertices for text decorations (underline and strikethrough) in the visible grid.
-#[allow(clippy::cast_precision_loss)]
-pub fn build_text_decoration_vertices(
+/// Gathers background quad vertices for all cells in `grid` that differ from default background.
+#[must_use]
+pub fn build_cell_background_vertices(
     grid: &Grid,
     cell_width: f32,
     cell_height: f32,
     palette: &[[f32; 4]; 16],
+) -> Vec<QuadVertex> {
+    build_cell_background_vertices_offset(grid, cell_width, cell_height, palette, 0.0)
+}
+
+/// Builds quad vertices for text decorations (underline and strikethrough) with an optional Y offset.
+#[allow(clippy::cast_precision_loss)]
+pub fn build_text_decoration_vertices_offset(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+    y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
 
@@ -229,7 +242,7 @@ pub fn build_text_decoration_vertices(
             }
 
             let x = col as f32 * cell_width;
-            let y = row as f32 * cell_height;
+            let y = y_offset + row as f32 * cell_height;
             let w = f32::from(cell.width.max(1)) * cell_width;
             let (line_color, _, _) =
                 resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.05, 0.05, 0.05, 1.0], palette);
@@ -263,14 +276,26 @@ pub fn build_text_decoration_vertices(
     vertices
 }
 
-/// Builds quad vertices for highlighted selection text regions.
+/// Builds quad vertices for text decorations (underline and strikethrough) in the visible grid.
+#[must_use]
+pub fn build_text_decoration_vertices(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+) -> Vec<QuadVertex> {
+    build_text_decoration_vertices_offset(grid, cell_width, cell_height, palette, 0.0)
+}
+
+/// Builds quad vertices for highlighted selection text regions with an optional Y offset.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_selection_vertices(
+pub fn build_selection_vertices_offset(
     grid: &Grid,
     selection: Option<&crate::input::Selection>,
     cell_width: f32,
     cell_height: f32,
     color: [f32; 4],
+    y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
     let Some(sel) = selection else {
@@ -292,7 +317,7 @@ pub fn build_selection_vertices(
 
         if start_col <= end_col {
             let x = start_col as f32 * cell_width;
-            let y = row as f32 * cell_height;
+            let y = y_offset + row as f32 * cell_height;
             let w = (end_col - start_col + 1) as f32 * cell_width;
             let h = cell_height;
             vertices.extend_from_slice(&build_quad_vertices(x, y, w, h, color));
@@ -302,30 +327,33 @@ pub fn build_selection_vertices(
     vertices
 }
 
-/// Builds quad vertices for the cursor based on its position, visibility, and shape.
-#[allow(clippy::cast_precision_loss)]
-pub fn build_cursor_vertices(
-    cursor: &Cursor,
-    metrics: &CellMetrics,
+/// Builds quad vertices for highlighted selection text regions.
+#[must_use]
+pub fn build_selection_vertices(
+    grid: &Grid,
+    selection: Option<&crate::input::Selection>,
+    cell_width: f32,
+    cell_height: f32,
     color: [f32; 4],
 ) -> Vec<QuadVertex> {
-    build_cursor_vertices_with_width(cursor, metrics, color, 1)
+    build_selection_vertices_offset(grid, selection, cell_width, cell_height, color, 0.0)
 }
 
-/// Builds quad vertices for the cursor with specified cell width multiplier (for wide characters).
+/// Builds quad vertices for the cursor with specified cell width multiplier and optional Y offset.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_cursor_vertices_with_width(
+pub fn build_cursor_vertices_with_offset(
     cursor: &Cursor,
     metrics: &CellMetrics,
     color: [f32; 4],
     cell_width_multiplier: u8,
+    y_offset: f32,
 ) -> Vec<QuadVertex> {
     if !cursor.visible {
         return Vec::new();
     }
 
     let x = cursor.col as f32 * metrics.cell_width;
-    let y = cursor.row as f32 * metrics.cell_height;
+    let y = y_offset + cursor.row as f32 * metrics.cell_height;
     let cursor_w = f32::from(cell_width_multiplier.max(1)) * metrics.cell_width;
 
     let (pos_x, pos_y, w, h) = match cursor.shape {
@@ -346,6 +374,27 @@ pub fn build_cursor_vertices_with_width(
     };
 
     build_quad_vertices(pos_x, pos_y, w, h, color).to_vec()
+}
+
+/// Builds quad vertices for the cursor based on its position, visibility, and shape.
+#[must_use]
+pub fn build_cursor_vertices(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+) -> Vec<QuadVertex> {
+    build_cursor_vertices_with_offset(cursor, metrics, color, 1, 0.0)
+}
+
+/// Builds quad vertices for the cursor with specified cell width multiplier (for wide characters).
+#[must_use]
+pub fn build_cursor_vertices_with_width(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+    cell_width_multiplier: u8,
+) -> Vec<QuadVertex> {
+    build_cursor_vertices_with_offset(cursor, metrics, color, cell_width_multiplier, 0.0)
 }
 
 /// WGPU graphics pipeline for rendering solid colored 2D quads.
@@ -561,6 +610,8 @@ pub struct GlyphPipeline {
     pub text_renderer: TextRenderer,
     /// Cache of shaped row text buffers.
     pub glyph_cache: GlyphCache,
+    /// Reusable text buffers for tab bar labels.
+    pub tab_buffers: Vec<FontBuffer>,
 }
 
 impl GlyphPipeline {
@@ -582,6 +633,7 @@ impl GlyphPipeline {
             atlas,
             text_renderer,
             glyph_cache,
+            tab_buffers: Vec::new(),
         }
     }
 }
@@ -590,6 +642,23 @@ impl GlyphPipeline {
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn float_to_u8(val: f32) -> u8 {
     (val.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// A text label to be rendered inside the tab bar chrome.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabLabel {
+    /// Text to render.
+    pub text: String,
+    /// X position in physical pixels.
+    pub x: f32,
+    /// Y position in physical pixels.
+    pub y: f32,
+    /// Text color.
+    pub color: GlyphonColor,
+    /// Whether to render in bold font weight.
+    pub bold: bool,
+    /// Maximum width before clipping.
+    pub max_width: f32,
 }
 
 /// Context parameters required for drawing operations.
@@ -606,6 +675,10 @@ pub struct DrawContext<'a> {
     pub palette: &'a [[f32; 4]; 16],
     /// Optional damage tracking flags for visible rows.
     pub dirty_rows: Option<&'a [bool]>,
+    /// Top vertical offset (e.g. for tab bar) in physical pixels.
+    pub y_offset: f32,
+    /// Optional tab bar labels to render in the same text pass.
+    pub tab_labels: &'a [TabLabel],
 }
 
 fn collect_single_row_spans(
@@ -698,13 +771,37 @@ fn collect_row_spans(
 
 impl GlyphPipeline {
     /// Formats grid characters and renders text glyphs into the active render pass.
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines
+    )]
     pub fn draw<'pass>(
         &'pass mut self,
         ctx: &DrawContext<'_>,
         rpass: &mut wgpu::RenderPass<'pass>,
         grid: &Grid,
     ) -> Result<(), glyphon::RenderError> {
+        while self.tab_buffers.len() < ctx.tab_labels.len() {
+            self.tab_buffers.push(FontBuffer::new(
+                &mut self.font_system,
+                Metrics::new(12.0, 16.0),
+            ));
+        }
+
+        for (label_idx, label) in ctx.tab_labels.iter().enumerate() {
+            let buf = &mut self.tab_buffers[label_idx];
+            buf.set_metrics(Metrics::new(12.0, 16.0));
+            let mut attrs = FontAttrs::new()
+                .family(Family::Monospace)
+                .color(label.color);
+            if label.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            buf.set_text(&label.text, &attrs, Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut self.font_system, false);
+        }
+
         self.glyph_cache.resize(grid.rows);
 
         for row_idx in 0..grid.rows {
@@ -770,30 +867,54 @@ impl GlyphPipeline {
 
         let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
         let max_h = i32::try_from(ctx.screen_size[1]).unwrap_or(i32::MAX);
-        let text_areas: Vec<TextArea> = self
-            .glyph_cache
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(row_idx, entry)| {
-                let cached = entry.as_ref()?;
-                let top = row_idx as f32 * ctx.metrics.cell_height;
-                Some(TextArea {
+
+        let mut text_areas: Vec<TextArea> =
+            Vec::with_capacity(ctx.tab_labels.len() + self.glyph_cache.rows.len());
+
+        for (label_idx, label) in ctx.tab_labels.iter().enumerate() {
+            let buf = &self.tab_buffers[label_idx];
+            let left = (label.x.max(0.0) as i32).min(max_w);
+            let top = (label.y.max(0.0) as i32).min(max_h);
+            let right = ((label.x + label.max_width) as i32).clamp(left, max_w);
+            let bottom = ((label.y + 34.0) as i32).clamp(top, max_h);
+
+            if right > left && bottom > top {
+                text_areas.push(TextArea {
+                    buffer: buf,
+                    left: label.x,
+                    top: label.y,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    },
+                    default_color: label.color,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
+        for (row_idx, entry) in self.glyph_cache.rows.iter().enumerate() {
+            if let Some(cached) = entry.as_ref() {
+                let top = ctx.y_offset + row_idx as f32 * ctx.metrics.cell_height;
+                text_areas.push(TextArea {
                     buffer: &cached.buffer,
                     left: 0.0,
                     top,
                     scale: 1.0,
                     bounds: TextBounds {
                         left: 0,
-                        top: 0,
+                        top: (ctx.y_offset as i32).max(0),
                         right: max_w,
                         bottom: max_h,
                     },
                     default_color: GlyphonColor::rgb(255, 255, 255),
                     custom_glyphs: &[],
-                })
-            })
-            .collect();
+                });
+            }
+        }
 
         self.viewport.update(
             ctx.queue,
@@ -1231,5 +1352,54 @@ mod tests {
         assert_eq!(deco_verts.len(), 6);
         assert!(approx_eq(deco_verts[0].position, [0.0, 18.0]));
         assert!(approx_eq(deco_verts[5].position, [20.0, 20.0]));
+    }
+
+    #[test]
+    fn quad_builders_with_y_offset_shift_y_coordinates() {
+        use crate::grid::Attrs;
+
+        let mut grid = Grid::new(5, 5);
+        grid[0][0].bg = Color::Indexed(1);
+        grid[0][0].attrs = Attrs::UNDERLINE;
+
+        let y_offset = 34.0;
+        let bg_verts =
+            build_cell_background_vertices_offset(&grid, 10.0, 20.0, &DEFAULT_PALETTE, y_offset);
+        assert_eq!(bg_verts.len(), 6);
+        assert!(approx_eq(bg_verts[0].position, [0.0, 34.0]));
+        assert!(approx_eq(bg_verts[5].position, [10.0, 54.0]));
+
+        let deco_verts =
+            build_text_decoration_vertices_offset(&grid, 10.0, 20.0, &DEFAULT_PALETTE, y_offset);
+        assert_eq!(deco_verts.len(), 6);
+        assert!(approx_eq(deco_verts[0].position, [0.0, 52.0])); // 34 + 20 - 2
+
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let cursor = Cursor {
+            row: 0,
+            col: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+        let cursor_verts =
+            build_cursor_vertices_with_offset(&cursor, &metrics, [1.0; 4], 1, y_offset);
+        assert_eq!(cursor_verts.len(), 6);
+        assert!(approx_eq(cursor_verts[0].position, [0.0, 34.0]));
+        assert!(approx_eq(cursor_verts[5].position, [10.0, 54.0]));
+
+        let sel = crate::input::Selection::new(
+            crate::input::GridPoint::new(0, 0),
+            crate::input::GridPoint::new(2, 0),
+        );
+        let sel_verts =
+            build_selection_vertices_offset(&grid, Some(&sel), 10.0, 20.0, [1.0; 4], y_offset);
+        assert_eq!(sel_verts.len(), 6);
+        assert!(approx_eq(sel_verts[0].position, [0.0, 34.0]));
+        assert!(approx_eq(sel_verts[5].position, [30.0, 54.0]));
     }
 }

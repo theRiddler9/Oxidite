@@ -3,7 +3,7 @@
 use crate::input::{GridPoint, Selection};
 use crate::parser::Parser;
 use crate::pty::{PtySize, PtyWriter};
-use crate::renderer::draw::{build_quad_vertices, QuadVertex};
+use crate::renderer::draw::{QuadVertex, build_quad_vertices};
 use crate::terminal::Terminal;
 use std::sync::{Arc, Mutex};
 
@@ -77,7 +77,7 @@ impl Tab {
     pub fn advance_parser(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.terminal, bytes);
         if !self.terminal.title.is_empty() {
-            self.title = format!("{}: {}", self.id + 1, self.terminal.title);
+            self.title = self.terminal.title.clone();
         }
     }
 

@@ -63,7 +63,7 @@ impl Default for Modes {
 }
 
 /// Full terminal state owning grid storage, alternate buffer, modes, and title.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Terminal {
     /// Active screen grid storage.
     pub grid: Grid,
