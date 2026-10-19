@@ -199,22 +199,22 @@ pub fn assemble_tab_bar_quads(
 ) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
 
-    // 1. Tab bar background (#0D0E12)
+    // 1. Tab bar background (Deep retro obsidian #050507)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         0.0,
         window_width,
         TAB_BAR_HEIGHT,
-        [0.05, 0.055, 0.07, 1.0],
+        [0.02, 0.02, 0.028, 1.0],
     ));
 
-    // 2. Bottom 1px divider (#1E202A)
+    // 2. Bottom 1px divider (#14151D)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         TAB_BAR_HEIGHT - 1.0,
         window_width,
         1.0,
-        [0.12, 0.13, 0.17, 1.0],
+        [0.08, 0.085, 0.115, 1.0],
     ));
 
     if tab_count == 0 {
@@ -226,9 +226,9 @@ pub fn assemble_tab_bar_quads(
     for (idx, layout) in layouts.iter().enumerate() {
         let is_active = idx == active_index;
         let tab_bg = if is_active {
-            [0.09, 0.095, 0.125, 1.0] // #171820
+            [0.0, 0.0, 0.0, 1.0] // Pure pitch black active tab merges into terminal grid
         } else {
-            [0.065, 0.07, 0.09, 1.0] // #101217
+            [0.045, 0.048, 0.065, 1.0] // Recessed dark card #0B0C10
         };
 
         // Tab body quad
@@ -240,11 +240,11 @@ pub fn assemble_tab_bar_quads(
             tab_bg,
         ));
 
-        // Active tab top indicator accent line
+        // Active tab indicator accent line at bottom
         if is_active {
             quads.extend_from_slice(&build_quad_vertices(
                 layout.x,
-                layout.y,
+                layout.y + layout.height - 2.5,
                 layout.width,
                 2.5,
                 accent_color,
@@ -257,7 +257,7 @@ pub fn assemble_tab_bar_quads(
             layout.close_btn_y,
             layout.close_btn_size,
             layout.close_btn_size,
-            [0.16, 0.17, 0.22, 0.6],
+            [0.12, 0.13, 0.18, 0.6],
         ));
     }
 
@@ -267,7 +267,7 @@ pub fn assemble_tab_bar_quads(
         plus_btn.1,
         plus_btn.2,
         plus_btn.3,
-        [0.12, 0.13, 0.17, 0.8],
+        [0.06, 0.065, 0.09, 0.9],
     ));
 
     quads

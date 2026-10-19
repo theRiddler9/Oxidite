@@ -265,33 +265,33 @@ impl Theme {
         palette
     }
 
-    /// Built-in default dark theme.
+    /// Built-in default dark theme: pitch black retro phosphor aesthetic.
     #[must_use]
     pub fn default_dark() -> Self {
         let ansi = [
-            Rgb::new(0x1c, 0x1c, 0x22), // 0 black
-            Rgb::new(0xff, 0x5c, 0x7a), // 1 red
-            Rgb::new(0x3d, 0xdc, 0x97), // 2 green
-            Rgb::new(0xf5, 0xc5, 0x42), // 3 yellow
-            Rgb::new(0x6e, 0xa8, 0xff), // 4 blue
-            Rgb::new(0xc7, 0x92, 0xea), // 5 magenta
-            Rgb::new(0x64, 0xd2, 0xe8), // 6 cyan
-            Rgb::new(0xe8, 0xe8, 0xed), // 7 white
-            Rgb::new(0x5a, 0x5a, 0x66), // 8 bright black
-            Rgb::new(0xff, 0x7a, 0x94), // 9 bright red
-            Rgb::new(0x5a, 0xeb, 0xb0), // 10 bright green
-            Rgb::new(0xff, 0xd5, 0x6a), // 11 bright yellow
-            Rgb::new(0x8f, 0xc0, 0xff), // 12 bright blue
-            Rgb::new(0xd9, 0xa8, 0xff), // 13 bright magenta
-            Rgb::new(0x8a, 0xe0, 0xf0), // 14 bright cyan
+            Rgb::new(0x12, 0x14, 0x1a), // 0 black
+            Rgb::new(0xff, 0x33, 0x66), // 1 red (arcade neon red)
+            Rgb::new(0x00, 0xff, 0x88), // 2 green (phosphor CRT green)
+            Rgb::new(0xff, 0xd0, 0x00), // 3 yellow (arcade amber)
+            Rgb::new(0x38, 0x98, 0xff), // 4 blue (electric cyber blue)
+            Rgb::new(0xd9, 0x46, 0xef), // 5 magenta (neon cyberpunk magenta)
+            Rgb::new(0x00, 0xf0, 0xff), // 6 cyan (electric neon cyan)
+            Rgb::new(0xe2, 0xe8, 0xf0), // 7 white (phosphor white)
+            Rgb::new(0x47, 0x55, 0x69), // 8 bright black
+            Rgb::new(0xff, 0x55, 0x88), // 9 bright red
+            Rgb::new(0x38, 0xef, 0x7d), // 10 bright green
+            Rgb::new(0xff, 0xe0, 0x66), // 11 bright yellow
+            Rgb::new(0x60, 0xa5, 0xfa), // 12 bright blue
+            Rgb::new(0xfa, 0x58, 0xb6), // 13 bright magenta
+            Rgb::new(0x38, 0xbd, 0xf8), // 14 bright cyan
             Rgb::new(0xff, 0xff, 0xff), // 15 bright white
         ];
         Self {
             name: "default-dark".to_string(),
             foreground: ansi[7],
-            background: Rgb::new(0x0a, 0x0a, 0x0c),
-            cursor: ansi[7],
-            selection_bg: Rgb::new(0x2a, 0x2a, 0x3d),
+            background: Rgb::new(0x00, 0x00, 0x00), // Pure Pitch Black
+            cursor: Rgb::new(0x00, 0xff, 0x88),     // Retro neon phosphor cursor
+            selection_bg: Rgb::new(0x1a, 0x24, 0x38), // High-contrast retro deep indigo
             ansi,
         }
     }
