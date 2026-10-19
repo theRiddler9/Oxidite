@@ -14,9 +14,10 @@ use crate::input::{
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
-    DrawContext, GlyphPipeline, QuadPipeline, TabLabel, build_cell_background_vertices_offset,
-    build_cursor_vertices_with_offset, build_quad_vertices, build_selection_vertices_offset,
-    build_text_decoration_vertices_offset,
+    DrawContext, GlyphPipeline, QuadPipeline, TabLabel,
+    build_cell_background_vertices_with_offsets, build_cursor_vertices_with_offsets,
+    build_quad_vertices, build_selection_vertices_with_offsets,
+    build_text_decoration_vertices_with_offsets,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
@@ -258,11 +259,15 @@ impl App {
         }
     }
 
-    /// Converts window pixel coordinates to a clamped terminal grid point, accounting for tab bar height.
+    /// Converts window pixel coordinates to a clamped terminal grid point, accounting for tab bar height and window padding.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn pixel_to_grid_point(&self, pos: (f64, f64)) -> GridPoint {
-        let col = (pos.0 / f64::from(self.cell_metrics.cell_width)).max(0.0) as usize;
-        let y_content = (pos.1 - f64::from(TAB_BAR_HEIGHT)).max(0.0);
+        let pad_x = f64::from((self.config.padding_x * self.scale_factor as f32).round());
+        let pad_y = f64::from((self.config.padding_y * self.scale_factor as f32).round());
+        let tab_bar = f64::from((TAB_BAR_HEIGHT * self.scale_factor as f32).round());
+        let x_content = (pos.0 - pad_x).max(0.0);
+        let col = (x_content / f64::from(self.cell_metrics.cell_width)).max(0.0) as usize;
+        let y_content = (pos.1 - tab_bar - pad_y).max(0.0);
         let row = (y_content / f64::from(self.cell_metrics.cell_height)).max(0.0) as usize;
         GridPoint::new(
             col.min(self.terminal.grid.cols.saturating_sub(1)),
@@ -374,6 +379,12 @@ impl App {
                 InputAction::CycleTheme => {
                     self.cycle_theme(win);
                 }
+                InputAction::ToggleStatusBar => {
+                    self.config.status_bar = !self.config.status_bar;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
+                    win.request_redraw();
+                }
             }
             return;
         }
@@ -466,10 +477,27 @@ impl App {
             gpu.resize(size);
         }
 
-        // 2. Terminal grid (content area below top tab bar)
+        // 2. Terminal grid (content area between tab bar and status bar, with padding)
+        let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
+        let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
         let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round() as u32;
-        let content_height = size.height.saturating_sub(tab_bar_px).max(1);
-        let content_size = PhysicalSize::new(size.width, content_height);
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round() as u32
+        } else {
+            0
+        };
+
+        let content_width = size
+            .width
+            .saturating_sub((effective_pad_x * 2.0) as u32)
+            .max(1);
+        let content_height = size
+            .height
+            .saturating_sub(tab_bar_px)
+            .saturating_sub(status_bar_px)
+            .saturating_sub((effective_pad_y * 2.0) as u32)
+            .max(1);
+        let content_size = PhysicalSize::new(content_width, content_height);
 
         let (cols, rows) = window_size_to_grid_dimensions(content_size, &self.cell_metrics);
         let pty_size = window_size_to_pty_size(content_size, &self.cell_metrics);
@@ -606,6 +634,49 @@ impl App {
         });
 
         labels
+    }
+
+    /// Builds formatted text labels for the bottom status bar.
+    #[must_use]
+    pub fn build_status_bar_labels(&self, window_width: f32, window_height: f32) -> Vec<TabLabel> {
+        let shell_name = if let Some(ref sh) = self.config.shell {
+            std::path::Path::new(sh)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("shell")
+                .to_string()
+        } else {
+            #[cfg(windows)]
+            {
+                "pwsh".to_string()
+            }
+            #[cfg(not(windows))]
+            {
+                "sh".to_string()
+            }
+        };
+
+        let is_alt_screen = self.terminal.modes.alternate_screen;
+        let cursor_row = self.terminal.grid.cursor.row + 1;
+        let cursor_col = self.terminal.grid.cursor.col + 1;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let zoom_pct = (self.base_font_size / Self::DEFAULT_FONT_SIZE * 100.0).round() as usize;
+        let theme_name = self.config.theme.name.clone();
+        let tab_current = self.active_tab_index + 1;
+        let tab_total = self.tabs.len();
+
+        let state = crate::status_bar::StatusBarState {
+            shell_name,
+            is_alt_screen,
+            cursor_row,
+            cursor_col,
+            zoom_pct,
+            theme_name,
+            tab_current,
+            tab_total,
+        };
+
+        crate::status_bar::build_status_bar_labels(&state, window_width, window_height)
     }
 
     /// Creates and switches to a new tab, spawning a shell PTY if proxy is available.
@@ -796,6 +867,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn assemble_quad_vertices(
         &self,
         bell_active: bool,
@@ -805,6 +877,12 @@ impl App {
         let cursor_color = self.config.theme.cursor.to_rgba_array(1.0);
         let selection_color = self.config.theme.selection_bg.to_rgba_array(1.0);
         let accent_color = palette[12]; // Vivid cyan/blue accent for active tab
+
+        let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
+        let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
+        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+        let x_offset = effective_pad_x;
+        let y_offset = tab_bar_px + effective_pad_y;
 
         let mut quad_vertices = Vec::new();
 
@@ -816,25 +894,27 @@ impl App {
             accent_color,
         ));
 
-        // 2. Cell backgrounds offset below the tab bar
-        quad_vertices.extend_from_slice(&build_cell_background_vertices_offset(
+        // 2. Cell backgrounds offset below the tab bar with padding
+        quad_vertices.extend_from_slice(&build_cell_background_vertices_with_offsets(
             &self.terminal.grid,
             self.cell_metrics.cell_width,
             self.cell_metrics.cell_height,
             &palette,
-            TAB_BAR_HEIGHT,
+            x_offset,
+            y_offset,
         ));
 
-        // 3. Text decorations offset below the tab bar
-        quad_vertices.extend_from_slice(&build_text_decoration_vertices_offset(
+        // 3. Text decorations offset below the tab bar with padding
+        quad_vertices.extend_from_slice(&build_text_decoration_vertices_with_offsets(
             &self.terminal.grid,
             self.cell_metrics.cell_width,
             self.cell_metrics.cell_height,
             &palette,
-            TAB_BAR_HEIGHT,
+            x_offset,
+            y_offset,
         ));
 
-        // 4. Cursor offset below the tab bar
+        // 4. Cursor offset below the tab bar with padding
         let should_draw_cursor = self.terminal.grid.display_offset == 0
             && self.terminal.grid.cursor.visible
             && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
@@ -845,27 +925,39 @@ impl App {
                 .grid
                 .get(self.terminal.grid.cursor.row, self.terminal.grid.cursor.col)
                 .map_or(1, |c| c.width.max(1));
-            let cursor_vertices = build_cursor_vertices_with_offset(
+            let cursor_vertices = build_cursor_vertices_with_offsets(
                 &self.terminal.grid.cursor,
                 &self.cell_metrics,
                 cursor_color,
                 cursor_width,
-                TAB_BAR_HEIGHT,
+                x_offset,
+                y_offset,
             );
             quad_vertices.extend_from_slice(&cursor_vertices);
         }
 
-        // 5. Selection highlight offset below the tab bar
-        quad_vertices.extend_from_slice(&build_selection_vertices_offset(
+        // 5. Selection highlight offset below the tab bar with padding
+        quad_vertices.extend_from_slice(&build_selection_vertices_with_offsets(
             &self.terminal.grid,
             self.selection.as_ref(),
             self.cell_metrics.cell_width,
             self.cell_metrics.cell_height,
             selection_color,
-            TAB_BAR_HEIGHT,
+            x_offset,
+            y_offset,
         ));
 
-        // 6. Visual bell overlay
+        // 6. Status bar quads (if enabled)
+        if self.config.status_bar {
+            quad_vertices.extend_from_slice(&crate::status_bar::assemble_status_bar_quads(
+                screen_size[0],
+                screen_size[1],
+                self.terminal.modes.alternate_screen,
+                accent_color,
+            ));
+        }
+
+        // 7. Visual bell overlay
         if bell_active {
             quad_vertices.extend_from_slice(&build_quad_vertices(
                 0.0,
@@ -880,7 +972,7 @@ impl App {
     }
 
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     pub fn render(&mut self) {
         let is_bell_active = self
             .bell_triggered_at
@@ -891,7 +983,10 @@ impl App {
             None => return,
         };
         let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
-        let tab_labels = self.build_tab_labels(screen_size[0]);
+        let mut tab_labels = self.build_tab_labels(screen_size[0]);
+        if self.config.status_bar {
+            tab_labels.extend(self.build_status_bar_labels(screen_size[0], screen_size[1]));
+        }
 
         let palette = self.config.theme.to_f32_palette();
         let bg_color = self.config.theme.background.to_rgba_array(1.0);
@@ -962,6 +1057,12 @@ impl App {
                 &quad_vertices,
             );
 
+            let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
+            let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
+            let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+            let x_offset = effective_pad_x;
+            let y_offset = tab_bar_px + effective_pad_y;
+
             let draw_ctx = DrawContext {
                 device: &gpu.device,
                 queue: &gpu.queue,
@@ -969,7 +1070,8 @@ impl App {
                 metrics: &self.cell_metrics,
                 palette: &palette,
                 dirty_rows: Some(&self.terminal.dirty_rows),
-                y_offset: TAB_BAR_HEIGHT,
+                x_offset,
+                y_offset,
                 tab_labels: &tab_labels,
             };
             let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
@@ -1262,10 +1364,10 @@ mod tests {
 
         app.handle_resize(PhysicalSize::new(1000, 800));
 
-        assert_eq!(app.terminal.grid.cols, 100);
-        assert_eq!(app.terminal.grid.rows, 38);
-        assert_eq!(app.terminal.alternate_grid.cols, 100);
-        assert_eq!(app.terminal.alternate_grid.rows, 38);
+        assert_eq!(app.terminal.grid.cols, 99);
+        assert_eq!(app.terminal.grid.rows, 36);
+        assert_eq!(app.terminal.alternate_grid.cols, 99);
+        assert_eq!(app.terminal.alternate_grid.rows, 36);
         assert!(app.terminal.has_damage());
     }
 
@@ -1290,8 +1392,8 @@ mod tests {
             };
 
             app.handle_resize(PhysicalSize::new(1000, 800));
-            assert_eq!(app.terminal.grid.cols, 100);
-            assert_eq!(app.terminal.grid.rows, 38);
+            assert_eq!(app.terminal.grid.cols, 99);
+            assert_eq!(app.terminal.grid.rows, 36);
         }
     }
 
@@ -1453,5 +1555,38 @@ mod tests {
         assert_eq!(labels[2].text, "Workspaces");
         assert_eq!(labels[3].text, "×");
         assert_eq!(labels[4].text, "+");
+    }
+
+    #[test]
+    fn pixel_to_grid_point_accounts_for_padding_and_tab_bar() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.cell_metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        app.config.padding_x = 10.0;
+        app.config.padding_y = 10.0;
+
+        // Exactly at (pad_x, TAB_BAR_HEIGHT + pad_y) -> (col 0, row 0)
+        let pt0 = app.pixel_to_grid_point((10.0, 36.0 + 10.0));
+        assert_eq!(pt0.col, 0);
+        assert_eq!(pt0.row, 0);
+
+        // One cell over in X and Y
+        let pt1 = app.pixel_to_grid_point((20.0, 36.0 + 30.0));
+        assert_eq!(pt1.col, 1);
+        assert_eq!(pt1.row, 1);
+    }
+
+    #[test]
+    fn build_status_bar_labels_produces_valid_chrome() {
+        let app = App::new(None, Terminal::new(80, 24), None);
+        let labels = app.build_status_bar_labels(800.0, 600.0);
+        assert_eq!(labels.len(), 3);
+        assert_eq!(labels[0].text, "NORMAL");
+        assert!(labels[1].text.starts_with("⌁"));
+        assert!(labels[2].text.contains("Ln 1, Col 1"));
     }
 }

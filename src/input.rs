@@ -228,6 +228,8 @@ pub enum InputAction {
     ZoomReset,
     /// Switch to next available color theme.
     CycleTheme,
+    /// Toggle visibility of the bottom status bar.
+    ToggleStatusBar,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
@@ -264,6 +266,9 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch.eq_ignore_ascii_case("t") {
             return Some(InputAction::CycleTheme);
+        }
+        if ch.eq_ignore_ascii_case("b") {
+            return Some(InputAction::ToggleStatusBar);
         }
     }
 
