@@ -27,8 +27,8 @@ pub struct StatusBarState {
     pub tab_total: usize,
     /// Detected git branch (e.g. "main"), if inside a git repository.
     pub git_branch: Option<String>,
-    /// Whether the interactive theme selection popover dropdown is open.
-    pub theme_menu_open: bool,
+    /// Whether the settings modal overlay is currently open.
+    pub settings_open: bool,
 }
 
 impl Default for StatusBarState {
@@ -43,22 +43,18 @@ impl Default for StatusBarState {
             tab_current: 1,
             tab_total: 1,
             git_branch: None,
-            theme_menu_open: false,
+            settings_open: false,
         }
     }
 }
 
-/// Action dispatched by clicking within the status bar area or its popovers.
+/// Action dispatched by clicking within the status bar area.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusBarAction {
     /// No interactive control was activated.
     None,
-    /// Toggle open/close status of the theme selection dropdown.
-    ToggleThemeMenu,
-    /// User selected a new theme from the dropdown menu.
-    SelectTheme(String),
-    /// User clicked outside, dismissing the open theme dropdown.
-    CloseThemeMenu,
+    /// Open the dedicated settings and appearance modal overlay.
+    OpenSettings,
 }
 
 /// Generates background and badge quad vertices for the bottom status bar.
@@ -110,11 +106,11 @@ pub fn assemble_status_bar_quads(
         badge_bg,
     ));
 
-    // 4. Interactive Theme pill button background and border
+    // 4. Interactive Settings pill button background and border
     if window_width > 420.0 {
         let (btn_x, btn_y, btn_w, btn_h) =
-            compute_theme_button_rect(window_width, window_height, state);
-        let theme_bg = if state.theme_menu_open {
+            compute_settings_button_rect(window_width, window_height);
+        let settings_bg = if state.settings_open {
             [
                 accent_color[0] * 0.35,
                 accent_color[1] * 0.35,
@@ -125,7 +121,13 @@ pub fn assemble_status_bar_quads(
             [0.07, 0.08, 0.11, 0.9]
         };
 
-        quads.extend_from_slice(&build_quad_vertices(btn_x, btn_y, btn_w, btn_h, theme_bg));
+        quads.extend_from_slice(&build_quad_vertices(
+            btn_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            settings_bg,
+        ));
         // Top and bottom 1px borders
         quads.extend_from_slice(&build_quad_vertices(
             btn_x,
@@ -197,18 +199,17 @@ pub fn build_status_bar_labels(
         });
     }
 
-    // Right-aligned status items (Cursor coordinates, Zoom, Theme pill, Tab count)
+    // Right-aligned status items (Cursor coordinates, Zoom, Settings pill, Tab count)
     if window_width > 420.0 {
-        let (theme_x, theme_y, theme_w, _) =
-            compute_theme_button_rect(window_width, window_height, state);
+        let (btn_x, btn_y, btn_w, _) = compute_settings_button_rect(window_width, window_height);
 
-        // Coordinates & Zoom info placed to the left of the theme button
+        // Coordinates & Zoom info placed to the left of the settings button
         let pos_info = format!(
             "Ln {}, Col {}  │  {}%",
             state.cursor_row, state.cursor_col, state.zoom_pct
         );
         let pos_w = pos_info.len() as f32 * 7.5;
-        let pos_x = (theme_x - pos_w - 18.0).max(280.0);
+        let pos_x = (btn_x - pos_w - 18.0).max(280.0);
 
         labels.push(TabLabel {
             text: pos_info,
@@ -219,22 +220,21 @@ pub fn build_status_bar_labels(
             max_width: pos_w + 10.0,
         });
 
-        // Clickable Theme button label
-        let theme_label = format!("🎨 {} ▾", state.theme_name);
+        // Clickable Settings button label
         labels.push(TabLabel {
-            text: theme_label,
-            x: theme_x + 8.0,
-            y: theme_y + 2.0,
+            text: "⚙ Settings".to_string(),
+            x: btn_x + 12.0,
+            y: btn_y + 2.0,
             color: GlyphonColor::rgb(240, 245, 255),
             bold: true,
-            max_width: theme_w - 12.0,
+            max_width: btn_w - 12.0,
         });
 
         // Tab count on the far right
         let tab_info = format!("{}/{}", state.tab_current, state.tab_total);
         labels.push(TabLabel {
             text: tab_info,
-            x: theme_x + theme_w + 10.0,
+            x: btn_x + btn_w + 10.0,
             y: text_y,
             color: GlyphonColor::rgb(140, 145, 160),
             bold: false,
@@ -242,195 +242,31 @@ pub fn build_status_bar_labels(
         });
     }
 
-    // Theme dropdown popover item labels
-    if state.theme_menu_open {
-        let (menu_x, menu_y, menu_w, _) =
-            compute_theme_menu_rect(window_width, window_height, state);
-        let presets = crate::theme::Theme::builtin_presets();
-        let row_h = 24.0;
-
-        for (i, name) in presets.iter().enumerate() {
-            let row_y = menu_y + 5.0 + (i as f32 * row_h);
-            let is_active = *name == state.theme_name;
-            let display_text = if is_active {
-                format!("● {name}")
-            } else {
-                format!("  {name}")
-            };
-            let color = if is_active {
-                GlyphonColor::rgb(255, 255, 255)
-            } else {
-                GlyphonColor::rgb(175, 180, 195)
-            };
-
-            labels.push(TabLabel {
-                text: display_text,
-                x: menu_x + 8.0,
-                y: row_y + 4.0,
-                color,
-                bold: is_active,
-                max_width: menu_w - 16.0,
-            });
-        }
-    }
-
     labels
 }
 
-/// Rect dimensions `(x, y, width, height)` of the clickable theme label in the status bar ribbon.
+/// Rect dimensions `(x, y, width, height)` of the clickable Settings button in the status bar ribbon.
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
-pub fn compute_theme_button_rect(
-    window_width: f32,
-    window_height: f32,
-    state: &StatusBarState,
-) -> (f32, f32, f32, f32) {
+pub fn compute_settings_button_rect(window_width: f32, window_height: f32) -> (f32, f32, f32, f32) {
     let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
-    let theme_w = (state.theme_name.len() as f32 * 7.5) + 38.0;
-    let theme_x = (window_width - theme_w - 55.0).max(220.0);
-    (theme_x, bar_y + 3.0, theme_w, STATUS_BAR_HEIGHT - 6.0)
+    let btn_w = 94.0;
+    let btn_x = (window_width - btn_w - 55.0).max(220.0);
+    (btn_x, bar_y + 3.0, btn_w, STATUS_BAR_HEIGHT - 6.0)
 }
 
-/// Rect dimensions `(x, y, width, height)` for the floating theme dropdown popover.
+/// Hit tests clicking within the status bar area.
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
-pub fn compute_theme_menu_rect(
-    window_width: f32,
-    window_height: f32,
-    state: &StatusBarState,
-) -> (f32, f32, f32, f32) {
-    let presets = crate::theme::Theme::builtin_presets();
-    let row_height = 24.0;
-    let menu_w = 175.0;
-    let menu_h = (presets.len() as f32 * row_height) + 10.0;
-    let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
-
-    let (btn_x, _, btn_w, _) = compute_theme_button_rect(window_width, window_height, state);
-    let menu_x = (btn_x + btn_w - menu_w).clamp(8.0, (window_width - menu_w - 8.0).max(8.0));
-    let menu_y = (bar_y - menu_h - 4.0).max(8.0);
-
-    (menu_x, menu_y, menu_w, menu_h)
-}
-
-/// Assembles vertices for rendering the floating theme selection popover dropdown.
-#[must_use]
-#[allow(clippy::cast_precision_loss)]
-pub fn assemble_theme_menu_quads(
-    window_width: f32,
-    window_height: f32,
-    accent_color: [f32; 4],
-    state: &StatusBarState,
-) -> Vec<QuadVertex> {
-    if !state.theme_menu_open {
-        return Vec::new();
-    }
-
-    let mut quads = Vec::new();
-    let (menu_x, menu_y, menu_w, menu_h) =
-        compute_theme_menu_rect(window_width, window_height, state);
-    let presets = crate::theme::Theme::builtin_presets();
-    let row_h = 24.0;
-
-    // 1. Menu popover background (pitch-black obsidian #060709)
-    quads.extend_from_slice(&build_quad_vertices(
-        menu_x,
-        menu_y,
-        menu_w,
-        menu_h,
-        [0.025, 0.028, 0.035, 0.98],
-    ));
-
-    // 2. Menu popover 1px border (#2d3240)
-    quads.extend_from_slice(&build_quad_vertices(
-        menu_x,
-        menu_y,
-        menu_w,
-        1.0,
-        [0.18, 0.20, 0.26, 1.0],
-    ));
-    quads.extend_from_slice(&build_quad_vertices(
-        menu_x,
-        menu_y + menu_h - 1.0,
-        menu_w,
-        1.0,
-        [0.18, 0.20, 0.26, 1.0],
-    ));
-    quads.extend_from_slice(&build_quad_vertices(
-        menu_x,
-        menu_y,
-        1.0,
-        menu_h,
-        [0.18, 0.20, 0.26, 1.0],
-    ));
-    quads.extend_from_slice(&build_quad_vertices(
-        menu_x + menu_w - 1.0,
-        menu_y,
-        1.0,
-        menu_h,
-        [0.18, 0.20, 0.26, 1.0],
-    ));
-
-    // 3. Highlight quad for the active preset row
-    for (i, name) in presets.iter().enumerate() {
-        if *name == state.theme_name {
-            let row_y = menu_y + 5.0 + (i as f32 * row_h);
-            quads.extend_from_slice(&build_quad_vertices(
-                menu_x + 4.0,
-                row_y,
-                menu_w - 8.0,
-                row_h,
-                [
-                    accent_color[0] * 0.35,
-                    accent_color[1] * 0.35,
-                    accent_color[2] * 0.35,
-                    0.85,
-                ],
-            ));
-            break;
-        }
-    }
-
-    quads
-}
-
-/// Hit tests clicking within the status bar area or its open theme dropdown popover.
-#[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn hit_test_status_bar(
     x: f32,
     y: f32,
     window_width: f32,
     window_height: f32,
-    state: &StatusBarState,
+    _state: &StatusBarState,
 ) -> StatusBarAction {
-    let presets = crate::theme::Theme::builtin_presets();
-    let (btn_x, btn_y, btn_w, btn_h) =
-        compute_theme_button_rect(window_width, window_height, state);
-
-    if state.theme_menu_open {
-        let (menu_x, menu_y, menu_w, menu_h) =
-            compute_theme_menu_rect(window_width, window_height, state);
-
-        if x >= menu_x && x <= menu_x + menu_w && y >= menu_y && y <= menu_y + menu_h {
-            let offset_y = y - menu_y - 5.0;
-            if offset_y >= 0.0 {
-                let idx = (offset_y / 24.0).floor() as usize;
-                if idx < presets.len() {
-                    return StatusBarAction::SelectTheme(presets[idx].to_string());
-                }
-            }
-            return StatusBarAction::None;
-        }
-
-        if x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-            return StatusBarAction::ToggleThemeMenu;
-        }
-
-        return StatusBarAction::CloseThemeMenu;
-    }
+    let (btn_x, btn_y, btn_w, btn_h) = compute_settings_button_rect(window_width, window_height);
 
     if x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-        return StatusBarAction::ToggleThemeMenu;
+        return StatusBarAction::OpenSettings;
     }
 
     StatusBarAction::None
@@ -444,12 +280,12 @@ mod tests {
     fn assemble_status_bar_quads_generates_quads() {
         let state = StatusBarState::default();
         let quads = assemble_status_bar_quads(800.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
-        // 6 quads: background, top border, badge pill, theme pill bg, theme top border, theme bottom border
+        // 6 quads: background, top border, badge pill, settings pill bg, settings top border, settings bottom border
         assert_eq!(quads.len(), 36);
 
         // Narrow window: 3 quads (18 vertices)
-        let quads_narrow = assemble_status_bar_quads(350.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
-        assert_eq!(quads_narrow.len(), 18);
+        let narrow_quads = assemble_status_bar_quads(300.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
+        assert_eq!(narrow_quads.len(), 18);
     }
 
     #[test]
@@ -464,7 +300,7 @@ mod tests {
             tab_current: 2,
             tab_total: 4,
             git_branch: None,
-            theme_menu_open: false,
+            settings_open: false,
         };
 
         let labels = build_status_bar_labels(&state, 800.0, 600.0);
@@ -473,7 +309,7 @@ mod tests {
         assert_eq!(labels[1].text, "⌁ pwsh");
         assert!(labels[2].text.contains("Ln 5, Col 10"));
         assert!(labels[2].text.contains("120%"));
-        assert_eq!(labels[3].text, "🎨 dracula ▾");
+        assert_eq!(labels[3].text, "⚙ Settings");
         assert_eq!(labels[4].text, "2/4");
     }
 
@@ -496,39 +332,14 @@ mod tests {
     }
 
     #[test]
-    fn theme_menu_popover_and_hit_testing() {
-        let mut state = StatusBarState {
-            theme_name: "pitch-black".to_string(),
-            theme_menu_open: false,
-            ..StatusBarState::default()
-        };
+    fn settings_button_and_hit_testing() {
+        let state = StatusBarState::default();
 
-        // When closed, clicking button toggles open
-        let (btn_x, btn_y, _btn_w, _btn_h) = compute_theme_button_rect(800.0, 600.0, &state);
+        let (btn_x, btn_y, _btn_w, _btn_h) = compute_settings_button_rect(800.0, 600.0);
         let action = hit_test_status_bar(btn_x + 5.0, btn_y + 5.0, 800.0, 600.0, &state);
-        assert_eq!(action, StatusBarAction::ToggleThemeMenu);
+        assert_eq!(action, StatusBarAction::OpenSettings);
 
-        // When open, assemble quads returns background + 4 border lines + active highlight = 6 quads (36 vertices)
-        state.theme_menu_open = true;
-        let quads = assemble_theme_menu_quads(800.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
-        assert_eq!(quads.len(), 6 * 6);
-
-        // Labels include presets
-        let labels = build_status_bar_labels(&state, 800.0, 600.0);
-        let presets = crate::theme::Theme::builtin_presets();
-        assert_eq!(labels.len(), 5 + presets.len());
-
-        // Hit testing item inside popover
-        let (menu_x, menu_y, _, _) = compute_theme_menu_rect(800.0, 600.0, &state);
-        // First item row
-        let select_action = hit_test_status_bar(menu_x + 10.0, menu_y + 10.0, 800.0, 600.0, &state);
-        assert_eq!(
-            select_action,
-            StatusBarAction::SelectTheme(presets[0].to_string())
-        );
-
-        // Hit testing outside closes menu
         let outside_action = hit_test_status_bar(10.0, 10.0, 800.0, 600.0, &state);
-        assert_eq!(outside_action, StatusBarAction::CloseThemeMenu);
+        assert_eq!(outside_action, StatusBarAction::None);
     }
 }
