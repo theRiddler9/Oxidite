@@ -193,6 +193,16 @@ pub struct App {
     pub workspace_name: String,
     /// Detected git branch if running inside a git repository.
     pub git_branch: Option<String>,
+    /// Sidebar persistent multi-workspace and chat state.
+    pub sidebar_state: crate::sidebar::SidebarState,
+    /// Whether the right changes / git review panel is open.
+    pub changes_panel_open: bool,
+    /// State representation for the right git panel.
+    pub changes_panel_state: crate::changes_panel::ChangesPanelState,
+    /// Whether the central side-by-side diff review workspace is open.
+    pub diff_view_open: bool,
+    /// State representation for the side-by-side diff view.
+    pub diff_view_state: crate::diff_view::DiffViewState,
 }
 
 impl App {
@@ -241,6 +251,11 @@ impl App {
             .to_string();
         let git_branch = crate::sidebar::detect_git_branch(&cwd);
         let sidebar_open = true;
+        let sidebar_state = crate::sidebar::SidebarState {
+            workspace_name: workspace_name.clone(),
+            git_branch: git_branch.clone(),
+            ..crate::sidebar::SidebarState::default()
+        };
 
         Self {
             proxy,
@@ -275,6 +290,11 @@ impl App {
             sidebar_open,
             workspace_name,
             git_branch,
+            sidebar_state,
+            changes_panel_open: true,
+            changes_panel_state: crate::changes_panel::ChangesPanelState::default(),
+            diff_view_open: true,
+            diff_view_state: crate::diff_view::DiffViewState::default(),
         }
     }
 
@@ -329,6 +349,20 @@ impl App {
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("b") => {
                     self.sidebar_open = !self.sidebar_open;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
+                    win.request_redraw();
+                    return;
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("g") => {
+                    self.changes_panel_open = !self.changes_panel_open;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
+                    win.request_redraw();
+                    return;
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("d") && !self.modifiers.shift_key() => {
+                    self.diff_view_open = !self.diff_view_open;
                     self.handle_resize(win.inner_size());
                     self.terminal.mark_all_dirty();
                     win.request_redraw();
@@ -531,10 +565,23 @@ impl App {
         } else {
             0
         };
+        let changes_panel_px = if self.changes_panel_open {
+            (crate::changes_panel::CHANGES_PANEL_WIDTH * self.scale_factor as f32).round() as u32
+        } else {
+            0
+        };
 
-        let content_width = size
+        let avail_middle = size
             .width
             .saturating_sub(sidebar_px)
+            .saturating_sub(changes_panel_px);
+        let term_width = if self.diff_view_open {
+            (avail_middle * 2 / 5).clamp(240, 520)
+        } else {
+            avail_middle
+        };
+
+        let content_width = term_width
             .saturating_sub((effective_pad_x * 2.0) as u32)
             .max(1);
         let content_height = size
@@ -1034,6 +1081,51 @@ impl App {
             y_offset,
         ));
 
+        // 5.5. Central Side-by-side Diff View workspace quads (if open)
+        let changes_panel_w = if self.changes_panel_open {
+            (crate::changes_panel::CHANGES_PANEL_WIDTH * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let avail_middle = (screen_size[0] - sidebar_w - changes_panel_w).max(0.0);
+        let term_w = if self.diff_view_open {
+            (avail_middle * 0.4).clamp(240.0, 520.0)
+        } else {
+            avail_middle
+        };
+        let diff_w = if self.diff_view_open {
+            (avail_middle - term_w).max(0.0)
+        } else {
+            0.0
+        };
+        let diff_x = sidebar_w + term_w;
+        let panel_x = screen_size[0] - changes_panel_w;
+
+        if self.diff_view_open && diff_w > 10.0 {
+            let diff_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+            quad_vertices.extend_from_slice(&crate::diff_view::assemble_diff_view_quads(
+                diff_x,
+                tab_bar_px,
+                diff_w,
+                diff_h,
+                accent_color,
+                &self.diff_view_state,
+            ));
+        }
+
+        // 5.6. Right Changes & Git Panel quads (if open)
+        if self.changes_panel_open && changes_panel_w > 10.0 {
+            let panel_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+            quad_vertices.extend_from_slice(&crate::changes_panel::assemble_changes_panel_quads(
+                panel_x,
+                tab_bar_px,
+                changes_panel_w,
+                panel_h,
+                accent_color,
+                &self.changes_panel_state,
+            ));
+        }
+
         // 6. Status bar quads (if enabled)
         if self.config.status_bar {
             quad_vertices.extend_from_slice(&crate::status_bar::assemble_status_bar_quads(
@@ -1136,26 +1228,79 @@ impl App {
         };
         let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
         let mut tab_labels = self.build_tab_labels(screen_size[0]);
+        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let sidebar_w = if self.sidebar_open {
+            (crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let changes_panel_w = if self.changes_panel_open {
+            (crate::changes_panel::CHANGES_PANEL_WIDTH * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let avail_middle = (screen_size[0] - sidebar_w - changes_panel_w).max(0.0);
+        let term_w = if self.diff_view_open {
+            (avail_middle * 0.4).clamp(240.0, 520.0)
+        } else {
+            avail_middle
+        };
+        let diff_w = if self.diff_view_open {
+            (avail_middle - term_w).max(0.0)
+        } else {
+            0.0
+        };
+        let diff_x = sidebar_w + term_w;
+        let panel_x = screen_size[0] - changes_panel_w;
+
         if self.sidebar_open {
-            let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
             let sidebar_state = crate::sidebar::SidebarState {
                 workspace_name: self.workspace_name.clone(),
                 git_branch: self.git_branch.clone(),
-                git_status: None,
                 tab_titles: self.tabs.iter().map(|t| t.title.clone()).collect(),
                 active_tab_index: self.active_tab_index,
+                workspaces: self.sidebar_state.workspaces.clone(),
+                chats: self.sidebar_state.chats.clone(),
+                git_status: self.sidebar_state.git_status.clone(),
             };
             tab_labels.extend(crate::sidebar::build_sidebar_labels(
                 &sidebar_state,
                 tab_bar_px,
             ));
         }
+
+        if self.diff_view_open && diff_w > 10.0 {
+            let diff_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+            tab_labels.extend(crate::diff_view::build_diff_view_labels(
+                diff_x,
+                tab_bar_px,
+                diff_w,
+                diff_h,
+                &self.diff_view_state,
+            ));
+        }
+
+        if self.changes_panel_open && changes_panel_w > 10.0 {
+            let panel_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+            tab_labels.extend(crate::changes_panel::build_changes_panel_labels(
+                panel_x,
+                tab_bar_px,
+                changes_panel_w,
+                panel_h,
+                &self.changes_panel_state,
+            ));
+        }
+
         if self.config.status_bar {
             tab_labels.extend(self.build_status_bar_labels(screen_size[0], screen_size[1]));
         }
 
         let palette = self.config.theme.to_f32_palette();
-        let bg_color = self.config.theme.background.to_rgba_array(1.0);
 
         let (Some(gpu), Some(quad_pipeline), Some(glyph_pipeline)) = (
             &mut self.gpu,
@@ -1199,9 +1344,9 @@ impl App {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: f64::from(bg_color[0]),
-                            g: f64::from(bg_color[1]),
-                            b: f64::from(bg_color[2]),
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -1225,8 +1370,7 @@ impl App {
 
             let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
             let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
-            let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-            let x_offset = effective_pad_x;
+            let x_offset = sidebar_w + effective_pad_x;
             let y_offset = tab_bar_px + effective_pad_y;
 
             let draw_ctx = DrawContext {
@@ -1449,7 +1593,154 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.terminal.mark_all_dirty();
                                 win.request_redraw();
                             }
+                            crate::sidebar::SidebarAction::SelectWorkspace(idx) => {
+                                if let Some(ws) = self.sidebar_state.workspaces.get(idx) {
+                                    self.workspace_name = ws.name.clone();
+                                    self.git_branch = Some(ws.branch.clone());
+                                }
+                                win.request_redraw();
+                            }
+                            crate::sidebar::SidebarAction::SelectChat(_idx) => {
+                                win.request_redraw();
+                            }
                             crate::sidebar::SidebarAction::None => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Check changes panel click if changes panel is open
+                let changes_panel_px = if self.changes_panel_open {
+                    f64::from(
+                        (crate::changes_panel::CHANGES_PANEL_WIDTH * self.scale_factor as f32)
+                            .round(),
+                    )
+                } else {
+                    0.0
+                };
+                let win_w_f64 = f64::from(win.inner_size().width);
+                let panel_x = win_w_f64 - changes_panel_px;
+                if self.changes_panel_open && self.cursor_pixel_pos.0 >= panel_x {
+                    if state == winit::event::ElementState::Pressed {
+                        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+                        let status_bar_px = if self.config.status_bar {
+                            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32)
+                                .round()
+                        } else {
+                            0.0
+                        };
+                        let panel_h =
+                            (win.inner_size().height as f32 - tab_bar_px - status_bar_px).max(0.0);
+                        let action = crate::changes_panel::hit_test_changes_panel(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            panel_x as f32,
+                            tab_bar_px,
+                            changes_panel_px as f32,
+                            panel_h,
+                            &self.changes_panel_state,
+                        );
+                        match action {
+                            crate::changes_panel::ChangesAction::SwitchTab(tab) => {
+                                self.changes_panel_state.active_tab = tab;
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::SelectFile(idx) => {
+                                self.changes_panel_state.selected_file_index = Some(idx);
+                                if let Some(file) = self.changes_panel_state.changed_files.get(idx)
+                                {
+                                    self.diff_view_state.file_name = file.filename.clone();
+                                    self.diff_view_state.path_info = file.path_info.clone();
+                                    self.diff_view_state.staged = file.staged;
+                                    self.diff_view_open = true;
+                                    self.handle_resize(win.inner_size());
+                                    self.terminal.mark_all_dirty();
+                                }
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::ToggleStage(idx) => {
+                                if let Some(file) =
+                                    self.changes_panel_state.changed_files.get_mut(idx)
+                                {
+                                    file.staged = !file.staged;
+                                }
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::StageAll => {
+                                for file in &mut self.changes_panel_state.changed_files {
+                                    file.staged = true;
+                                }
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::Commit => {
+                                log::info!("Commit action triggered");
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::Fetch => {
+                                log::info!("Git fetch triggered");
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::None => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Check diff view click if diff view is open
+                let avail_middle_f64 = (win_w_f64 - sidebar_px - changes_panel_px).max(0.0);
+                let term_w_f64 = if self.diff_view_open {
+                    (avail_middle_f64 * 0.4).clamp(240.0, 520.0)
+                } else {
+                    avail_middle_f64
+                };
+                let diff_pane_x = sidebar_px + term_w_f64;
+                let diff_pane_width = if self.diff_view_open {
+                    (avail_middle_f64 - term_w_f64).max(0.0)
+                } else {
+                    0.0
+                };
+                if self.diff_view_open
+                    && self.cursor_pixel_pos.0 >= diff_pane_x
+                    && self.cursor_pixel_pos.0 < diff_pane_x + diff_pane_width
+                {
+                    if state == winit::event::ElementState::Pressed {
+                        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+                        let status_bar_px = if self.config.status_bar {
+                            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32)
+                                .round()
+                        } else {
+                            0.0
+                        };
+                        let diff_h =
+                            (win.inner_size().height as f32 - tab_bar_px - status_bar_px).max(0.0);
+                        let action = crate::diff_view::hit_test_diff_view(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            diff_pane_x as f32,
+                            tab_bar_px,
+                            diff_pane_width as f32,
+                            diff_h,
+                        );
+                        match action {
+                            crate::diff_view::DiffAction::ToggleStage => {
+                                self.diff_view_state.staged = !self.diff_view_state.staged;
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::Close => {
+                                self.diff_view_open = false;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::OpenFile => {
+                                log::info!("Open file action triggered");
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::Restore => {
+                                log::info!("Restore file action triggered");
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::None => {}
                         }
                     }
                     return;
@@ -1580,6 +1871,8 @@ mod tests {
         let term = Terminal::new(80, 24);
         let mut app = App::new(None, term, None);
         app.sidebar_open = false;
+        app.changes_panel_open = false;
+        app.diff_view_open = false;
         app.cell_metrics = CellMetrics {
             cell_width: 10.0,
             cell_height: 20.0,
@@ -1595,10 +1888,16 @@ mod tests {
         assert_eq!(app.terminal.alternate_grid.rows, 36);
         assert!(app.terminal.has_damage());
 
-        // When sidebar is opened: columns adjust to fit narrower width
+        // When sidebar is opened: columns adjust to fit narrower width (240px sidebar)
         app.sidebar_open = true;
         app.handle_resize(PhysicalSize::new(1000, 800));
-        assert_eq!(app.terminal.grid.cols, 79);
+        assert_eq!(app.terminal.grid.cols, 75);
+
+        // When all cockpit panes are opened: terminal fits agent pane
+        app.changes_panel_open = true;
+        app.diff_view_open = true;
+        app.handle_resize(PhysicalSize::new(1440, 900));
+        assert!(app.terminal.grid.cols > 30);
     }
 
     #[test]
@@ -1615,6 +1914,8 @@ mod tests {
             let writer = Arc::new(Mutex::new(writer));
             let mut app = App::new(None, term, Some(Arc::clone(&writer)));
             app.sidebar_open = false;
+            app.changes_panel_open = false;
+            app.diff_view_open = false;
             app.cell_metrics = CellMetrics {
                 cell_width: 10.0,
                 cell_height: 20.0,

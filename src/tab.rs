@@ -222,16 +222,16 @@ pub fn assemble_tab_bar_quads(
         0.0,
         window_width,
         TAB_BAR_HEIGHT,
-        [0.02, 0.02, 0.028, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
     ));
 
-    // 2. Bottom 1px divider (#14151D)
+    // 2. Bottom 1px divider (#181a20)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         TAB_BAR_HEIGHT - 1.0,
         window_width,
         1.0,
-        [0.08, 0.085, 0.115, 1.0],
+        [0.095, 0.105, 0.13, 1.0],
     ));
 
     // 3. Sidebar toggle button quad [◨]
