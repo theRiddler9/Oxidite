@@ -61,21 +61,41 @@ impl AgentKind {
         let t = title.to_ascii_lowercase();
         let s = terminal_content_sample.to_ascii_lowercase();
 
-        if t.contains("claude") || s.contains("claude") || s.contains("anthropic") {
+        if t.contains("claude")
+            || s.contains("claude")
+            || s.contains("anthropic")
+            || s.contains("claude code")
+        {
             AgentKind::Claude
-        } else if t.contains("codex") || s.contains("codex") || s.contains("openai") {
+        } else if t.contains("codex")
+            || s.contains("codex")
+            || s.contains("openai")
+            || s.contains("codex cli")
+        {
             AgentKind::Codex
         } else if t.contains("agy")
             || t.contains("antigravity")
             || s.contains("antigravity")
             || s.contains("agy ")
+            || s.contains("agy\n")
+            || s.contains("agy>")
+            || s.contains("agy$")
+            || s.contains("antigravity-cli")
         {
             AgentKind::Agy
-        } else if t.contains("opencode") || s.contains("opencode") {
+        } else if t.contains("opencode") || s.contains("opencode") || s.contains("open-code") {
             AgentKind::OpenCode
-        } else if t.contains("copilot") || s.contains("copilot") || s.contains("github copilot") {
+        } else if t.contains("copilot")
+            || s.contains("copilot")
+            || s.contains("github copilot")
+            || s.contains("gh copilot")
+        {
             AgentKind::Copilot
-        } else if t.contains("devin") || s.contains("devin") || s.contains("cognition") {
+        } else if t.contains("devin")
+            || s.contains("devin")
+            || s.contains("cognition")
+            || s.contains("devin-cli")
+        {
             AgentKind::Devin
         } else {
             AgentKind::Shell
@@ -180,12 +200,31 @@ impl Tab {
         AgentKind::detect(&self.title, &sample)
     }
 
-    /// Samples first few lines of terminal text for agent greeting / banner inspection.
+    /// Samples key lines of terminal text (top banner, active cursor line, prompt area) for agent inspection.
     #[must_use]
     pub fn sample_terminal_text(&self) -> String {
         let mut sample = String::new();
-        let sample_rows = self.terminal.grid.rows.min(8);
-        for row in 0..sample_rows {
+        let total_rows = self.terminal.grid.rows;
+        if total_rows == 0 {
+            return sample;
+        }
+
+        let mut rows_to_sample = std::collections::BTreeSet::new();
+        // Top banner lines (0..8)
+        for r in 0..total_rows.min(8) {
+            rows_to_sample.insert(r);
+        }
+        // Active cursor line and immediate neighbors
+        let cur_row = self.terminal.grid.cursor.row.min(total_rows.saturating_sub(1));
+        for r in cur_row.saturating_sub(2)..=cur_row.saturating_add(1).min(total_rows.saturating_sub(1)) {
+            rows_to_sample.insert(r);
+        }
+        // Bottom lines (interactive footer/prompt)
+        for r in total_rows.saturating_sub(3)..total_rows {
+            rows_to_sample.insert(r);
+        }
+
+        for row in rows_to_sample {
             for col in 0..self.terminal.grid.cols {
                 if let Some(cell) = self.terminal.grid.get(row, col)
                     && cell.ch != ' '
@@ -510,12 +549,17 @@ mod tests {
     #[test]
     fn agent_detection_recognizes_claude_codex_and_agy() {
         assert_eq!(AgentKind::detect("claude", ""), AgentKind::Claude);
+        assert_eq!(AgentKind::detect("claude code v1.2", ""), AgentKind::Claude);
         assert_eq!(AgentKind::detect("Codex CLI", ""), AgentKind::Codex);
         assert_eq!(AgentKind::detect("agy-agent", ""), AgentKind::Agy);
+        assert_eq!(AgentKind::detect("tab", "user@host:~$ agy start"), AgentKind::Agy);
         assert_eq!(
             AgentKind::detect("Tab 1", "Welcome to Antigravity CLI"),
             AgentKind::Agy
         );
+        assert_eq!(AgentKind::detect("OpenCode session", ""), AgentKind::OpenCode);
+        assert_eq!(AgentKind::detect("gh copilot", ""), AgentKind::Copilot);
+        assert_eq!(AgentKind::detect("Devin workspace", ""), AgentKind::Devin);
         assert_eq!(AgentKind::detect("bash", ""), AgentKind::Shell);
     }
 }
