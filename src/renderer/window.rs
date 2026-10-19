@@ -37,11 +37,10 @@ pub fn default_window_attributes(title: &str) -> WindowAttributes {
     {
         // On Linux, set X11 WM_CLASS and Wayland App ID so window managers and compositors
         // correctly match desktop files, dock icons, and window grouping.
-        use winit::platform::x11::WindowAttributesExtX11;
-        attrs = attrs.with_name("oxidite", "Oxidite");
-
         use winit::platform::wayland::WindowAttributesExtWayland;
-        attrs = attrs.with_name("oxidite", "Oxidite");
+        use winit::platform::x11::WindowAttributesExtX11;
+        attrs = WindowAttributesExtX11::with_name(attrs, "oxidite", "Oxidite");
+        attrs = WindowAttributesExtWayland::with_name(attrs, "oxidite", "Oxidite");
     }
 
     attrs

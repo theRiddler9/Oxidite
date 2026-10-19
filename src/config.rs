@@ -463,7 +463,7 @@ mod tests {
         assert!((config.padding_x - 4.0).abs() < f32::EPSILON);
         assert!((config.padding_y - 4.0).abs() < f32::EPSILON);
         assert!(config.shell.is_none());
-        assert!(config.shell_args.is_empty());
+        assert_eq!(config.shell_args, Vec::<String>::new());
         assert_eq!(config.scrollback_lines, 10_000);
     }
 
@@ -494,7 +494,7 @@ mod tests {
         assert!((config.padding_x - 4.0).abs() < f32::EPSILON);
         assert!((config.padding_y - 4.0).abs() < f32::EPSILON);
         assert!(config.shell.is_none());
-        assert!(config.shell_args.is_empty());
+        assert_eq!(config.shell_args, Vec::<String>::new());
         assert_eq!(config.scrollback_lines, 10_000);
     }
 
