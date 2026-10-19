@@ -63,7 +63,7 @@ impl Default for SettingsModalState {
             active_theme: "pitch-black".to_string(),
             font_size: 14.0,
             zoom_pct: 100,
-            cursor_shape: CursorShapeChoice::Block,
+            cursor_shape: CursorShapeChoice::Beam,
             cursor_blink: true,
             padding: PaddingChoice::Normal,
             status_bar_visible: true,
@@ -448,7 +448,7 @@ pub fn build_settings_modal_labels(
 
     // Header Title
     labels.push(TabLabel {
-        text: "⚙ Oxidite Settings & Appearance".to_string(),
+        text: "Oxidite Settings & Appearance".to_string(),
         x: mx + 18.0,
         y: my + 14.0,
         color: GlyphonColor::rgb(240, 245, 255),
@@ -456,9 +456,9 @@ pub fn build_settings_modal_labels(
         max_width: mw - 70.0,
     });
 
-    // Close Button [ × ]
+    // Close Button [ x ]
     labels.push(TabLabel {
-        text: "×".to_string(),
+        text: "x".to_string(),
         x: layout.close_btn_rect.0 + 8.0,
         y: layout.close_btn_rect.1 + 4.0,
         color: GlyphonColor::rgb(180, 185, 200),
@@ -485,7 +485,7 @@ pub fn build_settings_modal_labels(
                 .map_or(id.as_str(), |(_, name)| *name);
 
             let label_text = if is_active {
-                format!("✓ {display_name}")
+                format!("[x] {display_name}")
             } else {
                 display_name.to_string()
             };
@@ -519,7 +519,7 @@ pub fn build_settings_modal_labels(
         max_width: 210.0,
     });
     labels.push(TabLabel {
-        text: "−".to_string(),
+        text: "-".to_string(),
         x: layout.font_dec_rect.0 + 12.0,
         y: font_y + 4.0,
         color: GlyphonColor::rgb(240, 245, 255),
@@ -571,19 +571,19 @@ pub fn build_settings_modal_labels(
         };
 
     render_chip_label(
-        "Block █",
+        "Block",
         layout.cursor_shape_block,
         state.cursor_shape == CursorShapeChoice::Block,
         &mut labels,
     );
     render_chip_label(
-        "Underline _",
+        "Underline",
         layout.cursor_shape_under,
         state.cursor_shape == CursorShapeChoice::Underline,
         &mut labels,
     );
     render_chip_label(
-        "Beam ▏",
+        "Beam (Line)",
         layout.cursor_shape_beam,
         state.cursor_shape == CursorShapeChoice::Beam,
         &mut labels,
