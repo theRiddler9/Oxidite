@@ -317,6 +317,11 @@ impl App {
                 hunks,
                 scroll_offset: 0,
                 staged: first_file.staged,
+                review_mode: true,
+                review_verdict: crate::diff_view::ReviewVerdict::InReview,
+                comments: Vec::new(),
+                next_comment_id: 1,
+                selected_line: None,
             }
         } else {
             crate::diff_view::DiffViewState::default()
@@ -1933,8 +1938,59 @@ impl ApplicationHandler<AppEvent> for App {
                             tab_bar_px,
                             diff_pane_width as f32,
                             diff_h,
+                            &self.diff_view_state,
                         );
                         match action {
+                            crate::diff_view::DiffAction::ToggleReviewMode => {
+                                self.diff_view_state.review_mode =
+                                    !self.diff_view_state.review_mode;
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::SetVerdict(verdict) => {
+                                self.diff_view_state.set_verdict(verdict);
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::CycleVerdict => {
+                                self.diff_view_state.review_verdict =
+                                    self.diff_view_state.review_verdict.cycle();
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::ToggleResolve(id) => {
+                                self.diff_view_state.toggle_resolve(id);
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::DeleteComment(id) => {
+                                self.diff_view_state.delete_comment(id);
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::CopyReviewSummary => {
+                                let md = self.diff_view_state.generate_review_markdown();
+                                if let Some(ref mut clip) = self.clipboard {
+                                    let _ = clip.set_text(md);
+                                    log::info!("Copied code review markdown to clipboard");
+                                }
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::SelectLine(line_num, side) => {
+                                self.diff_view_state.selected_line = Some((line_num, side));
+                                if self.diff_view_state.review_mode {
+                                    let exists = self
+                                        .diff_view_state
+                                        .comments
+                                        .iter()
+                                        .any(|c| c.side == side && c.line_number == line_num);
+                                    if !exists {
+                                        self.diff_view_state.add_comment(
+                                            line_num,
+                                            side,
+                                            crate::diff_view::ReviewTag::Note,
+                                            "Reviewed line".to_string(),
+                                            "Reviewer".to_string(),
+                                        );
+                                    }
+                                }
+                                win.request_redraw();
+                            }
                             crate::diff_view::DiffAction::ToggleStage => {
                                 self.diff_view_state.staged = !self.diff_view_state.staged;
                                 let cwd = std::env::current_dir()
