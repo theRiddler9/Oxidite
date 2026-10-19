@@ -443,7 +443,7 @@ pub fn query_file_diff(cwd: &Path, relative_file_path: &str) -> (String, String,
 #[must_use]
 pub fn query_commit_diff(cwd: &Path, commit_hash: &str) -> (String, String, Vec<DiffHunk>) {
     let output = Command::new("git")
-        .args(["show", "--format=", commit_hash])
+        .args(["show", "-m", "--format=", commit_hash])
         .current_dir(cwd)
         .output();
 
@@ -704,6 +704,20 @@ pub fn commit_changes(cwd: &Path, message: &str) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::other("git commit failed"))
+    }
+}
+
+/// Discards uncommitted working-tree modifications for a file with `git restore <file>`.
+pub fn restore_file(cwd: &Path, file_path: &str) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .args(["restore", file_path])
+        .current_dir(cwd)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("git restore failed"))
     }
 }
 

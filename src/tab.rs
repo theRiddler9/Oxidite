@@ -62,53 +62,88 @@ impl AgentKind {
         let cmd = cursor_line.to_ascii_lowercase();
         let s = terminal_content_sample.to_ascii_lowercase();
 
-        // 1. Process title check
-        let is_agy_title = t.contains("agy") || t.contains("antigravity");
-        let is_claude_title = t.contains("claude");
-        let is_codex_title = t.contains("codex");
-        let is_opencode_title = t.contains("opencode");
-        let is_copilot_title = t.contains("copilot");
-        let is_devin_title = t.contains("devin");
+        let has_word = |text: &str, word: &str| -> bool {
+            text.split(|c: char| {
+                c.is_whitespace()
+                    || c == '-'
+                    || c == '_'
+                    || c == ':'
+                    || c == '>'
+                    || c == '$'
+                    || c == '%'
+                    || c == '#'
+                    || c == '('
+                    || c == ')'
+            })
+            .any(|w| w == word || w == format!("{word}.exe"))
+        };
 
-        // 2. Active cursor prompt command check
-        let is_agy_cmd =
-            cmd.contains("agy ") || cmd.ends_with("agy") || cmd.contains("antigravity");
-        let is_claude_cmd = cmd.contains("claude ") || cmd.ends_with("claude");
-        let is_codex_cmd = cmd.contains("codex ") || cmd.ends_with("codex");
-        let is_opencode_cmd = cmd.contains("opencode ") || cmd.ends_with("opencode");
-        let is_copilot_cmd = cmd.contains("gh copilot") || cmd.contains("copilot ");
-        let is_devin_cmd = cmd.contains("devin ") || cmd.ends_with("devin");
-
-        // 3. Distinctive interactive agent banner / prompt
-        let is_agy_banner = s.contains("antigravity cli")
+        // 1. Antigravity CLI (agy)
+        let is_agy = has_word(&t, "agy")
+            || t.contains("antigravity")
+            || has_word(&cmd, "agy")
+            || cmd.contains("antigravity")
+            || s.contains("antigravity cli")
             || s.contains("agy >")
-            || s.contains("agy:")
-            || s.contains("agy$")
-            || s.contains("antigravity 2.0");
-        let is_claude_banner = s.contains("claude code")
-            || s.contains("welcome to claude code")
-            || s.contains("claude >");
-        let is_codex_banner = s.contains("openai codex") || s.contains("codex >");
-        let is_opencode_banner = s.contains("opencode cli") || s.contains("opencode >");
-        let is_copilot_banner = s.contains("github copilot cli");
-        let is_devin_banner = s.contains("devin cli") || s.contains("devin >");
+            || s.contains("agy❯")
+            || s.contains("⏣ agy");
 
-        // Evaluate with priority: Agy first, then Claude, Codex, OpenCode, Copilot, Devin
-        if is_agy_title || is_agy_cmd || is_agy_banner {
-            AgentKind::Agy
-        } else if is_claude_title || is_claude_cmd || is_claude_banner {
-            AgentKind::Claude
-        } else if is_codex_title || is_codex_cmd || is_codex_banner {
-            AgentKind::Codex
-        } else if is_opencode_title || is_opencode_cmd || is_opencode_banner {
-            AgentKind::OpenCode
-        } else if is_copilot_title || is_copilot_cmd || is_copilot_banner {
-            AgentKind::Copilot
-        } else if is_devin_title || is_devin_cmd || is_devin_banner {
-            AgentKind::Devin
-        } else {
-            AgentKind::Shell
+        if is_agy {
+            return AgentKind::Agy;
         }
+
+        // 2. Claude Code
+        let is_claude = has_word(&t, "claude")
+            || has_word(&cmd, "claude")
+            || s.contains("welcome to claude code")
+            || s.contains("claude >")
+            || s.contains("claude❯");
+
+        if is_claude {
+            return AgentKind::Claude;
+        }
+
+        // 3. OpenAI Codex
+        let is_codex = has_word(&t, "codex")
+            || has_word(&cmd, "codex")
+            || s.contains("openai codex")
+            || s.contains("codex >")
+            || s.contains("codex❯");
+
+        if is_codex {
+            return AgentKind::Codex;
+        }
+
+        // 4. OpenCode
+        let is_opencode = has_word(&t, "opencode")
+            || has_word(&cmd, "opencode")
+            || s.contains("opencode cli")
+            || s.contains("opencode >");
+
+        if is_opencode {
+            return AgentKind::OpenCode;
+        }
+
+        // 5. GitHub Copilot CLI
+        let is_copilot = (has_word(&t, "copilot") || has_word(&cmd, "copilot"))
+            || (cmd.contains("gh") && cmd.contains("copilot"))
+            || s.contains("github copilot cli");
+
+        if is_copilot {
+            return AgentKind::Copilot;
+        }
+
+        // 6. Devin AI
+        let is_devin = has_word(&t, "devin")
+            || has_word(&cmd, "devin")
+            || s.contains("devin cli")
+            || s.contains("devin >");
+
+        if is_devin {
+            return AgentKind::Devin;
+        }
+
+        AgentKind::Shell
     }
 
     /// Brand icon and display title prefix for this agent kind.

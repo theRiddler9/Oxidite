@@ -451,6 +451,7 @@ pub enum DiffAction {
 /// Precomputed button and tab geometries for the diff header bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiffHeaderLayout {
+    pub is_compact: bool,
     pub file_title_rect: (f32, f32, f32, f32),
     pub diff_tab_rect: (f32, f32, f32, f32),
     pub review_tab_rect: (f32, f32, f32, f32),
@@ -466,29 +467,30 @@ pub struct DiffHeaderLayout {
 impl DiffHeaderLayout {
     #[must_use]
     pub fn compute(diff_x: f32, diff_y: f32, diff_width: f32, state: &DiffViewState) -> Self {
+        let is_compact = diff_width < 500.0;
         let btn_y = diff_y + 5.0;
         let btn_h = 24.0;
 
         // 1. Close button on far right
-        let close_w = 22.0;
+        let close_w = 24.0;
         let close_x = (diff_x + diff_width - close_w - 6.0).max(diff_x);
 
         // 2. Open File and Stage buttons
-        let open_w = 56.0;
+        let open_w = if is_compact { 28.0 } else { 82.0 };
         let open_x = (close_x - open_w - 4.0).max(diff_x);
 
-        let stage_w = 50.0;
+        let stage_w = if is_compact { 28.0 } else { 76.0 };
         let stage_x = (open_x - stage_w - 4.0).max(diff_x);
 
         // 3. Review actions if review mode is active
         let (export_btn_rect, changes_btn_rect, approve_btn_rect) = if state.review_mode {
-            let exp_w = 56.0;
+            let exp_w = if is_compact { 28.0 } else { 80.0 };
             let exp_x = (stage_x - exp_w - 4.0).max(diff_x);
 
-            let chg_w = 66.0;
+            let chg_w = if is_compact { 28.0 } else { 90.0 };
             let chg_x = (exp_x - chg_w - 4.0).max(diff_x);
 
-            let app_w = 66.0;
+            let app_w = if is_compact { 28.0 } else { 88.0 };
             let app_x = (chg_x - app_w - 4.0).max(diff_x);
 
             (
@@ -501,30 +503,33 @@ impl DiffHeaderLayout {
         };
 
         // 4. Left side tabs
-        let title_max_w = if diff_width > 700.0 {
-            130.0
+        let title_max_w = if diff_width > 800.0 {
+            120.0
+        } else if diff_width > 500.0 {
+            80.0
         } else {
-            (diff_width * 0.15).clamp(40.0, 90.0)
+            50.0
         };
         let file_title_rect = (diff_x + 8.0, diff_y + 8.0, title_max_w, 20.0);
 
         let diff_tab_x = diff_x + 8.0 + title_max_w + 6.0;
-        let diff_tab_w = 48.0;
+        let diff_tab_w = if is_compact { 40.0 } else { 54.0 };
         let diff_tab_rect = (diff_tab_x, btn_y, diff_tab_w, btn_h);
 
         let review_tab_x = diff_tab_x + diff_tab_w + 4.0;
-        let review_tab_w = 72.0;
+        let review_tab_w = if is_compact { 52.0 } else { 88.0 };
         let review_tab_rect = (review_tab_x, btn_y, review_tab_w, btn_h);
 
         let verdict_badge_rect = if state.review_mode {
             let vb_x = review_tab_x + review_tab_w + 6.0;
-            let vb_w = 82.0;
+            let vb_w = if is_compact { 64.0 } else { 92.0 };
             Some((vb_x, btn_y, vb_w, btn_h))
         } else {
             None
         };
 
         Self {
+            is_compact,
             file_title_rect,
             diff_tab_rect,
             review_tab_rect,
@@ -1018,8 +1023,13 @@ pub fn build_diff_view_labels(
     let btn_text_y = diff_y + 9.0;
 
     // Diff / Review mode toggle labels
+    let diff_tab_text = if layout.is_compact {
+        "Diff"
+    } else {
+        "⇄ Diff"
+    };
     labels.push(TabLabel {
-        text: "⇄ Diff".to_string(),
+        text: diff_tab_text.to_string(),
         x: layout.diff_tab_rect.0 + 4.0,
         y: btn_text_y,
         color: if !state.review_mode {
@@ -1028,10 +1038,14 @@ pub fn build_diff_view_labels(
             GlyphonColor::rgb(140, 145, 160)
         },
         bold: !state.review_mode,
-        max_width: layout.diff_tab_rect.2 - 8.0,
+        max_width: (layout.diff_tab_rect.2 - 6.0).max(10.0),
     });
 
-    let review_text = format!("💬 Review ({})", state.comment_count());
+    let review_text = if layout.is_compact {
+        format!("💬 {}", state.comment_count())
+    } else {
+        format!("💬 Review ({})", state.comment_count())
+    };
     labels.push(TabLabel {
         text: review_text,
         x: layout.review_tab_rect.0 + 4.0,
@@ -1042,7 +1056,7 @@ pub fn build_diff_view_labels(
             GlyphonColor::rgb(140, 145, 160)
         },
         bold: state.review_mode,
-        max_width: layout.review_tab_rect.2 - 8.0,
+        max_width: (layout.review_tab_rect.2 - 6.0).max(10.0),
     });
 
     // Review status and actions if review mode active
@@ -1052,84 +1066,136 @@ pub fn build_diff_view_labels(
         let vg = (v_color[1] * 255.0).round() as u8;
         let vb_b = (v_color[2] * 255.0).round() as u8;
 
+        let badge_text = if layout.is_compact {
+            match state.review_verdict {
+                ReviewVerdict::InReview => "Review",
+                ReviewVerdict::Approved => "Approved",
+                ReviewVerdict::ChangesRequested => "Changes",
+            }
+        } else {
+            state.review_verdict.badge_text()
+        };
+
         labels.push(TabLabel {
-            text: state.review_verdict.badge_text().to_string(),
+            text: badge_text.to_string(),
             x: vb.0 + 6.0,
             y: btn_text_y,
             color: GlyphonColor::rgb(vr, vg, vb_b),
             bold: true,
-            max_width: vb.2 - 8.0,
+            max_width: (vb.2 - 8.0).max(10.0),
         });
     }
 
     if let Some(app) = layout.approve_btn_rect {
+        let app_text = if layout.is_compact {
+            "✓"
+        } else {
+            "✓ Approve"
+        };
+        let offset_x = if layout.is_compact { 8.0 } else { 6.0 };
         labels.push(TabLabel {
-            text: "✓ Approve".to_string(),
-            x: app.0 + 4.0,
+            text: app_text.to_string(),
+            x: app.0 + offset_x,
             y: btn_text_y,
             color: GlyphonColor::rgb(130, 230, 160),
             bold: true,
-            max_width: app.2 - 8.0,
+            max_width: (app.2 - 4.0).max(10.0),
         });
     }
 
     if let Some(chg) = layout.changes_btn_rect {
+        let chg_text = if layout.is_compact {
+            "⚠"
+        } else {
+            "⚠ Changes"
+        };
+        let offset_x = if layout.is_compact { 8.0 } else { 6.0 };
         labels.push(TabLabel {
-            text: "⚠ Changes".to_string(),
-            x: chg.0 + 4.0,
+            text: chg_text.to_string(),
+            x: chg.0 + offset_x,
             y: btn_text_y,
             color: GlyphonColor::rgb(255, 140, 150),
             bold: true,
-            max_width: chg.2 - 8.0,
+            max_width: (chg.2 - 4.0).max(10.0),
         });
     }
 
     if let Some(exp) = layout.export_btn_rect {
+        let exp_text = if layout.is_compact {
+            "📋"
+        } else {
+            "📋 Export"
+        };
+        let offset_x = 6.0;
         labels.push(TabLabel {
-            text: "📋 Export".to_string(),
-            x: exp.0 + 4.0,
+            text: exp_text.to_string(),
+            x: exp.0 + offset_x,
             y: btn_text_y,
             color: GlyphonColor::rgb(210, 215, 230),
             bold: false,
-            max_width: exp.2 - 8.0,
+            max_width: (exp.2 - 4.0).max(10.0),
         });
     }
 
     // Stage button
-    let stage_text = if state.staged { "Unstage" } else { "Stage" };
+    let stage_text = if layout.is_compact {
+        if state.staged { "⇊" } else { "⇈" }
+    } else if state.staged {
+        "Unstage"
+    } else {
+        "Stage"
+    };
+    let stage_offset = if layout.is_compact { 8.0 } else { 6.0 };
     labels.push(TabLabel {
         text: stage_text.to_string(),
-        x: layout.stage_btn_rect.0 + 4.0,
+        x: layout.stage_btn_rect.0 + stage_offset,
         y: btn_text_y,
         color: GlyphonColor::rgb(220, 225, 240),
         bold: false,
-        max_width: layout.stage_btn_rect.2 - 8.0,
+        max_width: (layout.stage_btn_rect.2 - 4.0).max(10.0),
     });
 
     // Open File button
+    let open_text = if layout.is_compact {
+        "↗"
+    } else {
+        "Open File"
+    };
+    let open_offset = if layout.is_compact { 8.0 } else { 6.0 };
     labels.push(TabLabel {
-        text: "Open File".to_string(),
-        x: layout.open_btn_rect.0 + 4.0,
+        text: open_text.to_string(),
+        x: layout.open_btn_rect.0 + open_offset,
         y: btn_text_y,
         color: GlyphonColor::rgb(220, 225, 240),
         bold: false,
-        max_width: layout.open_btn_rect.2 - 8.0,
+        max_width: (layout.open_btn_rect.2 - 4.0).max(10.0),
     });
 
     // Close '×' button
     labels.push(TabLabel {
         text: "×".to_string(),
-        x: layout.close_btn_rect.0 + 6.0,
+        x: layout.close_btn_rect.0 + 7.0,
         y: btn_text_y,
         color: GlyphonColor::rgb(160, 165, 180),
         bold: true,
-        max_width: layout.close_btn_rect.2 - 8.0,
+        max_width: (layout.close_btn_rect.2 - 4.0).max(10.0),
     });
 
     // 2. Diff Lines and Review Comments Rendering
     let content_y = diff_y + DIFF_HEADER_HEIGHT;
     let half_w = (diff_width / 2.0).floor();
     let mut current_y = content_y;
+
+    if state.hunks.is_empty() {
+        labels.push(TabLabel {
+            text: "No diff hunks or modifications in this commit / file.".to_string(),
+            x: diff_x + 20.0,
+            y: content_y + 30.0,
+            color: GlyphonColor::rgb(140, 150, 175),
+            bold: false,
+            max_width: diff_width - 40.0,
+        });
+    }
 
     for hunk in &state.hunks {
         // Hunk header text e.g. @@ -1,9 +1,10 @@
@@ -1572,25 +1638,54 @@ mod tests {
         let y = 36.0;
         let w = 800.0;
         let h = 500.0;
+        let layout = DiffHeaderLayout::compute(x, y, w, &state);
 
         assert_eq!(
-            hit_test_diff_view(x + 200.0, y + 10.0, x, y, w, h, &state),
+            hit_test_diff_view(
+                layout.review_tab_rect.0 + 10.0,
+                y + 10.0,
+                x,
+                y,
+                w,
+                h,
+                &state
+            ),
             DiffAction::ToggleReviewMode
         );
         assert_eq!(
-            hit_test_diff_view(x + w - 300.0, y + 10.0, x, y, w, h, &state),
+            hit_test_diff_view(
+                layout.approve_btn_rect.unwrap().0 + 10.0,
+                y + 10.0,
+                x,
+                y,
+                w,
+                h,
+                &state
+            ),
             DiffAction::SetVerdict(ReviewVerdict::Approved)
         );
         assert_eq!(
-            hit_test_diff_view(x + w - 120.0, y + 10.0, x, y, w, h, &state),
+            hit_test_diff_view(
+                layout.changes_btn_rect.unwrap().0 + 10.0,
+                y + 10.0,
+                x,
+                y,
+                w,
+                h,
+                &state
+            ),
+            DiffAction::SetVerdict(ReviewVerdict::ChangesRequested)
+        );
+        assert_eq!(
+            hit_test_diff_view(layout.stage_btn_rect.0 + 10.0, y + 10.0, x, y, w, h, &state),
             DiffAction::ToggleStage
         );
         assert_eq!(
-            hit_test_diff_view(x + w - 70.0, y + 10.0, x, y, w, h, &state),
+            hit_test_diff_view(layout.open_btn_rect.0 + 10.0, y + 10.0, x, y, w, h, &state),
             DiffAction::OpenFile
         );
         assert_eq!(
-            hit_test_diff_view(x + w - 20.0, y + 10.0, x, y, w, h, &state),
+            hit_test_diff_view(layout.close_btn_rect.0 + 10.0, y + 10.0, x, y, w, h, &state),
             DiffAction::Close
         );
     }

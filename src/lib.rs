@@ -13,6 +13,7 @@ pub mod input;
 pub mod parser;
 pub mod pty;
 pub mod renderer;
+pub mod settings_modal;
 pub mod sidebar;
 pub mod status_bar;
 pub mod tab;
