@@ -1,15 +1,58 @@
-//! Left collapsible workspace and session sidebar.
+//! Left collapsible workspace, repository, and session sidebar.
 
 use crate::renderer::draw::{QuadVertex, TabLabel, build_quad_vertices};
 use glyphon::Color as GlyphonColor;
 use std::path::Path;
 
-/// Width of the sidebar in window pixels when expanded.
-pub const SIDEBAR_WIDTH: f32 = 200.0;
-/// Height of the top workspace header in the sidebar.
-pub const SIDEBAR_HEADER_HEIGHT: f32 = 42.0;
+/// Width of the sidebar in window pixels when expanded (240--280px as per DESIGN.md).
+pub const SIDEBAR_WIDTH: f32 = 240.0;
+/// Height of the top workspace section header in the sidebar.
+pub const SIDEBAR_HEADER_HEIGHT: f32 = 36.0;
+/// Height of each workspace/repository item row.
+pub const WORKSPACE_ROW_HEIGHT: f32 = 32.0;
 /// Height of each session/tab item in the sidebar list.
-pub const SIDEBAR_ITEM_HEIGHT: f32 = 28.0;
+pub const SIDEBAR_ITEM_HEIGHT: f32 = 26.0;
+/// Height of each chat session row.
+pub const CHAT_ROW_HEIGHT: f32 = 26.0;
+
+/// Lifecycle status of an AI agent coding chat session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatStatus {
+    /// Agent is currently executing tools or streaming response.
+    Working,
+    /// Agent session is waiting for user prompt.
+    Idle,
+    /// Agent session task has completed.
+    Done,
+}
+
+/// A repository / workspace listed in the sidebar rail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceEntry {
+    /// Name of repository or workspace folder (e.g. "Oxidite").
+    pub name: String,
+    /// Current git branch (e.g. "main").
+    pub branch: String,
+    /// Number of active terminal sessions or agents.
+    pub sessions_count: usize,
+    /// Number of modified files.
+    pub modified_count: usize,
+    /// Diff additions and deletions count (e.g. (+441, -440)).
+    pub diff_stat: Option<(usize, usize)>,
+    /// Whether this is the currently active workspace.
+    pub is_active: bool,
+}
+
+/// A coding agent chat session listed in the lower section of the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatEntry {
+    /// Concise title of the chat session.
+    pub title: String,
+    /// Current execution status.
+    pub status: ChatStatus,
+    /// Model name metadata (e.g. "Claude 3.7").
+    pub model: String,
+}
 
 /// Action triggered by clicking within the sidebar area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +67,10 @@ pub enum SidebarAction {
     NewSession,
     /// Toggle the sidebar collapsed/expanded.
     ToggleSidebar,
+    /// Select a workspace at index.
+    SelectWorkspace(usize),
+    /// Select an agent chat session at index.
+    SelectChat(usize),
 }
 
 /// State representation required to layout and render the sidebar.
@@ -39,6 +86,57 @@ pub struct SidebarState {
     pub tab_titles: Vec<String>,
     /// Index of the active tab.
     pub active_tab_index: usize,
+    /// Workspaces listed in the rail.
+    pub workspaces: Vec<WorkspaceEntry>,
+    /// Agent chat sessions listed in lower section.
+    pub chats: Vec<ChatEntry>,
+}
+
+impl Default for SidebarState {
+    fn default() -> Self {
+        Self {
+            workspace_name: "Oxidite".to_string(),
+            git_branch: Some("main".to_string()),
+            git_status: Some("modified".to_string()),
+            tab_titles: vec!["Tab 1".to_string()],
+            active_tab_index: 0,
+            workspaces: vec![
+                WorkspaceEntry {
+                    name: "Oxidite".to_string(),
+                    branch: "main".to_string(),
+                    sessions_count: 1,
+                    modified_count: 3,
+                    diff_stat: Some((441, 440)),
+                    is_active: true,
+                },
+                WorkspaceEntry {
+                    name: "ExamCooker-2024".to_string(),
+                    branch: "feat/sw".to_string(),
+                    sessions_count: 2,
+                    modified_count: 1,
+                    diff_stat: Some((2, 1)),
+                    is_active: false,
+                },
+            ],
+            chats: vec![
+                ChatEntry {
+                    title: "Implement pitch black UI".to_string(),
+                    status: ChatStatus::Working,
+                    model: "Claude 3.7".to_string(),
+                },
+                ChatEntry {
+                    title: "Review service worker".to_string(),
+                    status: ChatStatus::Done,
+                    model: "Claude 3.7".to_string(),
+                },
+                ChatEntry {
+                    title: "Wasm compilation error".to_string(),
+                    status: ChatStatus::Idle,
+                    model: "Claude 3.7".to_string(),
+                },
+            ],
+        }
+    }
 }
 
 /// Quickly detects the current git branch by inspecting `.git/HEAD` without blocking or spawning processes.
@@ -56,7 +154,8 @@ pub fn detect_git_branch(cwd: &Path) -> Option<String> {
     }
 }
 
-/// Builds the quads for rendering the sidebar background, dividers, active session highlight, and borders.
+/// Builds the quads for rendering the sidebar: pure pitch-black background (#000000), 1px border (#181a20),
+/// active workspace and session highlight cards, and dividers.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn assemble_sidebar_quads(
@@ -68,31 +167,31 @@ pub fn assemble_sidebar_quads(
 ) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
 
-    // 1. Sidebar background quad (Deep retro obsidian #050507)
+    // 1. Sidebar background quad (Pure pitch black #000000)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         sidebar_y,
         SIDEBAR_WIDTH,
         sidebar_height,
-        [0.02, 0.02, 0.028, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
     ));
 
-    // 2. Right vertical border dividing sidebar from terminal grid (#14151D)
+    // 2. Right vertical border dividing sidebar from terminal grid / agent pane (#181a20)
     quads.extend_from_slice(&build_quad_vertices(
         SIDEBAR_WIDTH - 1.0,
         sidebar_y,
         1.0,
         sidebar_height,
-        [0.08, 0.085, 0.115, 1.0],
+        [0.095, 0.105, 0.13, 1.0],
     ));
 
-    // 3. Workspace header bottom divider line (#14151D)
+    // 3. Workspace header bottom divider line (#181a20)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         sidebar_y + SIDEBAR_HEADER_HEIGHT - 1.0,
         SIDEBAR_WIDTH,
         1.0,
-        [0.08, 0.085, 0.115, 1.0],
+        [0.095, 0.105, 0.13, 1.0],
     ));
 
     // 4. Active tab session item highlight & left indicator strip
@@ -125,9 +224,9 @@ pub fn assemble_sidebar_quads(
     quads
 }
 
-/// Builds formatted text labels for the sidebar workspace header, branch, and session items.
+/// Builds formatted text labels for the sidebar workspace header, branch, sessions, and chats.
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabel> {
     let mut labels = Vec::new();
 
@@ -150,7 +249,7 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
     labels.push(TabLabel {
         text: ws_text,
         x: 12.0,
-        y: sidebar_y + 22.0,
+        y: sidebar_y + 20.0,
         color: GlyphonColor::rgb(220, 225, 240),
         bold: true,
         max_width: SIDEBAR_WIDTH - 24.0,
@@ -169,8 +268,10 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
     });
 
     // 4. Session Items
+    let mut last_y = sessions_y + 18.0;
     for (idx, title) in state.tab_titles.iter().enumerate() {
-        let item_y = sidebar_y + SIDEBAR_HEADER_HEIGHT + 24.0 + (idx as f32 * SIDEBAR_ITEM_HEIGHT);
+        let item_y = sessions_y + 18.0 + (idx as f32 * SIDEBAR_ITEM_HEIGHT);
+        last_y = item_y + SIDEBAR_ITEM_HEIGHT;
         let is_active = idx == state.active_tab_index;
         let (dot, dot_color) = if is_active {
             ("●", GlyphonColor::rgb(0, 255, 136)) // Retro neon phosphor green
@@ -204,6 +305,48 @@ pub fn build_sidebar_labels(state: &SidebarState, sidebar_y: f32) -> Vec<TabLabe
         });
     }
 
+    // 5. Chats Section (if configured)
+    if !state.chats.is_empty() {
+        let chats_header_y = last_y + 12.0;
+        labels.push(TabLabel {
+            text: format!("CHATS ({} active)", state.chats.len()),
+            x: 12.0,
+            y: chats_header_y,
+            color: GlyphonColor::rgb(105, 110, 125),
+            bold: true,
+            max_width: SIDEBAR_WIDTH - 24.0,
+        });
+
+        for (c_idx, chat) in state.chats.iter().enumerate() {
+            let row_y = chats_header_y + 18.0 + (c_idx as f32 * CHAT_ROW_HEIGHT);
+            let (status_icon, status_color) = match chat.status {
+                ChatStatus::Working => ("⚡", GlyphonColor::rgb(0, 240, 255)), // Cyan working
+                ChatStatus::Idle => ("◌", GlyphonColor::rgb(140, 145, 160)),
+                ChatStatus::Done => ("✓", GlyphonColor::rgb(53, 208, 127)), // Green done
+            };
+
+            // Status icon
+            labels.push(TabLabel {
+                text: status_icon.to_string(),
+                x: 14.0,
+                y: row_y + 2.0,
+                color: status_color,
+                bold: true,
+                max_width: 16.0,
+            });
+
+            // Chat title
+            labels.push(TabLabel {
+                text: chat.title.clone(),
+                x: 30.0,
+                y: row_y + 2.0,
+                color: GlyphonColor::rgb(210, 215, 230),
+                bold: chat.status == ChatStatus::Working,
+                max_width: SIDEBAR_WIDTH - 42.0,
+            });
+        }
+    }
+
     labels
 }
 
@@ -227,12 +370,21 @@ pub fn hit_test_sidebar(
 
     // Check if clicked inside sessions list
     let list_start_y = sidebar_y + SIDEBAR_HEADER_HEIGHT + 24.0;
-    if y >= list_start_y {
+    let list_end_y = list_start_y + (tab_count as f32 * SIDEBAR_ITEM_HEIGHT);
+    if y >= list_start_y && y < list_end_y {
         let relative_y = y - list_start_y;
         let index = (relative_y / SIDEBAR_ITEM_HEIGHT) as usize;
         if index < tab_count {
             return SidebarAction::SelectTab(index);
         }
+    }
+
+    // Check if clicked inside chats section below sessions list
+    let chats_start_y = list_end_y + 30.0;
+    if y >= chats_start_y {
+        let relative_y = y - chats_start_y;
+        let chat_idx = (relative_y / CHAT_ROW_HEIGHT) as usize;
+        return SidebarAction::SelectChat(chat_idx);
     }
 
     SidebarAction::None
@@ -252,7 +404,7 @@ mod tests {
     #[test]
     fn assemble_sidebar_quads_generates_quads() {
         let quads = assemble_sidebar_quads(36.0, 500.0, [0.0, 1.0, 0.5, 1.0], 0, 2);
-        // 3 base quads (bg, right border, header divider) + 2 quads for active tab (bg card, neon bar) = 5 quads * 6 = 30 vertices
+        // 3 base quads (bg, right border, header divider) + 2 quads for active tab = 5 quads * 6 = 30 vertices
         assert_eq!(quads.len(), 30);
     }
 
@@ -264,7 +416,7 @@ mod tests {
 
         // Click outside width
         assert_eq!(
-            hit_test_sidebar(250.0, 100.0, sidebar_y, sidebar_height, tab_count),
+            hit_test_sidebar(300.0, 100.0, sidebar_y, sidebar_height, tab_count),
             SidebarAction::None
         );
 
@@ -291,6 +443,8 @@ mod tests {
             git_status: Some("clean".to_string()),
             tab_titles: vec!["Tab 1".to_string(), "Tab 2".to_string()],
             active_tab_index: 0,
+            workspaces: Vec::new(),
+            chats: Vec::new(),
         };
         let labels = build_sidebar_labels(&state, 36.0);
         assert_eq!(labels.len(), 7);

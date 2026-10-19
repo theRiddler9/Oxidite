@@ -12,3 +12,4 @@ Thumbs.db
 .vscode/
 *.code-workspace
 .cargo-cache/
+.agents/

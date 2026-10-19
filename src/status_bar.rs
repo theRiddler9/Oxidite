@@ -56,22 +56,22 @@ pub fn assemble_status_bar_quads(
     let mut quads = Vec::new();
     let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
 
-    // 1. Status bar background quad (Deep retro obsidian #050507)
+    // 1. Status bar background quad (Pure pitch black #000000)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         bar_y,
         window_width,
         STATUS_BAR_HEIGHT,
-        [0.02, 0.02, 0.028, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
     ));
 
-    // 2. Top 1px border line (#14151D)
+    // 2. Top 1px border line (#181a20)
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         bar_y,
         window_width,
         1.0,
-        [0.08, 0.085, 0.115, 1.0],
+        [0.095, 0.105, 0.13, 1.0],
     ));
 
     // 3. Mode badge pill background
