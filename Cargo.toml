@@ -5,6 +5,7 @@ edition = "2024"
 description = "A cross-platform terminal emulator written in Rust"
 license = "MIT"
 readme = "README.md"
+default-run = "oxidite"
 
 [dependencies]
 anyhow = "1.0.104"
