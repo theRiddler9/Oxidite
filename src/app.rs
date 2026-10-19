@@ -127,6 +127,7 @@ pub fn spawn_tab_pty_forwarder(
 }
 
 /// Core application state bound to the `winit` event loop.
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     /// Optional event loop proxy for sending events from background threads.
     pub proxy: Option<EventLoopProxy<AppEvent>>,
@@ -186,6 +187,12 @@ pub struct App {
     pub config: crate::config::Config,
     /// Background file watcher keeping track of config.toml modifications.
     pub config_watcher: Option<notify::RecommendedWatcher>,
+    /// Whether the left collapsible workspace and sessions sidebar is expanded.
+    pub sidebar_open: bool,
+    /// Cached workspace name (folder name of current directory).
+    pub workspace_name: String,
+    /// Detected git branch if running inside a git repository.
+    pub git_branch: Option<String>,
 }
 
 impl App {
@@ -226,6 +233,15 @@ impl App {
         let active_tab_index = 0;
         let next_tab_id = 1;
 
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace_name = cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+        let git_branch = crate::sidebar::detect_git_branch(&cwd);
+        let sidebar_open = true;
+
         Self {
             proxy,
             window: None,
@@ -256,6 +272,9 @@ impl App {
             bell_triggered_at: None,
             config: crate::config::Config::default(),
             config_watcher,
+            sidebar_open,
+            workspace_name,
+            git_branch,
         }
     }
 
@@ -265,7 +284,12 @@ impl App {
         let pad_x = f64::from((self.config.padding_x * self.scale_factor as f32).round());
         let pad_y = f64::from((self.config.padding_y * self.scale_factor as f32).round());
         let tab_bar = f64::from((TAB_BAR_HEIGHT * self.scale_factor as f32).round());
-        let x_content = (pos.0 - pad_x).max(0.0);
+        let sidebar_w = if self.sidebar_open {
+            f64::from((crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round())
+        } else {
+            0.0
+        };
+        let x_content = (pos.0 - sidebar_w - pad_x).max(0.0);
         let col = (x_content / f64::from(self.cell_metrics.cell_width)).max(0.0) as usize;
         let y_content = (pos.1 - tab_bar - pad_y).max(0.0);
         let row = (y_content / f64::from(self.cell_metrics.cell_height)).max(0.0) as usize;
@@ -300,6 +324,13 @@ impl App {
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("w") && self.modifiers.shift_key() => {
                     self.close_tab(self.active_tab_index);
+                    win.request_redraw();
+                    return;
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("b") => {
+                    self.sidebar_open = !self.sidebar_open;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                     return;
                 }
@@ -495,9 +526,15 @@ impl App {
         } else {
             0
         };
+        let sidebar_px = if self.sidebar_open {
+            (crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round() as u32
+        } else {
+            0
+        };
 
         let content_width = size
             .width
+            .saturating_sub(sidebar_px)
             .saturating_sub((effective_pad_x * 2.0) as u32)
             .max(1);
         let content_height = size
@@ -594,8 +631,18 @@ impl App {
         if count == 0 {
             return Vec::new();
         }
-        let (layouts, plus_btn) = compute_tab_layouts(count, window_width);
+        let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(count, window_width);
         let mut labels = Vec::new();
+
+        // Sidebar toggle button label [◨]
+        labels.push(TabLabel {
+            text: "◨".to_string(),
+            x: sidebar_btn.0 + 3.0,
+            y: sidebar_btn.1 + 1.0,
+            color: glyphon::Color::rgb(180, 185, 200),
+            bold: true,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
 
         for (idx, layout) in layouts.iter().enumerate() {
             let is_active = idx == self.active_tab_index;
@@ -691,6 +738,7 @@ impl App {
             theme_name,
             tab_current,
             tab_total,
+            git_branch: self.git_branch.clone(),
         };
 
         crate::status_bar::build_status_bar_labels(&state, window_width, window_height)
@@ -884,7 +932,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     pub fn assemble_quad_vertices(
         &self,
         bell_active: bool,
@@ -898,7 +946,17 @@ impl App {
         let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
         let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
         let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-        let x_offset = effective_pad_x;
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let sidebar_w = if self.sidebar_open {
+            (crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let x_offset = sidebar_w + effective_pad_x;
         let y_offset = tab_bar_px + effective_pad_y;
 
         let mut quad_vertices = Vec::new();
@@ -910,6 +968,18 @@ impl App {
             screen_size[0],
             accent_color,
         ));
+
+        // 1.5. Sidebar quads (if expanded)
+        if self.sidebar_open {
+            let sidebar_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+            quad_vertices.extend_from_slice(&crate::sidebar::assemble_sidebar_quads(
+                tab_bar_px,
+                sidebar_h,
+                accent_color,
+                self.active_tab_index,
+                self.tabs.len(),
+            ));
+        }
 
         // 2. Cell backgrounds offset below the tab bar with padding
         quad_vertices.extend_from_slice(&build_cell_background_vertices_with_offsets(
@@ -1050,7 +1120,11 @@ impl App {
     }
 
     /// Renders the terminal grid, cell backgrounds, glyphs, and cursor to the window surface.
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines
+    )]
     pub fn render(&mut self) {
         let is_bell_active = self
             .bell_triggered_at
@@ -1062,6 +1136,20 @@ impl App {
         };
         let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
         let mut tab_labels = self.build_tab_labels(screen_size[0]);
+        if self.sidebar_open {
+            let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+            let sidebar_state = crate::sidebar::SidebarState {
+                workspace_name: self.workspace_name.clone(),
+                git_branch: self.git_branch.clone(),
+                git_status: None,
+                tab_titles: self.tabs.iter().map(|t| t.title.clone()).collect(),
+                active_tab_index: self.active_tab_index,
+            };
+            tab_labels.extend(crate::sidebar::build_sidebar_labels(
+                &sidebar_state,
+                tab_bar_px,
+            ));
+        }
         if self.config.status_bar {
             tab_labels.extend(self.build_status_bar_labels(screen_size[0], screen_size[1]));
         }
@@ -1233,7 +1321,11 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines
+    )]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1302,9 +1394,63 @@ impl ApplicationHandler<AppEvent> for App {
                             TabBarAction::NewTab => {
                                 self.create_tab(None);
                             }
+                            TabBarAction::ToggleSidebar => {
+                                self.sidebar_open = !self.sidebar_open;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                            }
                             TabBarAction::None => {}
                         }
                         win.request_redraw();
+                    }
+                    return;
+                }
+
+                // Check sidebar click if sidebar is open
+                let sidebar_px = if self.sidebar_open {
+                    f64::from((crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round())
+                } else {
+                    0.0
+                };
+                if self.sidebar_open && self.cursor_pixel_pos.0 <= sidebar_px {
+                    if state == winit::event::ElementState::Pressed {
+                        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+                        let status_bar_px = if self.config.status_bar {
+                            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32)
+                                .round()
+                        } else {
+                            0.0
+                        };
+                        let sidebar_h =
+                            (win.inner_size().height as f32 - tab_bar_px - status_bar_px).max(0.0);
+                        let action = crate::sidebar::hit_test_sidebar(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            tab_bar_px,
+                            sidebar_h,
+                            self.tabs.len(),
+                        );
+                        match action {
+                            crate::sidebar::SidebarAction::SelectTab(idx) => {
+                                self.select_tab(idx);
+                                win.request_redraw();
+                            }
+                            crate::sidebar::SidebarAction::CloseTab(idx) => {
+                                self.close_tab(idx);
+                                win.request_redraw();
+                            }
+                            crate::sidebar::SidebarAction::NewSession => {
+                                self.create_tab(None);
+                                win.request_redraw();
+                            }
+                            crate::sidebar::SidebarAction::ToggleSidebar => {
+                                self.sidebar_open = !self.sidebar_open;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                                win.request_redraw();
+                            }
+                            crate::sidebar::SidebarAction::None => {}
+                        }
                     }
                     return;
                 }
@@ -1433,6 +1579,7 @@ mod tests {
     fn handle_resize_updates_grid_and_pty() {
         let term = Terminal::new(80, 24);
         let mut app = App::new(None, term, None);
+        app.sidebar_open = false;
         app.cell_metrics = CellMetrics {
             cell_width: 10.0,
             cell_height: 20.0,
@@ -1447,6 +1594,11 @@ mod tests {
         assert_eq!(app.terminal.alternate_grid.cols, 99);
         assert_eq!(app.terminal.alternate_grid.rows, 36);
         assert!(app.terminal.has_damage());
+
+        // When sidebar is opened: columns adjust to fit narrower width
+        app.sidebar_open = true;
+        app.handle_resize(PhysicalSize::new(1000, 800));
+        assert_eq!(app.terminal.grid.cols, 79);
     }
 
     #[test]
@@ -1462,6 +1614,7 @@ mod tests {
         if let Ok((writer, _reader)) = crate::pty::spawn(cmd, size) {
             let writer = Arc::new(Mutex::new(writer));
             let mut app = App::new(None, term, Some(Arc::clone(&writer)));
+            app.sidebar_open = false;
             app.cell_metrics = CellMetrics {
                 cell_width: 10.0,
                 cell_height: 20.0,
@@ -1626,18 +1779,20 @@ mod tests {
         app.create_tab(Some("Workspaces".to_string()));
 
         let labels = app.build_tab_labels(800.0);
-        // 2 tabs * 2 labels (title + close) + 1 plus button = 5 labels
-        assert_eq!(labels.len(), 5);
-        assert_eq!(labels[0].text, "⌁ Tab 1");
-        assert_eq!(labels[1].text, "×");
-        assert_eq!(labels[2].text, "❯ Workspaces");
-        assert_eq!(labels[3].text, "×");
-        assert_eq!(labels[4].text, "+");
+        // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button = 6 labels
+        assert_eq!(labels.len(), 6);
+        assert_eq!(labels[0].text, "◨");
+        assert_eq!(labels[1].text, "⌁ Tab 1");
+        assert_eq!(labels[2].text, "×");
+        assert_eq!(labels[3].text, "❯ Workspaces");
+        assert_eq!(labels[4].text, "×");
+        assert_eq!(labels[5].text, "+");
     }
 
     #[test]
     fn pixel_to_grid_point_accounts_for_padding_and_tab_bar() {
         let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.sidebar_open = false;
         app.cell_metrics = CellMetrics {
             cell_width: 10.0,
             cell_height: 20.0,
@@ -1660,12 +1815,18 @@ mod tests {
 
     #[test]
     fn build_status_bar_labels_produces_valid_chrome() {
-        let app = App::new(None, Terminal::new(80, 24), None);
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.git_branch = None;
         let labels = app.build_status_bar_labels(800.0, 600.0);
         assert_eq!(labels.len(), 3);
         assert_eq!(labels[0].text, "NORMAL");
         assert!(labels[1].text.starts_with("⌁"));
         assert!(labels[2].text.contains("Ln 1, Col 1"));
+
+        app.git_branch = Some("main".to_string());
+        let labels_with_git = app.build_status_bar_labels(800.0, 600.0);
+        assert_eq!(labels_with_git.len(), 4);
+        assert_eq!(labels_with_git[2].text, " main");
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub struct StatusBarState {
     pub tab_current: usize,
     /// Total number of open tabs.
     pub tab_total: usize,
+    /// Detected git branch (e.g. "main"), if inside a git repository.
+    pub git_branch: Option<String>,
 }
 
 impl Default for StatusBarState {
@@ -38,6 +40,7 @@ impl Default for StatusBarState {
             theme_name: "default-dark".to_string(),
             tab_current: 1,
             tab_total: 1,
+            git_branch: None,
         }
     }
 }
@@ -133,6 +136,18 @@ pub fn build_status_bar_labels(
         max_width: 140.0,
     });
 
+    // Optional git branch badge (e.g. " main")
+    if let Some(ref branch) = state.git_branch {
+        labels.push(TabLabel {
+            text: format!(" {branch}"),
+            x: 160.0,
+            y: text_y,
+            color: GlyphonColor::rgb(0, 240, 255), // Retro electric cyan
+            bold: false,
+            max_width: 140.0,
+        });
+    }
+
     // Right-aligned status items (Cursor coordinates, Zoom, Theme, Tab count)
     if window_width > 420.0 {
         let right_info = format!(
@@ -145,7 +160,12 @@ pub fn build_status_bar_labels(
             state.tab_total
         );
         let approx_w = (right_info.len() as f32 * 7.5).min(window_width * 0.6);
-        let right_x = (window_width - approx_w - 12.0).max(220.0);
+        let min_x = if state.git_branch.is_some() {
+            280.0
+        } else {
+            220.0
+        };
+        let right_x = (window_width - approx_w - 12.0).max(min_x);
 
         labels.push(TabLabel {
             text: right_info,
@@ -182,6 +202,7 @@ mod tests {
             theme_name: "dracula".to_string(),
             tab_current: 2,
             tab_total: 4,
+            git_branch: None,
         };
 
         let labels = build_status_bar_labels(&state, 800.0, 600.0);
@@ -199,5 +220,16 @@ mod tests {
         let state = StatusBarState::default();
         let labels = build_status_bar_labels(&state, 300.0, 600.0);
         assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn build_status_bar_labels_with_git_branch_renders_branch_label() {
+        let state = StatusBarState {
+            git_branch: Some("feat/ui".to_string()),
+            ..StatusBarState::default()
+        };
+        let labels = build_status_bar_labels(&state, 800.0, 600.0);
+        assert_eq!(labels.len(), 4);
+        assert_eq!(labels[2].text, " feat/ui");
     }
 }

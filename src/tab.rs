@@ -25,6 +25,8 @@ pub enum TabBarAction {
     CloseTab(usize),
     /// Create and switch to a new tab.
     NewTab,
+    /// Toggle the left collapsible workspace sidebar.
+    ToggleSidebar,
     /// Click fell on empty tab-bar background.
     None,
 }
@@ -111,25 +113,30 @@ pub struct TabRect {
     pub close_btn_size: f32,
 }
 
-/// Computes layout rectangles for all tabs and the plus button given total window width.
+/// Rectangle dimensions `(x, y, width, height)` for an action button in the chrome.
+pub type ButtonRect = (f32, f32, f32, f32);
+
+/// Computes layout rectangles for all tabs, plus button, and sidebar toggle button given total window width.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_tab_layouts(
     count: usize,
     window_width: f32,
-) -> (Vec<TabRect>, (f32, f32, f32, f32)) {
-    let mut rects = Vec::with_capacity(count);
-    let default_plus = (8.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+) -> (Vec<TabRect>, ButtonRect, ButtonRect) {
+    let sidebar_btn = (6.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+    let default_plus = (32.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
     if count == 0 {
-        return (rects, default_plus);
+        return (Vec::new(), default_plus, sidebar_btn);
     }
 
-    let available_w = (window_width - 48.0).max(TAB_MIN_WIDTH);
+    let start_x = sidebar_btn.0 + sidebar_btn.2 + 8.0;
+    let available_w = (window_width - start_x - 48.0).max(TAB_MIN_WIDTH);
     let tab_w = (available_w / count as f32).clamp(TAB_MIN_WIDTH, TAB_PREFERRED_WIDTH);
     let tab_h = TAB_BAR_HEIGHT - 6.0;
 
+    let mut rects = Vec::with_capacity(count);
     for i in 0..count {
-        let x = 6.0 + i as f32 * (tab_w + 4.0);
+        let x = start_x + i as f32 * (tab_w + 4.0);
         let y = 4.0;
         let close_btn_x = x + tab_w - TAB_BUTTON_SIZE - 4.0;
         let close_btn_y = y + (tab_h - TAB_BUTTON_SIZE) / 2.0;
@@ -145,9 +152,9 @@ pub fn compute_tab_layouts(
         });
     }
 
-    let last_x = rects.last().map_or(6.0, |r| r.x + r.width + 6.0);
+    let last_x = rects.last().map_or(start_x, |r| r.x + r.width + 6.0);
     let plus_btn = (last_x, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
-    (rects, plus_btn)
+    (rects, plus_btn, sidebar_btn)
 }
 
 /// Determines which tab or action button was clicked at pixel coordinates (x, y).
@@ -157,9 +164,18 @@ pub fn hit_test(x: f32, y: f32, count: usize, window_width: f32) -> TabBarAction
         return TabBarAction::None;
     }
 
-    let (layouts, plus_btn) = compute_tab_layouts(count, window_width);
+    let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(count, window_width);
 
-    // Check plus button
+    // Check sidebar toggle button [◨]
+    if x >= sidebar_btn.0
+        && x <= sidebar_btn.0 + sidebar_btn.2
+        && y >= sidebar_btn.1
+        && y <= sidebar_btn.1 + sidebar_btn.3
+    {
+        return TabBarAction::ToggleSidebar;
+    }
+
+    // Check plus button [+]
     if x >= plus_btn.0
         && x <= plus_btn.0 + plus_btn.2
         && y >= plus_btn.1
@@ -198,6 +214,7 @@ pub fn assemble_tab_bar_quads(
     accent_color: [f32; 4],
 ) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
+    let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(tab_count, window_width);
 
     // 1. Tab bar background (Deep retro obsidian #050507)
     quads.extend_from_slice(&build_quad_vertices(
@@ -217,11 +234,18 @@ pub fn assemble_tab_bar_quads(
         [0.08, 0.085, 0.115, 1.0],
     ));
 
+    // 3. Sidebar toggle button quad [◨]
+    quads.extend_from_slice(&build_quad_vertices(
+        sidebar_btn.0,
+        sidebar_btn.1,
+        sidebar_btn.2,
+        sidebar_btn.3,
+        [0.06, 0.065, 0.09, 0.9],
+    ));
+
     if tab_count == 0 {
         return quads;
     }
-
-    let (layouts, plus_btn) = compute_tab_layouts(tab_count, window_width);
 
     for (idx, layout) in layouts.iter().enumerate() {
         let is_active = idx == active_index;
@@ -279,9 +303,10 @@ mod tests {
 
     #[test]
     fn compute_tab_layouts_scales_with_count() {
-        let (layouts, plus_btn) = compute_tab_layouts(3, 800.0);
+        let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(3, 800.0);
         assert_eq!(layouts.len(), 3);
-        assert_eq!(layouts[0].x, 6.0);
+        assert_eq!(sidebar_btn.0, 6.0);
+        assert!(layouts[0].x > sidebar_btn.0);
         assert!(layouts[1].x > layouts[0].x);
         assert!(layouts[2].x > layouts[1].x);
         assert!(plus_btn.0 > layouts[2].x + layouts[2].width);
@@ -289,7 +314,11 @@ mod tests {
 
     #[test]
     fn hit_test_detects_tab_selection_close_and_new_tab() {
-        let (layouts, plus_btn) = compute_tab_layouts(2, 800.0);
+        let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(2, 800.0);
+
+        // Click sidebar toggle button
+        let toggle_action = hit_test(sidebar_btn.0 + 2.0, sidebar_btn.1 + 2.0, 2, 800.0);
+        assert_eq!(toggle_action, TabBarAction::ToggleSidebar);
 
         // Click inside tab 0 body
         let action = hit_test(layouts[0].x + 10.0, layouts[0].y + 5.0, 2, 800.0);
@@ -316,8 +345,8 @@ mod tests {
     #[test]
     fn assemble_tab_bar_quads_generates_correct_quad_count() {
         let quads = assemble_tab_bar_quads(2, 0, 800.0, [0.4, 0.6, 1.0, 1.0]);
-        // Base bar (1) + bottom divider (1) + tab 0 body (1) + tab 0 indicator (1) + tab 0 close (1)
-        // + tab 1 body (1) + tab 1 close (1) + plus btn (1) = 8 quads = 48 vertices
-        assert_eq!(quads.len(), 8 * 6);
+        // Base bar (1) + bottom divider (1) + sidebar btn (1) + tab 0 body (1) + tab 0 indicator (1) + tab 0 close (1)
+        // + tab 1 body (1) + tab 1 close (1) + plus btn (1) = 9 quads = 54 vertices
+        assert_eq!(quads.len(), 9 * 6);
     }
 }
