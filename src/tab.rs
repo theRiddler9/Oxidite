@@ -215,8 +215,15 @@ impl Tab {
             rows_to_sample.insert(r);
         }
         // Active cursor line and immediate neighbors
-        let cur_row = self.terminal.grid.cursor.row.min(total_rows.saturating_sub(1));
-        for r in cur_row.saturating_sub(2)..=cur_row.saturating_add(1).min(total_rows.saturating_sub(1)) {
+        let cur_row = self
+            .terminal
+            .grid
+            .cursor
+            .row
+            .min(total_rows.saturating_sub(1));
+        for r in
+            cur_row.saturating_sub(2)..=cur_row.saturating_add(1).min(total_rows.saturating_sub(1))
+        {
             rows_to_sample.insert(r);
         }
         // Bottom lines (interactive footer/prompt)
@@ -552,12 +559,18 @@ mod tests {
         assert_eq!(AgentKind::detect("claude code v1.2", ""), AgentKind::Claude);
         assert_eq!(AgentKind::detect("Codex CLI", ""), AgentKind::Codex);
         assert_eq!(AgentKind::detect("agy-agent", ""), AgentKind::Agy);
-        assert_eq!(AgentKind::detect("tab", "user@host:~$ agy start"), AgentKind::Agy);
+        assert_eq!(
+            AgentKind::detect("tab", "user@host:~$ agy start"),
+            AgentKind::Agy
+        );
         assert_eq!(
             AgentKind::detect("Tab 1", "Welcome to Antigravity CLI"),
             AgentKind::Agy
         );
-        assert_eq!(AgentKind::detect("OpenCode session", ""), AgentKind::OpenCode);
+        assert_eq!(
+            AgentKind::detect("OpenCode session", ""),
+            AgentKind::OpenCode
+        );
         assert_eq!(AgentKind::detect("gh copilot", ""), AgentKind::Copilot);
         assert_eq!(AgentKind::detect("Devin workspace", ""), AgentKind::Devin);
         assert_eq!(AgentKind::detect("bash", ""), AgentKind::Shell);
