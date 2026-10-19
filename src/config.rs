@@ -98,6 +98,8 @@ pub struct KeybindingsConfig {
     pub scroll_to_bottom: String,
     /// Cycle to next available theme.
     pub cycle_theme: String,
+    /// Toggle visibility of the bottom status bar.
+    pub toggle_status_bar: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -113,6 +115,7 @@ impl Default for KeybindingsConfig {
             scroll_to_top: "Shift+Home".to_string(),
             scroll_to_bottom: "Shift+End".to_string(),
             cycle_theme: "Ctrl+Shift+T".to_string(),
+            toggle_status_bar: "Ctrl+Shift+B".to_string(),
         }
     }
 }
@@ -225,6 +228,9 @@ impl KeybindingsConfig {
         if matches_keybinding(&self.cycle_theme, event) {
             return Some(crate::input::InputAction::CycleTheme);
         }
+        if matches_keybinding(&self.toggle_status_bar, event) {
+            return Some(crate::input::InputAction::ToggleStatusBar);
+        }
         None
     }
 }
@@ -249,6 +255,8 @@ pub struct ConfigFile {
     pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
+    /// Whether to display the bottom status bar.
+    pub status_bar: bool,
     /// Configurable keybindings.
     pub keybindings: KeybindingsConfig,
 }
@@ -264,6 +272,7 @@ impl Default for ConfigFile {
             shell: None,
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
+            status_bar: true,
             keybindings: KeybindingsConfig::default(),
         }
     }
@@ -288,6 +297,8 @@ pub struct Config {
     pub shell_args: Vec<String>,
     /// Scrollback capacity in lines.
     pub scrollback_lines: usize,
+    /// Whether to display the bottom status bar.
+    pub status_bar: bool,
     /// Configurable keybindings.
     pub keybindings: KeybindingsConfig,
 }
@@ -304,6 +315,7 @@ impl Default for Config {
             shell: None,
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
+            status_bar: true,
             keybindings: KeybindingsConfig::default(),
         }
     }
@@ -407,6 +419,7 @@ impl Config {
             shell: file.shell,
             shell_args: file.shell_args,
             scrollback_lines: file.scrollback_lines,
+            status_bar: file.status_bar,
             keybindings: file.keybindings,
         })
     }
@@ -496,6 +509,7 @@ mod tests {
         assert!(config.shell.is_none());
         assert_eq!(config.shell_args, Vec::<String>::new());
         assert_eq!(config.scrollback_lines, 10_000);
+        assert!(config.status_bar);
     }
 
     #[test]
@@ -509,6 +523,7 @@ padding_y = 12.0
 shell = "/bin/zsh"
 shell_args = ["-l"]
 scrollback_lines = 5000
+status_bar = false
 "#;
         let config = Config::from_toml(toml_str).expect("custom config should parse");
         assert_eq!(config.theme.name, "dracula");
@@ -519,6 +534,7 @@ scrollback_lines = 5000
         assert_eq!(config.shell, Some("/bin/zsh".to_string()));
         assert_eq!(config.shell_args, vec!["-l".to_string()]);
         assert_eq!(config.scrollback_lines, 5000);
+        assert!(!config.status_bar);
     }
 
     #[test]

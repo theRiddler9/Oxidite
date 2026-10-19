@@ -169,13 +169,14 @@ pub fn resolve_cell_colors(
     (fg, bg, has_visible_bg)
 }
 
-/// Gathers background quad vertices for all cells in `grid` that differ from default background, with an optional Y offset.
+/// Gathers background quad vertices for all cells in `grid` that differ from default background, with X and Y offsets.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_cell_background_vertices_offset(
+pub fn build_cell_background_vertices_with_offsets(
     grid: &Grid,
     cell_width: f32,
     cell_height: f32,
     palette: &[[f32; 4]; 16],
+    x_offset: f32,
     y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
@@ -191,7 +192,7 @@ pub fn build_cell_background_vertices_offset(
             let (_, bg_color, has_visible_bg) =
                 resolve_cell_colors(cell, [0.9, 0.9, 0.9, 1.0], [0.0, 0.0, 0.0, 1.0], palette);
             if has_visible_bg {
-                let x = col as f32 * cell_width;
+                let x = x_offset + col as f32 * cell_width;
                 let y = y_offset + row as f32 * cell_height;
                 let w = f32::from(cell.width.max(1)) * cell_width;
                 let h = cell_height;
@@ -201,6 +202,25 @@ pub fn build_cell_background_vertices_offset(
     }
 
     vertices
+}
+
+/// Gathers background quad vertices for all cells in `grid` that differ from default background, with an optional Y offset.
+#[must_use]
+pub fn build_cell_background_vertices_offset(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+    y_offset: f32,
+) -> Vec<QuadVertex> {
+    build_cell_background_vertices_with_offsets(
+        grid,
+        cell_width,
+        cell_height,
+        palette,
+        0.0,
+        y_offset,
+    )
 }
 
 /// Gathers background quad vertices for all cells in `grid` that differ from default background.
@@ -214,13 +234,14 @@ pub fn build_cell_background_vertices(
     build_cell_background_vertices_offset(grid, cell_width, cell_height, palette, 0.0)
 }
 
-/// Builds quad vertices for text decorations (underline and strikethrough) with an optional Y offset.
+/// Builds quad vertices for text decorations (underline and strikethrough) with X and Y offsets.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_text_decoration_vertices_offset(
+pub fn build_text_decoration_vertices_with_offsets(
     grid: &Grid,
     cell_width: f32,
     cell_height: f32,
     palette: &[[f32; 4]; 16],
+    x_offset: f32,
     y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
@@ -241,7 +262,7 @@ pub fn build_text_decoration_vertices_offset(
                 continue;
             }
 
-            let x = col as f32 * cell_width;
+            let x = x_offset + col as f32 * cell_width;
             let y = y_offset + row as f32 * cell_height;
             let w = f32::from(cell.width.max(1)) * cell_width;
             let (line_color, _, _) =
@@ -276,6 +297,25 @@ pub fn build_text_decoration_vertices_offset(
     vertices
 }
 
+/// Builds quad vertices for text decorations (underline and strikethrough) with an optional Y offset.
+#[must_use]
+pub fn build_text_decoration_vertices_offset(
+    grid: &Grid,
+    cell_width: f32,
+    cell_height: f32,
+    palette: &[[f32; 4]; 16],
+    y_offset: f32,
+) -> Vec<QuadVertex> {
+    build_text_decoration_vertices_with_offsets(
+        grid,
+        cell_width,
+        cell_height,
+        palette,
+        0.0,
+        y_offset,
+    )
+}
+
 /// Builds quad vertices for text decorations (underline and strikethrough) in the visible grid.
 #[must_use]
 pub fn build_text_decoration_vertices(
@@ -287,14 +327,15 @@ pub fn build_text_decoration_vertices(
     build_text_decoration_vertices_offset(grid, cell_width, cell_height, palette, 0.0)
 }
 
-/// Builds quad vertices for highlighted selection text regions with an optional Y offset.
+/// Builds quad vertices for highlighted selection text regions with X and Y offsets.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_selection_vertices_offset(
+pub fn build_selection_vertices_with_offsets(
     grid: &Grid,
     selection: Option<&crate::input::Selection>,
     cell_width: f32,
     cell_height: f32,
     color: [f32; 4],
+    x_offset: f32,
     y_offset: f32,
 ) -> Vec<QuadVertex> {
     let mut vertices = Vec::new();
@@ -316,7 +357,7 @@ pub fn build_selection_vertices_offset(
         };
 
         if start_col <= end_col {
-            let x = start_col as f32 * cell_width;
+            let x = x_offset + start_col as f32 * cell_width;
             let y = y_offset + row as f32 * cell_height;
             let w = (end_col - start_col + 1) as f32 * cell_width;
             let h = cell_height;
@@ -325,6 +366,27 @@ pub fn build_selection_vertices_offset(
     }
 
     vertices
+}
+
+/// Builds quad vertices for highlighted selection text regions with an optional Y offset.
+#[must_use]
+pub fn build_selection_vertices_offset(
+    grid: &Grid,
+    selection: Option<&crate::input::Selection>,
+    cell_width: f32,
+    cell_height: f32,
+    color: [f32; 4],
+    y_offset: f32,
+) -> Vec<QuadVertex> {
+    build_selection_vertices_with_offsets(
+        grid,
+        selection,
+        cell_width,
+        cell_height,
+        color,
+        0.0,
+        y_offset,
+    )
 }
 
 /// Builds quad vertices for highlighted selection text regions.
@@ -339,20 +401,21 @@ pub fn build_selection_vertices(
     build_selection_vertices_offset(grid, selection, cell_width, cell_height, color, 0.0)
 }
 
-/// Builds quad vertices for the cursor with specified cell width multiplier and optional Y offset.
+/// Builds quad vertices for the cursor with specified cell width multiplier and X/Y offsets.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_cursor_vertices_with_offset(
+pub fn build_cursor_vertices_with_offsets(
     cursor: &Cursor,
     metrics: &CellMetrics,
     color: [f32; 4],
     cell_width_multiplier: u8,
+    x_offset: f32,
     y_offset: f32,
 ) -> Vec<QuadVertex> {
     if !cursor.visible {
         return Vec::new();
     }
 
-    let x = cursor.col as f32 * metrics.cell_width;
+    let x = x_offset + cursor.col as f32 * metrics.cell_width;
     let y = y_offset + cursor.row as f32 * metrics.cell_height;
     let cursor_w = f32::from(cell_width_multiplier.max(1)) * metrics.cell_width;
 
@@ -374,6 +437,18 @@ pub fn build_cursor_vertices_with_offset(
     };
 
     build_quad_vertices(pos_x, pos_y, w, h, color).to_vec()
+}
+
+/// Builds quad vertices for the cursor with specified cell width multiplier and optional Y offset.
+#[must_use]
+pub fn build_cursor_vertices_with_offset(
+    cursor: &Cursor,
+    metrics: &CellMetrics,
+    color: [f32; 4],
+    cell_width_multiplier: u8,
+    y_offset: f32,
+) -> Vec<QuadVertex> {
+    build_cursor_vertices_with_offsets(cursor, metrics, color, cell_width_multiplier, 0.0, y_offset)
 }
 
 /// Builds quad vertices for the cursor based on its position, visibility, and shape.
@@ -675,7 +750,9 @@ pub struct DrawContext<'a> {
     pub palette: &'a [[f32; 4]; 16],
     /// Optional damage tracking flags for visible rows.
     pub dirty_rows: Option<&'a [bool]>,
-    /// Top vertical offset (e.g. for tab bar) in physical pixels.
+    /// Horizontal offset (e.g. for window padding) in physical pixels.
+    pub x_offset: f32,
+    /// Top vertical offset (e.g. for tab bar and padding) in physical pixels.
     pub y_offset: f32,
     /// Optional tab bar labels to render in the same text pass.
     pub tab_labels: &'a [TabLabel],
@@ -901,11 +978,11 @@ impl GlyphPipeline {
                 let top = ctx.y_offset + row_idx as f32 * ctx.metrics.cell_height;
                 text_areas.push(TextArea {
                     buffer: &cached.buffer,
-                    left: 0.0,
+                    left: ctx.x_offset,
                     top,
                     scale: 1.0,
                     bounds: TextBounds {
-                        left: 0,
+                        left: (ctx.x_offset as i32).max(0),
                         top: (ctx.y_offset as i32).max(0),
                         right: max_w,
                         bottom: max_h,
@@ -1401,5 +1478,74 @@ mod tests {
         assert_eq!(sel_verts.len(), 6);
         assert!(approx_eq(sel_verts[0].position, [0.0, 34.0]));
         assert!(approx_eq(sel_verts[5].position, [30.0, 54.0]));
+    }
+
+    #[test]
+    fn quad_builders_with_offsets_shift_x_and_y_coordinates() {
+        use crate::grid::Attrs;
+
+        let mut grid = Grid::new(5, 5);
+        grid[0][0].bg = Color::Indexed(1);
+        grid[0][0].attrs = Attrs::UNDERLINE;
+
+        let x_offset = 8.0;
+        let y_offset = 36.0;
+        let bg_verts = build_cell_background_vertices_with_offsets(
+            &grid,
+            10.0,
+            20.0,
+            &DEFAULT_PALETTE,
+            x_offset,
+            y_offset,
+        );
+        assert_eq!(bg_verts.len(), 6);
+        assert!(approx_eq(bg_verts[0].position, [8.0, 36.0]));
+        assert!(approx_eq(bg_verts[5].position, [18.0, 56.0]));
+
+        let deco_verts = build_text_decoration_vertices_with_offsets(
+            &grid,
+            10.0,
+            20.0,
+            &DEFAULT_PALETTE,
+            x_offset,
+            y_offset,
+        );
+        assert_eq!(deco_verts.len(), 6);
+        assert!(approx_eq(deco_verts[0].position, [8.0, 54.0]));
+
+        let metrics = CellMetrics {
+            cell_width: 10.0,
+            cell_height: 20.0,
+            font_size: 14.0,
+            line_height: 20.0,
+        };
+        let cursor = Cursor {
+            row: 0,
+            col: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+        let cursor_verts =
+            build_cursor_vertices_with_offsets(&cursor, &metrics, [1.0; 4], 1, x_offset, y_offset);
+        assert_eq!(cursor_verts.len(), 6);
+        assert!(approx_eq(cursor_verts[0].position, [8.0, 36.0]));
+        assert!(approx_eq(cursor_verts[5].position, [18.0, 56.0]));
+
+        let sel = crate::input::Selection::new(
+            crate::input::GridPoint::new(0, 0),
+            crate::input::GridPoint::new(2, 0),
+        );
+        let sel_verts = build_selection_vertices_with_offsets(
+            &grid,
+            Some(&sel),
+            10.0,
+            20.0,
+            [1.0; 4],
+            x_offset,
+            y_offset,
+        );
+        assert_eq!(sel_verts.len(), 6);
+        assert!(approx_eq(sel_verts[0].position, [8.0, 36.0]));
+        assert!(approx_eq(sel_verts[5].position, [38.0, 56.0]));
     }
 }
