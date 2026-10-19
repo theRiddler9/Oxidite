@@ -55,47 +55,55 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    /// Detects the running agent from tab title and terminal buffer content.
+    /// Detects the running agent from tab title, current command prompt, and buffer content.
     #[must_use]
-    pub fn detect(title: &str, terminal_content_sample: &str) -> Self {
+    pub fn detect(title: &str, cursor_line: &str, terminal_content_sample: &str) -> Self {
         let t = title.to_ascii_lowercase();
+        let cmd = cursor_line.to_ascii_lowercase();
         let s = terminal_content_sample.to_ascii_lowercase();
 
-        if t.contains("claude")
-            || s.contains("claude")
-            || s.contains("anthropic")
-            || s.contains("claude code")
-        {
-            AgentKind::Claude
-        } else if t.contains("codex")
-            || s.contains("codex")
-            || s.contains("openai")
-            || s.contains("codex cli")
-        {
-            AgentKind::Codex
-        } else if t.contains("agy")
-            || t.contains("antigravity")
-            || s.contains("antigravity")
-            || s.contains("agy ")
-            || s.contains("agy\n")
-            || s.contains("agy>")
+        // 1. Process title check
+        let is_agy_title = t.contains("agy") || t.contains("antigravity");
+        let is_claude_title = t.contains("claude");
+        let is_codex_title = t.contains("codex");
+        let is_opencode_title = t.contains("opencode");
+        let is_copilot_title = t.contains("copilot");
+        let is_devin_title = t.contains("devin");
+
+        // 2. Active cursor prompt command check
+        let is_agy_cmd = cmd.contains("agy ") || cmd.ends_with("agy") || cmd.contains("antigravity");
+        let is_claude_cmd = cmd.contains("claude ") || cmd.ends_with("claude");
+        let is_codex_cmd = cmd.contains("codex ") || cmd.ends_with("codex");
+        let is_opencode_cmd = cmd.contains("opencode ") || cmd.ends_with("opencode");
+        let is_copilot_cmd = cmd.contains("gh copilot") || cmd.contains("copilot ");
+        let is_devin_cmd = cmd.contains("devin ") || cmd.ends_with("devin");
+
+        // 3. Distinctive interactive agent banner / prompt
+        let is_agy_banner = s.contains("antigravity cli")
+            || s.contains("agy >")
+            || s.contains("agy:")
             || s.contains("agy$")
-            || s.contains("antigravity-cli")
-        {
+            || s.contains("antigravity 2.0");
+        let is_claude_banner = s.contains("claude code")
+            || s.contains("welcome to claude code")
+            || s.contains("claude >");
+        let is_codex_banner = s.contains("openai codex") || s.contains("codex >");
+        let is_opencode_banner = s.contains("opencode cli") || s.contains("opencode >");
+        let is_copilot_banner = s.contains("github copilot cli");
+        let is_devin_banner = s.contains("devin cli") || s.contains("devin >");
+
+        // Evaluate with priority: Agy first, then Claude, Codex, OpenCode, Copilot, Devin
+        if is_agy_title || is_agy_cmd || is_agy_banner {
             AgentKind::Agy
-        } else if t.contains("opencode") || s.contains("opencode") || s.contains("open-code") {
+        } else if is_claude_title || is_claude_cmd || is_claude_banner {
+            AgentKind::Claude
+        } else if is_codex_title || is_codex_cmd || is_codex_banner {
+            AgentKind::Codex
+        } else if is_opencode_title || is_opencode_cmd || is_opencode_banner {
             AgentKind::OpenCode
-        } else if t.contains("copilot")
-            || s.contains("copilot")
-            || s.contains("github copilot")
-            || s.contains("gh copilot")
-        {
+        } else if is_copilot_title || is_copilot_cmd || is_copilot_banner {
             AgentKind::Copilot
-        } else if t.contains("devin")
-            || s.contains("devin")
-            || s.contains("cognition")
-            || s.contains("devin-cli")
-        {
+        } else if is_devin_title || is_devin_cmd || is_devin_banner {
             AgentKind::Devin
         } else {
             AgentKind::Shell
@@ -196,8 +204,38 @@ impl Tab {
     /// Automatically detects if an AI agent (claude, codex, agy, opencode, copilot, devin) is active.
     #[must_use]
     pub fn detect_agent(&self) -> AgentKind {
+        let cursor_line = self.sample_cursor_line();
         let sample = self.sample_terminal_text();
-        AgentKind::detect(&self.title, &sample)
+        AgentKind::detect(&self.title, &cursor_line, &sample)
+    }
+
+    /// Samples the immediate cursor row and previous line where user commands are executed.
+    #[must_use]
+    pub fn sample_cursor_line(&self) -> String {
+        let mut line = String::new();
+        let total_rows = self.terminal.grid.rows;
+        if total_rows == 0 {
+            return line;
+        }
+        let cur_row = self
+            .terminal
+            .grid
+            .cursor
+            .row
+            .min(total_rows.saturating_sub(1));
+        let start_row = cur_row.saturating_sub(1);
+        for row in start_row..=cur_row {
+            for col in 0..self.terminal.grid.cols {
+                if let Some(cell) = self.terminal.grid.get(row, col)
+                    && cell.ch != ' '
+                    && cell.ch != '\0'
+                {
+                    line.push(cell.ch);
+                }
+            }
+            line.push(' ');
+        }
+        line
     }
 
     /// Samples key lines of terminal text (top banner, active cursor line, prompt area) for agent inspection.
@@ -555,24 +593,24 @@ mod tests {
 
     #[test]
     fn agent_detection_recognizes_claude_codex_and_agy() {
-        assert_eq!(AgentKind::detect("claude", ""), AgentKind::Claude);
-        assert_eq!(AgentKind::detect("claude code v1.2", ""), AgentKind::Claude);
-        assert_eq!(AgentKind::detect("Codex CLI", ""), AgentKind::Codex);
-        assert_eq!(AgentKind::detect("agy-agent", ""), AgentKind::Agy);
+        assert_eq!(AgentKind::detect("claude", "", ""), AgentKind::Claude);
+        assert_eq!(AgentKind::detect("claude code v1.2", "", ""), AgentKind::Claude);
+        assert_eq!(AgentKind::detect("Codex CLI", "", ""), AgentKind::Codex);
+        assert_eq!(AgentKind::detect("agy-agent", "", ""), AgentKind::Agy);
         assert_eq!(
-            AgentKind::detect("tab", "user@host:~$ agy start"),
+            AgentKind::detect("tab", "user@host:~$ agy start", ""),
             AgentKind::Agy
         );
         assert_eq!(
-            AgentKind::detect("Tab 1", "Welcome to Antigravity CLI"),
+            AgentKind::detect("Tab 1", "", "Welcome to Antigravity CLI"),
             AgentKind::Agy
         );
         assert_eq!(
-            AgentKind::detect("OpenCode session", ""),
+            AgentKind::detect("OpenCode session", "", ""),
             AgentKind::OpenCode
         );
-        assert_eq!(AgentKind::detect("gh copilot", ""), AgentKind::Copilot);
-        assert_eq!(AgentKind::detect("Devin workspace", ""), AgentKind::Devin);
-        assert_eq!(AgentKind::detect("bash", ""), AgentKind::Shell);
+        assert_eq!(AgentKind::detect("gh copilot", "", ""), AgentKind::Copilot);
+        assert_eq!(AgentKind::detect("Devin workspace", "", ""), AgentKind::Devin);
+        assert_eq!(AgentKind::detect("bash", "", "normal git log containing claude text"), AgentKind::Shell);
     }
 }
