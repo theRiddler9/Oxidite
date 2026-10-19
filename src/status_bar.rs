@@ -66,8 +66,8 @@ pub enum StatusBarAction {
 pub fn assemble_status_bar_quads(
     window_width: f32,
     window_height: f32,
-    is_alt_screen: bool,
     accent_color: [f32; 4],
+    state: &StatusBarState,
 ) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
     let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
@@ -91,7 +91,7 @@ pub fn assemble_status_bar_quads(
     ));
 
     // 3. Mode badge pill background
-    let badge_bg = if is_alt_screen {
+    let badge_bg = if state.is_alt_screen {
         [
             accent_color[0] * 0.4,
             accent_color[1] * 0.4,
@@ -109,6 +109,39 @@ pub fn assemble_status_bar_quads(
         STATUS_BAR_HEIGHT - 6.0,
         badge_bg,
     ));
+
+    // 4. Interactive Theme pill button background and border
+    if window_width > 420.0 {
+        let (btn_x, btn_y, btn_w, btn_h) =
+            compute_theme_button_rect(window_width, window_height, state);
+        let theme_bg = if state.theme_menu_open {
+            [
+                accent_color[0] * 0.35,
+                accent_color[1] * 0.35,
+                accent_color[2] * 0.35,
+                0.95,
+            ]
+        } else {
+            [0.07, 0.08, 0.11, 0.9]
+        };
+
+        quads.extend_from_slice(&build_quad_vertices(btn_x, btn_y, btn_w, btn_h, theme_bg));
+        // Top and bottom 1px borders
+        quads.extend_from_slice(&build_quad_vertices(
+            btn_x,
+            btn_y,
+            btn_w,
+            1.0,
+            [0.18, 0.20, 0.26, 0.8],
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            btn_x,
+            btn_y + btn_h - 1.0,
+            btn_w,
+            1.0,
+            [0.18, 0.20, 0.26, 0.8],
+        ));
+    }
 
     quads
 }
@@ -164,32 +197,48 @@ pub fn build_status_bar_labels(
         });
     }
 
-    // Right-aligned status items (Cursor coordinates, Zoom, Theme, Tab count)
+    // Right-aligned status items (Cursor coordinates, Zoom, Theme pill, Tab count)
     if window_width > 420.0 {
-        let right_info = format!(
-            "Ln {}, Col {}  │  {}%  │  {}  │  {}/{}",
-            state.cursor_row,
-            state.cursor_col,
-            state.zoom_pct,
-            state.theme_name,
-            state.tab_current,
-            state.tab_total
+        let (theme_x, theme_y, theme_w, _) =
+            compute_theme_button_rect(window_width, window_height, state);
+
+        // Coordinates & Zoom info placed to the left of the theme button
+        let pos_info = format!(
+            "Ln {}, Col {}  │  {}%",
+            state.cursor_row, state.cursor_col, state.zoom_pct
         );
-        let approx_w = (right_info.len() as f32 * 7.5).min(window_width * 0.6);
-        let min_x = if state.git_branch.is_some() {
-            280.0
-        } else {
-            220.0
-        };
-        let right_x = (window_width - approx_w - 12.0).max(min_x);
+        let pos_w = pos_info.len() as f32 * 7.5;
+        let pos_x = (theme_x - pos_w - 18.0).max(280.0);
 
         labels.push(TabLabel {
-            text: right_info,
-            x: right_x,
+            text: pos_info,
+            x: pos_x,
             y: text_y,
             color: GlyphonColor::rgb(155, 160, 175),
             bold: false,
-            max_width: approx_w + 12.0,
+            max_width: pos_w + 10.0,
+        });
+
+        // Clickable Theme button label
+        let theme_label = format!("🎨 {} ▾", state.theme_name);
+        labels.push(TabLabel {
+            text: theme_label,
+            x: theme_x + 8.0,
+            y: theme_y + 2.0,
+            color: GlyphonColor::rgb(240, 245, 255),
+            bold: true,
+            max_width: theme_w - 12.0,
+        });
+
+        // Tab count on the far right
+        let tab_info = format!("{}/{}", state.tab_current, state.tab_total);
+        labels.push(TabLabel {
+            text: tab_info,
+            x: theme_x + theme_w + 10.0,
+            y: text_y,
+            color: GlyphonColor::rgb(140, 145, 160),
+            bold: false,
+            max_width: 40.0,
         });
     }
 
@@ -237,31 +286,9 @@ pub fn compute_theme_button_rect(
     state: &StatusBarState,
 ) -> (f32, f32, f32, f32) {
     let bar_y = (window_height - STATUS_BAR_HEIGHT).max(0.0);
-    let right_info = format!(
-        "Ln {}, Col {}  │  {}%  │  {}  │  {}/{}",
-        state.cursor_row,
-        state.cursor_col,
-        state.zoom_pct,
-        state.theme_name,
-        state.tab_current,
-        state.tab_total
-    );
-    let approx_w = (right_info.len() as f32 * 7.5).min(window_width * 0.6);
-    let min_x = if state.git_branch.is_some() {
-        280.0
-    } else {
-        220.0
-    };
-    let right_x = (window_width - approx_w - 12.0).max(min_x);
-
-    let prefix = format!(
-        "Ln {}, Col {}  │  {}%  │  ",
-        state.cursor_row, state.cursor_col, state.zoom_pct
-    );
-    let prefix_w = prefix.len() as f32 * 7.5;
-    let theme_w = (state.theme_name.len() as f32 * 7.5) + 12.0;
-    let theme_x = right_x + prefix_w - 4.0;
-    (theme_x, bar_y + 2.0, theme_w, STATUS_BAR_HEIGHT - 4.0)
+    let theme_w = (state.theme_name.len() as f32 * 7.5) + 38.0;
+    let theme_x = (window_width - theme_w - 55.0).max(220.0);
+    (theme_x, bar_y + 3.0, theme_w, STATUS_BAR_HEIGHT - 6.0)
 }
 
 /// Rect dimensions `(x, y, width, height)` for the floating theme dropdown popover.
@@ -414,10 +441,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assemble_status_bar_quads_generates_three_quads() {
-        let quads = assemble_status_bar_quads(800.0, 600.0, false, [0.4, 0.6, 1.0, 1.0]);
-        // 3 quads: background, top border, badge pill = 3 * 6 = 18 vertices
-        assert_eq!(quads.len(), 18);
+    fn assemble_status_bar_quads_generates_quads() {
+        let state = StatusBarState::default();
+        let quads = assemble_status_bar_quads(800.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
+        // 6 quads: background, top border, badge pill, theme pill bg, theme top border, theme bottom border
+        assert_eq!(quads.len(), 36);
+
+        // Narrow window: 3 quads (18 vertices)
+        let quads_narrow = assemble_status_bar_quads(350.0, 600.0, [0.4, 0.6, 1.0, 1.0], &state);
+        assert_eq!(quads_narrow.len(), 18);
     }
 
     #[test]
@@ -436,13 +468,13 @@ mod tests {
         };
 
         let labels = build_status_bar_labels(&state, 800.0, 600.0);
-        assert_eq!(labels.len(), 3);
+        assert_eq!(labels.len(), 5);
         assert_eq!(labels[0].text, "NORMAL");
         assert_eq!(labels[1].text, "⌁ pwsh");
         assert!(labels[2].text.contains("Ln 5, Col 10"));
         assert!(labels[2].text.contains("120%"));
-        assert!(labels[2].text.contains("dracula"));
-        assert!(labels[2].text.contains("2/4"));
+        assert_eq!(labels[3].text, "🎨 dracula ▾");
+        assert_eq!(labels[4].text, "2/4");
     }
 
     #[test]
@@ -459,7 +491,7 @@ mod tests {
             ..StatusBarState::default()
         };
         let labels = build_status_bar_labels(&state, 800.0, 600.0);
-        assert_eq!(labels.len(), 4);
+        assert_eq!(labels.len(), 6);
         assert_eq!(labels[2].text, " feat/ui");
     }
 
@@ -484,7 +516,7 @@ mod tests {
         // Labels include presets
         let labels = build_status_bar_labels(&state, 800.0, 600.0);
         let presets = crate::theme::Theme::builtin_presets();
-        assert_eq!(labels.len(), 3 + presets.len());
+        assert_eq!(labels.len(), 5 + presets.len());
 
         // Hit testing item inside popover
         let (menu_x, menu_y, _, _) = compute_theme_menu_rect(800.0, 600.0, &state);

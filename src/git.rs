@@ -438,6 +438,36 @@ pub fn query_file_diff(cwd: &Path, relative_file_path: &str) -> (String, String,
     (file_name, path_info, hunks)
 }
 
+/// Queries real side-by-side diff hunks introduced in commit `commit_hash`.
+/// Returns `(file_name, path_info, hunks)`.
+#[must_use]
+pub fn query_commit_diff(cwd: &Path, commit_hash: &str) -> (String, String, Vec<DiffHunk>) {
+    let output = Command::new("git")
+        .args(["show", "--format=", commit_hash])
+        .current_dir(cwd)
+        .output();
+
+    if let Ok(out) = output
+        && out.status.success()
+    {
+        let diff_raw = String::from_utf8_lossy(&out.stdout);
+        let hunks = parse_unified_diff(&diff_raw);
+        if !hunks.is_empty() {
+            return (
+                format!("commit {commit_hash}"),
+                "git history".to_string(),
+                hunks,
+            );
+        }
+    }
+
+    (
+        format!("commit {commit_hash}"),
+        "git history".to_string(),
+        Vec::new(),
+    )
+}
+
 /// Parses a standard unified diff byte stream into side-by-side `DiffHunk` structures.
 #[must_use]
 #[allow(clippy::too_many_lines)]
