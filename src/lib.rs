@@ -10,5 +10,6 @@ pub mod input;
 pub mod parser;
 pub mod pty;
 pub mod renderer;
+pub mod tab;
 pub mod terminal;
 pub mod theme;
