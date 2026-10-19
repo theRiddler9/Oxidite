@@ -150,13 +150,13 @@ impl AgentKind {
     #[must_use]
     pub fn display_badge(self) -> (&'static str, &'static str) {
         match self {
-            AgentKind::Claude => ("✳", "claude"),
-            AgentKind::Codex => ("◎", "codex"),
-            AgentKind::Agy => ("⏣", "agy"),
-            AgentKind::OpenCode => ("⚡", "opencode"),
-            AgentKind::Copilot => ("◆", "copilot"),
-            AgentKind::Devin => ("◈", "devin"),
-            AgentKind::Shell => ("⌁", "shell"),
+            AgentKind::Claude => ("[claude]", "claude"),
+            AgentKind::Codex => ("[codex]", "codex"),
+            AgentKind::Agy => ("[agy]", "agy"),
+            AgentKind::OpenCode => ("[opencode]", "opencode"),
+            AgentKind::Copilot => ("[copilot]", "copilot"),
+            AgentKind::Devin => ("[devin]", "devin"),
+            AgentKind::Shell => (">", "shell"),
         }
     }
 

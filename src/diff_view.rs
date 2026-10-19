@@ -50,9 +50,9 @@ impl ReviewVerdict {
     #[must_use]
     pub fn badge_text(self) -> &'static str {
         match self {
-            ReviewVerdict::InReview => "● In Review",
-            ReviewVerdict::Approved => "✓ Approved",
-            ReviewVerdict::ChangesRequested => "⚠ Changes",
+            ReviewVerdict::InReview => "In Review",
+            ReviewVerdict::Approved => "Approved",
+            ReviewVerdict::ChangesRequested => "Changes",
         }
     }
 
@@ -591,6 +591,32 @@ impl DiffHeaderLayout {
     }
 }
 
+/// Helper to push a rectangular button quad with a 1px border.
+fn push_button_quads(
+    quads: &mut Vec<QuadVertex>,
+    rect: (f32, f32, f32, f32),
+    bg: [f32; 4],
+    border: [f32; 4],
+) {
+    quads.extend_from_slice(&build_quad_vertices(rect.0, rect.1, rect.2, rect.3, bg));
+    quads.extend_from_slice(&build_quad_vertices(rect.0, rect.1, rect.2, 1.0, border));
+    quads.extend_from_slice(&build_quad_vertices(
+        rect.0,
+        rect.1 + rect.3 - 1.0,
+        rect.2,
+        1.0,
+        border,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(rect.0, rect.1, 1.0, rect.3, border));
+    quads.extend_from_slice(&build_quad_vertices(
+        rect.0 + rect.2 - 1.0,
+        rect.1,
+        1.0,
+        rect.3,
+        border,
+    ));
+}
+
 /// Builds quads for the side-by-side diff: pitch black background, column gutters,
 /// center divider, green/red line highlights, and inline code review comment cards.
 #[must_use]
@@ -662,99 +688,105 @@ pub fn assemble_diff_view_quads(
 
     // Diff / Review mode toggle buttons
     let diff_btn_bg = if !state.review_mode {
-        [0.09, 0.11, 0.15, 0.9]
+        [0.09, 0.11, 0.16, 0.95]
     } else {
-        [0.04, 0.05, 0.07, 0.7]
+        [0.04, 0.05, 0.07, 0.8]
     };
-    quads.extend_from_slice(&build_quad_vertices(
-        layout.diff_tab_rect.0,
-        layout.diff_tab_rect.1,
-        layout.diff_tab_rect.2,
-        layout.diff_tab_rect.3,
-        diff_btn_bg,
-    ));
+    let diff_border = if !state.review_mode {
+        accent_color
+    } else {
+        [0.18, 0.20, 0.26, 0.7]
+    };
+    push_button_quads(&mut quads, layout.diff_tab_rect, diff_btn_bg, diff_border);
 
     let review_btn_bg = if state.review_mode {
-        [0.09, 0.11, 0.15, 0.9]
+        [0.09, 0.11, 0.16, 0.95]
     } else {
-        [0.04, 0.05, 0.07, 0.7]
+        [0.04, 0.05, 0.07, 0.8]
     };
-    quads.extend_from_slice(&build_quad_vertices(
-        layout.review_tab_rect.0,
-        layout.review_tab_rect.1,
-        layout.review_tab_rect.2,
-        layout.review_tab_rect.3,
+    let review_border = if state.review_mode {
+        accent_color
+    } else {
+        [0.18, 0.20, 0.26, 0.7]
+    };
+    push_button_quads(
+        &mut quads,
+        layout.review_tab_rect,
         review_btn_bg,
-    ));
+        review_border,
+    );
 
     // If review mode is active, render review verdict badge and review actions
     if let Some(vb) = layout.verdict_badge_rect {
         let v_color = state.review_verdict.badge_color();
         // Verdict pill badge
-        quads.extend_from_slice(&build_quad_vertices(
-            vb.0,
-            vb.1,
-            vb.2,
-            vb.3,
-            [v_color[0] * 0.25, v_color[1] * 0.25, v_color[2] * 0.25, 0.9],
-        ));
+        push_button_quads(
+            &mut quads,
+            vb,
+            [
+                v_color[0] * 0.24,
+                v_color[1] * 0.24,
+                v_color[2] * 0.24,
+                0.95,
+            ],
+            [
+                v_color[0] * 0.65,
+                v_color[1] * 0.65,
+                v_color[2] * 0.65,
+                0.85,
+            ],
+        );
         quads.extend_from_slice(&build_quad_vertices(vb.0, vb.1, 3.0, vb.3, v_color));
     }
 
     if let Some(app) = layout.approve_btn_rect {
-        quads.extend_from_slice(&build_quad_vertices(
-            app.0,
-            app.1,
-            app.2,
-            app.3,
-            [0.08, 0.18, 0.12, 0.9],
-        ));
+        push_button_quads(
+            &mut quads,
+            app,
+            [0.08, 0.20, 0.12, 0.95],
+            [0.20, 0.65, 0.35, 0.9],
+        );
     }
 
     if let Some(chg) = layout.changes_btn_rect {
-        quads.extend_from_slice(&build_quad_vertices(
-            chg.0,
-            chg.1,
-            chg.2,
-            chg.3,
-            [0.22, 0.10, 0.11, 0.9],
-        ));
+        push_button_quads(
+            &mut quads,
+            chg,
+            [0.24, 0.10, 0.12, 0.95],
+            [0.70, 0.25, 0.28, 0.9],
+        );
     }
 
     if let Some(exp) = layout.export_btn_rect {
-        quads.extend_from_slice(&build_quad_vertices(
-            exp.0,
-            exp.1,
-            exp.2,
-            exp.3,
-            [0.07, 0.08, 0.11, 0.85],
-        ));
+        push_button_quads(
+            &mut quads,
+            exp,
+            [0.08, 0.10, 0.15, 0.95],
+            [0.25, 0.38, 0.55, 0.9],
+        );
     }
 
     // Stage button
-    quads.extend_from_slice(&build_quad_vertices(
-        layout.stage_btn_rect.0,
-        layout.stage_btn_rect.1,
-        layout.stage_btn_rect.2,
-        layout.stage_btn_rect.3,
-        [0.06, 0.07, 0.09, 0.9],
-    ));
+    push_button_quads(
+        &mut quads,
+        layout.stage_btn_rect,
+        [0.07, 0.09, 0.13, 0.95],
+        [0.22, 0.28, 0.38, 0.9],
+    );
     // Open File button
-    quads.extend_from_slice(&build_quad_vertices(
-        layout.open_btn_rect.0,
-        layout.open_btn_rect.1,
-        layout.open_btn_rect.2,
-        layout.open_btn_rect.3,
-        [0.06, 0.07, 0.09, 0.9],
-    ));
+    push_button_quads(
+        &mut quads,
+        layout.open_btn_rect,
+        [0.07, 0.09, 0.13, 0.95],
+        [0.22, 0.28, 0.38, 0.9],
+    );
     // Close button
-    quads.extend_from_slice(&build_quad_vertices(
-        layout.close_btn_rect.0,
-        layout.close_btn_rect.1,
-        layout.close_btn_rect.2,
-        layout.close_btn_rect.3,
-        [0.06, 0.07, 0.09, 0.9],
-    ));
+    push_button_quads(
+        &mut quads,
+        layout.close_btn_rect,
+        [0.15, 0.08, 0.09, 0.95],
+        [0.45, 0.20, 0.22, 0.9],
+    );
 
     // 4. Side-by-side columns geometry
     let content_y = diff_y + DIFF_HEADER_HEIGHT;
@@ -1023,14 +1055,10 @@ pub fn build_diff_view_labels(
     let btn_text_y = diff_y + 9.0;
 
     // Diff / Review mode toggle labels
-    let diff_tab_text = if layout.is_compact {
-        "Diff"
-    } else {
-        "⇄ Diff"
-    };
+    let diff_tab_text = "Diff";
     labels.push(TabLabel {
         text: diff_tab_text.to_string(),
-        x: layout.diff_tab_rect.0 + 4.0,
+        x: layout.diff_tab_rect.0 + 8.0,
         y: btn_text_y,
         color: if !state.review_mode {
             GlyphonColor::rgb(240, 245, 255)
@@ -1041,14 +1069,10 @@ pub fn build_diff_view_labels(
         max_width: (layout.diff_tab_rect.2 - 6.0).max(10.0),
     });
 
-    let review_text = if layout.is_compact {
-        format!("💬 {}", state.comment_count())
-    } else {
-        format!("💬 Review ({})", state.comment_count())
-    };
+    let review_text = format!("Review ({})", state.comment_count());
     labels.push(TabLabel {
         text: review_text,
-        x: layout.review_tab_rect.0 + 4.0,
+        x: layout.review_tab_rect.0 + 6.0,
         y: btn_text_y,
         color: if state.review_mode {
             GlyphonColor::rgb(240, 245, 255)
@@ -1066,15 +1090,7 @@ pub fn build_diff_view_labels(
         let vg = (v_color[1] * 255.0).round() as u8;
         let vb_b = (v_color[2] * 255.0).round() as u8;
 
-        let badge_text = if layout.is_compact {
-            match state.review_verdict {
-                ReviewVerdict::InReview => "Review",
-                ReviewVerdict::Approved => "Approved",
-                ReviewVerdict::ChangesRequested => "Changes",
-            }
-        } else {
-            state.review_verdict.badge_text()
-        };
+        let badge_text = state.review_verdict.badge_text();
 
         labels.push(TabLabel {
             text: badge_text.to_string(),
@@ -1087,12 +1103,8 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(app) = layout.approve_btn_rect {
-        let app_text = if layout.is_compact {
-            "✓"
-        } else {
-            "✓ Approve"
-        };
-        let offset_x = if layout.is_compact { 8.0 } else { 6.0 };
+        let app_text = if layout.is_compact { "[A]" } else { "Approve" };
+        let offset_x = if layout.is_compact { 6.0 } else { 10.0 };
         labels.push(TabLabel {
             text: app_text.to_string(),
             x: app.0 + offset_x,
@@ -1104,12 +1116,8 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(chg) = layout.changes_btn_rect {
-        let chg_text = if layout.is_compact {
-            "⚠"
-        } else {
-            "⚠ Changes"
-        };
-        let offset_x = if layout.is_compact { 8.0 } else { 6.0 };
+        let chg_text = if layout.is_compact { "[C]" } else { "Changes" };
+        let offset_x = if layout.is_compact { 6.0 } else { 10.0 };
         labels.push(TabLabel {
             text: chg_text.to_string(),
             x: chg.0 + offset_x,
@@ -1121,31 +1129,27 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(exp) = layout.export_btn_rect {
-        let exp_text = if layout.is_compact {
-            "📋"
-        } else {
-            "📋 Export"
-        };
-        let offset_x = 6.0;
+        let exp_text = if layout.is_compact { "[E]" } else { "Export" };
+        let offset_x = if layout.is_compact { 6.0 } else { 12.0 };
         labels.push(TabLabel {
             text: exp_text.to_string(),
             x: exp.0 + offset_x,
             y: btn_text_y,
             color: GlyphonColor::rgb(210, 215, 230),
-            bold: false,
+            bold: true,
             max_width: (exp.2 - 4.0).max(10.0),
         });
     }
 
     // Stage button
     let stage_text = if layout.is_compact {
-        if state.staged { "⇊" } else { "⇈" }
+        if state.staged { "[U]" } else { "[S]" }
     } else if state.staged {
         "Unstage"
     } else {
         "Stage"
     };
-    let stage_offset = if layout.is_compact { 8.0 } else { 6.0 };
+    let stage_offset = if layout.is_compact { 6.0 } else { 8.0 };
     labels.push(TabLabel {
         text: stage_text.to_string(),
         x: layout.stage_btn_rect.0 + stage_offset,
@@ -1157,11 +1161,11 @@ pub fn build_diff_view_labels(
 
     // Open File button
     let open_text = if layout.is_compact {
-        "↗"
+        "Open"
     } else {
         "Open File"
     };
-    let open_offset = if layout.is_compact { 8.0 } else { 6.0 };
+    let open_offset = if layout.is_compact { 4.0 } else { 8.0 };
     labels.push(TabLabel {
         text: open_text.to_string(),
         x: layout.open_btn_rect.0 + open_offset,
@@ -1171,9 +1175,9 @@ pub fn build_diff_view_labels(
         max_width: (layout.open_btn_rect.2 - 4.0).max(10.0),
     });
 
-    // Close '×' button
+    // Close 'x' button
     labels.push(TabLabel {
-        text: "×".to_string(),
+        text: "x".to_string(),
         x: layout.close_btn_rect.0 + 7.0,
         y: btn_text_y,
         color: GlyphonColor::rgb(160, 165, 180),
@@ -1344,10 +1348,10 @@ pub fn build_diff_view_labels(
                         });
 
                         // Resolve button
-                        let resolve_char = if c.resolved { "✓" } else { "○" };
+                        let resolve_char = if c.resolved { "[x]" } else { "[ ]" };
                         labels.push(TabLabel {
                             text: resolve_char.to_string(),
-                            x: card_x + card_w - 38.0,
+                            x: card_x + card_w - 42.0,
                             y: current_y + 3.0,
                             color: if c.resolved {
                                 GlyphonColor::rgb(50, 210, 120)
@@ -1355,12 +1359,12 @@ pub fn build_diff_view_labels(
                                 GlyphonColor::rgb(150, 155, 170)
                             },
                             bold: true,
-                            max_width: 14.0,
+                            max_width: 22.0,
                         });
 
                         // Delete button
                         labels.push(TabLabel {
-                            text: "×".to_string(),
+                            text: "x".to_string(),
                             x: card_x + card_w - 16.0,
                             y: current_y + 3.0,
                             color: GlyphonColor::rgb(160, 165, 180),
@@ -1405,10 +1409,10 @@ pub fn build_diff_view_labels(
                         });
 
                         // Resolve button
-                        let resolve_char = if c.resolved { "✓" } else { "○" };
+                        let resolve_char = if c.resolved { "[x]" } else { "[ ]" };
                         labels.push(TabLabel {
                             text: resolve_char.to_string(),
-                            x: card_x + card_w - 38.0,
+                            x: card_x + card_w - 42.0,
                             y: current_y + 3.0,
                             color: if c.resolved {
                                 GlyphonColor::rgb(50, 210, 120)
@@ -1416,12 +1420,12 @@ pub fn build_diff_view_labels(
                                 GlyphonColor::rgb(150, 155, 170)
                             },
                             bold: true,
-                            max_width: 14.0,
+                            max_width: 22.0,
                         });
 
                         // Delete button
                         labels.push(TabLabel {
-                            text: "×".to_string(),
+                            text: "x".to_string(),
                             x: card_x + card_w - 16.0,
                             y: current_y + 3.0,
                             color: GlyphonColor::rgb(160, 165, 180),
