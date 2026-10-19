@@ -14,14 +14,17 @@ use crate::input::{
 use crate::parser::Parser;
 use crate::pty::{PtyReader, PtyWriter};
 use crate::renderer::draw::{
-    DrawContext, GlyphPipeline, QuadPipeline, build_cell_background_vertices,
-    build_cursor_vertices_with_width, build_quad_vertices, build_selection_vertices,
-    build_text_decoration_vertices,
+    DrawContext, GlyphPipeline, QuadPipeline, TabLabel, build_cell_background_vertices_offset,
+    build_cursor_vertices_with_offset, build_quad_vertices, build_selection_vertices_offset,
+    build_text_decoration_vertices_offset,
 };
 use crate::renderer::font::CellMetrics;
 use crate::renderer::gpu::GpuContext;
 use crate::renderer::window::{
     DEFAULT_TITLE, create_window, window_size_to_grid_dimensions, window_size_to_pty_size,
+};
+use crate::tab::{
+    TAB_BAR_HEIGHT, Tab, TabBarAction, assemble_tab_bar_quads, compute_tab_layouts, hit_test,
 };
 use crate::terminal::Terminal;
 use winit::dpi::PhysicalSize;
@@ -30,10 +33,24 @@ use winit::keyboard::ModifiersState;
 /// Cross-thread events delivered via `winit`'s `EventLoopProxy`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
-    /// Raw output bytes received from the PTY reader thread.
+    /// Raw output bytes received from the PTY reader thread for tab 0 / active tab.
     PtyOutput(Vec<u8>),
     /// Child process exited with an optional exit code.
     PtyExited(Option<i32>),
+    /// Raw output bytes received from a specific tab's PTY reader thread.
+    TabPtyOutput {
+        /// Tab ID receiving this output.
+        tab_id: usize,
+        /// Raw output bytes.
+        bytes: Vec<u8>,
+    },
+    /// Tab child process exited with an optional exit code.
+    TabPtyExited {
+        /// Tab ID that terminated.
+        tab_id: usize,
+        /// Child exit status code if known.
+        code: Option<i32>,
+    },
     /// Configuration file was modified on disk and reloaded.
     ConfigReloaded,
     /// Active theme was switched to the specified theme name.
@@ -43,14 +60,24 @@ pub enum AppEvent {
 /// Maximum byte batch size forwarded in a single `AppEvent::PtyOutput` to optimize large-output throughput.
 pub const PTY_BATCH_BYTE_LIMIT: usize = 65_536;
 
-/// Spawns a background thread that forwards PTY reader output chunks to the event loop.
+/// Spawns a background thread that forwards PTY reader output chunks for tab 0 to the event loop.
 pub fn spawn_pty_forwarder(
+    reader: PtyReader,
+    writer: Arc<Mutex<PtyWriter>>,
+    proxy: EventLoopProxy<AppEvent>,
+) -> JoinHandle<()> {
+    spawn_tab_pty_forwarder(0, reader, writer, proxy)
+}
+
+/// Spawns a background thread that forwards PTY reader output chunks for the specified tab to the event loop.
+pub fn spawn_tab_pty_forwarder(
+    tab_id: usize,
     mut reader: PtyReader,
     writer: Arc<Mutex<PtyWriter>>,
     proxy: EventLoopProxy<AppEvent>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
-        .name("pty-event-forwarder".to_string())
+        .name(format!("pty-forwarder-tab-{tab_id}"))
         .spawn(move || {
             while let Some(mut bytes) = reader.recv() {
                 // Coalesce immediately available pending chunks to maximize throughput on bursts (e.g. cat/seq)
@@ -60,7 +87,10 @@ pub fn spawn_pty_forwarder(
                     bytes.extend_from_slice(&more);
                 }
 
-                if proxy.send_event(AppEvent::PtyOutput(bytes)).is_err() {
+                if proxy
+                    .send_event(AppEvent::TabPtyOutput { tab_id, bytes })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -87,7 +117,10 @@ pub fn spawn_pty_forwarder(
                 }
             }
 
-            let _ = proxy.send_event(AppEvent::PtyExited(exit_code));
+            let _ = proxy.send_event(AppEvent::TabPtyExited {
+                tab_id,
+                code: exit_code,
+            });
         })
         .expect("failed to spawn PTY event forwarder thread")
 }
@@ -106,6 +139,12 @@ pub struct App {
     pub pty_exit_code: Option<i32>,
     /// Terminal state containing grid, modes, cursor, and damage tracking.
     pub terminal: Terminal,
+    /// Collection of open tabs.
+    pub tabs: Vec<Tab>,
+    /// Index of currently active tab.
+    pub active_tab_index: usize,
+    /// Next tab ID to assign.
+    pub next_tab_id: usize,
     /// Base configured font size in points/pixels before DPI scaling or zoom.
     pub base_font_size: f32,
     /// Current display `HiDPI` scale factor.
@@ -181,6 +220,11 @@ impl App {
             .ok();
         }
 
+        let initial_tab = Tab::new(0, "Tab 1".to_string(), terminal.clone(), pty_writer.clone());
+        let tabs = vec![initial_tab];
+        let active_tab_index = 0;
+        let next_tab_id = 1;
+
         Self {
             proxy,
             window: None,
@@ -188,6 +232,9 @@ impl App {
             pty_exited: false,
             pty_exit_code: None,
             terminal,
+            tabs,
+            active_tab_index,
+            next_tab_id,
             base_font_size,
             scale_factor,
             cell_metrics,
@@ -211,20 +258,66 @@ impl App {
         }
     }
 
-    /// Converts window pixel coordinates to a clamped terminal grid point.
+    /// Converts window pixel coordinates to a clamped terminal grid point, accounting for tab bar height.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn pixel_to_grid_point(&self, pos: (f64, f64)) -> GridPoint {
         let col = (pos.0 / f64::from(self.cell_metrics.cell_width)).max(0.0) as usize;
-        let row = (pos.1 / f64::from(self.cell_metrics.cell_height)).max(0.0) as usize;
+        let y_content = (pos.1 - f64::from(TAB_BAR_HEIGHT)).max(0.0);
+        let row = (y_content / f64::from(self.cell_metrics.cell_height)).max(0.0) as usize;
         GridPoint::new(
             col.min(self.terminal.grid.cols.saturating_sub(1)),
             row.min(self.terminal.grid.rows.saturating_sub(1)),
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_keyboard_input(&mut self, key_ev: &winit::event::KeyEvent, win: &Window) {
         self.cursor_blink_visible = true;
         self.last_blink = std::time::Instant::now();
+
+        // Multi-tab keyboard shortcuts
+        if key_ev.state == winit::event::ElementState::Pressed && self.modifiers.control_key() {
+            use winit::keyboard::{Key, NamedKey};
+            match &key_ev.logical_key {
+                Key::Character(c) if c.eq_ignore_ascii_case("t") && self.modifiers.shift_key() => {
+                    self.create_tab(None);
+                    win.request_redraw();
+                    return;
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("w") && self.modifiers.shift_key() => {
+                    self.close_tab(self.active_tab_index);
+                    win.request_redraw();
+                    return;
+                }
+                Key::Named(NamedKey::Tab) => {
+                    if self.modifiers.shift_key() {
+                        let prev = if self.active_tab_index == 0 {
+                            self.tabs.len().saturating_sub(1)
+                        } else {
+                            self.active_tab_index - 1
+                        };
+                        self.select_tab(prev);
+                    } else {
+                        let next = (self.active_tab_index + 1) % self.tabs.len().max(1);
+                        self.select_tab(next);
+                    }
+                    win.request_redraw();
+                    return;
+                }
+                Key::Character(c)
+                    if c.len() == 1
+                        && c.chars().next().is_some_and(|ch| ('1'..='9').contains(&ch)) =>
+                {
+                    let digit = (c.as_bytes()[0] - b'1') as usize;
+                    if digit < self.tabs.len() {
+                        self.select_tab(digit);
+                        win.request_redraw();
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
 
         let key_event = KeyEvent::new(
             key_ev.logical_key.clone(),
@@ -362,6 +455,7 @@ impl App {
     /// 1. Window / GPU surface resize
     /// 2. Terminal grid resize
     /// 3. PTY master resize
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
         if size.width == 0 || size.height == 0 {
             return;
@@ -372,12 +466,20 @@ impl App {
             gpu.resize(size);
         }
 
-        // 2. Terminal grid
-        let (cols, rows) = window_size_to_grid_dimensions(size, &self.cell_metrics);
+        // 2. Terminal grid (content area below top tab bar)
+        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round() as u32;
+        let content_height = size.height.saturating_sub(tab_bar_px).max(1);
+        let content_size = PhysicalSize::new(size.width, content_height);
+
+        let (cols, rows) = window_size_to_grid_dimensions(content_size, &self.cell_metrics);
+        let pty_size = window_size_to_pty_size(content_size, &self.cell_metrics);
+
+        for tab in &mut self.tabs {
+            tab.resize(cols as usize, rows as usize, pty_size);
+        }
         self.terminal.resize(cols as usize, rows as usize);
 
         // 3. PTY master
-        let pty_size = window_size_to_pty_size(size, &self.cell_metrics);
         if let Some(ref writer) = self.pty_writer
             && let Ok(mut guard) = writer.lock()
         {
@@ -448,47 +550,249 @@ impl App {
         }
     }
 
-    /// Feeds PTY output bytes to the VT parser and requests a redraw if damaged.
+    /// Builds formatted text labels for tab titles, close buttons, and new-tab button.
+    #[must_use]
+    pub fn build_tab_labels(&self, window_width: f32) -> Vec<TabLabel> {
+        let count = self.tabs.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let (layouts, plus_btn) = compute_tab_layouts(count, window_width);
+        let mut labels = Vec::new();
+
+        for (idx, layout) in layouts.iter().enumerate() {
+            let is_active = idx == self.active_tab_index;
+            let tab = &self.tabs[idx];
+            let color = if is_active {
+                glyphon::Color::rgb(240, 242, 250)
+            } else {
+                glyphon::Color::rgb(140, 145, 160)
+            };
+
+            // Tab title
+            let max_text_width = (layout.width - crate::tab::TAB_BUTTON_SIZE - 12.0).max(10.0);
+            labels.push(TabLabel {
+                text: tab.title.clone(),
+                x: layout.x + 8.0,
+                y: layout.y + 4.0,
+                color,
+                bold: is_active,
+                max_width: max_text_width,
+            });
+
+            // Close button '×'
+            labels.push(TabLabel {
+                text: "×".to_string(),
+                x: layout.close_btn_x + 5.0,
+                y: layout.close_btn_y + 1.0,
+                color: if is_active {
+                    glyphon::Color::rgb(200, 205, 220)
+                } else {
+                    glyphon::Color::rgb(120, 125, 140)
+                },
+                bold: true,
+                max_width: crate::tab::TAB_BUTTON_SIZE,
+            });
+        }
+
+        // Plus button '+'
+        labels.push(TabLabel {
+            text: "+".to_string(),
+            x: plus_btn.0 + 5.0,
+            y: plus_btn.1 + 1.0,
+            color: glyphon::Color::rgb(190, 195, 210),
+            bold: true,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
+
+        labels
+    }
+
+    /// Creates and switches to a new tab, spawning a shell PTY if proxy is available.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    pub fn create_tab(&mut self, title: Option<String>) {
+        let tab_id = self.next_tab_id;
+        self.next_tab_id += 1;
+
+        let cols = self.terminal.grid.cols;
+        let rows = self.terminal.grid.rows;
+        let new_terminal = Terminal::new(cols, rows);
+
+        let mut pty_writer = None;
+        if let Some(ref proxy) = self.proxy {
+            let cmd = if let Some(ref custom_shell) = self.config.shell {
+                crate::pty::ShellCommand::with_args(
+                    custom_shell.clone(),
+                    self.config.shell_args.clone(),
+                )
+            } else {
+                crate::pty::ShellCommand::default_shell()
+            };
+
+            let pty_size = crate::pty::PtySize {
+                rows: u16::try_from(rows).unwrap_or(24),
+                cols: u16::try_from(cols).unwrap_or(80),
+                px_w: (cols as f32 * self.cell_metrics.cell_width) as u16,
+                px_h: (rows as f32 * self.cell_metrics.cell_height) as u16,
+            };
+
+            if let Ok((writer, reader)) = crate::pty::spawn(cmd, pty_size) {
+                let writer = Arc::new(Mutex::new(writer));
+                spawn_tab_pty_forwarder(tab_id, reader, Arc::clone(&writer), proxy.clone());
+                pty_writer = Some(writer);
+            }
+        }
+
+        let tab_title = title.unwrap_or_else(|| format!("Tab {}", tab_id + 1));
+        let tab = Tab::new(tab_id, tab_title, new_terminal, pty_writer);
+        self.tabs.push(tab);
+        self.select_tab(self.tabs.len() - 1);
+    }
+
+    /// Switches the active view to the tab at `index`.
+    pub fn select_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() || index == self.active_tab_index {
+            return;
+        }
+
+        // Save active tab state
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
+            active_tab.terminal = self.terminal.clone();
+            active_tab.selection = self.selection;
+            active_tab.mouse_down_pos = self.mouse_down_pos;
+        }
+
+        self.active_tab_index = index;
+
+        // Restore new active tab state
+        let new_tab = &self.tabs[index];
+        self.terminal = new_tab.terminal.clone();
+        self.pty_writer = new_tab.pty_writer.clone();
+        self.selection = new_tab.selection;
+        self.mouse_down_pos = new_tab.mouse_down_pos;
+        self.pty_exited = new_tab.pty_exited;
+        self.pty_exit_code = new_tab.pty_exit_code;
+        self.title = new_tab.title.clone();
+
+        if let Some(ref win) = self.window {
+            win.set_title(&self.title);
+            win.request_redraw();
+        }
+        self.terminal.mark_all_dirty();
+    }
+
+    /// Closes the tab at `index`. If it's the only tab, it remains open.
+    pub fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() || self.tabs.len() <= 1 {
+            return;
+        }
+
+        let removed = self.tabs.remove(index);
+        drop(removed);
+
+        if self.active_tab_index >= self.tabs.len() {
+            self.active_tab_index = self.tabs.len() - 1;
+        } else if self.active_tab_index > index {
+            self.active_tab_index -= 1;
+        }
+
+        let new_active = &self.tabs[self.active_tab_index];
+        self.terminal = new_active.terminal.clone();
+        self.pty_writer = new_active.pty_writer.clone();
+        self.selection = new_active.selection;
+        self.mouse_down_pos = new_active.mouse_down_pos;
+        self.pty_exited = new_active.pty_exited;
+        self.pty_exit_code = new_active.pty_exit_code;
+        self.title = new_active.title.clone();
+
+        if let Some(ref win) = self.window {
+            win.set_title(&self.title);
+            win.request_redraw();
+        }
+        self.terminal.mark_all_dirty();
+    }
+
+    /// Feeds PTY output bytes to the active tab's VT parser and requests a redraw if damaged.
     pub fn handle_pty_output(&mut self, bytes: &[u8]) {
-        // Respond to DSR (Device Status Report: \x1b[6n) if requested by ConPTY/shell
-        if bytes.windows(4).any(|w| w == b"\x1b[6n")
-            && let Some(ref writer) = self.pty_writer
-            && let Ok(mut guard) = writer.lock()
-        {
-            let row = self.terminal.grid.cursor.row + 1;
-            let col = self.terminal.grid.cursor.col + 1;
-            let response = format!("\x1b[{row};{col}R");
-            let _ = guard.write(response.as_bytes());
-        }
+        let active_id = self.tabs.get(self.active_tab_index).map_or(0, |t| t.id);
+        self.handle_tab_pty_output(active_id, bytes);
+    }
 
-        self.parser.advance(&mut self.terminal, bytes);
+    /// Feeds PTY output bytes to a specific tab's parser and terminal state.
+    pub fn handle_tab_pty_output(&mut self, tab_id: usize, bytes: &[u8]) {
+        let is_active = self
+            .tabs
+            .get(self.active_tab_index)
+            .is_some_and(|t| t.id == tab_id);
 
-        // Apply OSC window title changes
-        if !self.terminal.title.is_empty() && self.terminal.title != self.title {
-            self.title = self.terminal.title.clone();
-            if let Some(ref win) = self.window {
-                win.set_title(&self.title);
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            // Respond to DSR (Device Status Report: \x1b[6n) if requested
+            if bytes.windows(4).any(|w| w == b"\x1b[6n")
+                && let Some(ref writer) = tab.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let row = tab.terminal.grid.cursor.row + 1;
+                let col = tab.terminal.grid.cursor.col + 1;
+                let response = format!("\x1b[{row};{col}R");
+                let _ = guard.write(response.as_bytes());
             }
-        } else if self.terminal.title.is_empty() && self.title != DEFAULT_TITLE {
-            self.title = DEFAULT_TITLE.to_string();
-            if let Some(ref win) = self.window {
-                win.set_title(&self.title);
-            }
-        }
 
-        // Trigger visual bell if bell count increased
-        if self.terminal.bell_count != self.last_bell_count {
-            self.last_bell_count = self.terminal.bell_count;
-            self.bell_triggered_at = Some(std::time::Instant::now());
-            if let Some(ref win) = self.window {
+            tab.advance_parser(bytes);
+
+            if is_active {
+                self.terminal = tab.terminal.clone();
+                if !tab.title.is_empty() && tab.title != self.title {
+                    self.title = tab.title.clone();
+                    if let Some(ref win) = self.window {
+                        win.set_title(&self.title);
+                    }
+                }
+
+                if self.terminal.bell_count != self.last_bell_count {
+                    self.last_bell_count = self.terminal.bell_count;
+                    self.bell_triggered_at = Some(std::time::Instant::now());
+                    if let Some(ref win) = self.window {
+                        win.request_redraw();
+                    }
+                }
+
+                if self.terminal.has_damage()
+                    && let Some(ref win) = self.window
+                {
+                    win.request_redraw();
+                }
+            } else if let Some(ref win) = self.window {
                 win.request_redraw();
             }
         }
+    }
 
-        if self.terminal.has_damage()
-            && let Some(ref win) = self.window
-        {
-            win.request_redraw();
+    /// Handles child process exit notification for a specific tab.
+    pub fn handle_tab_pty_exited(&mut self, tab_id: usize, code: Option<i32>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.pty_exited = true;
+            tab.pty_exit_code = code;
+        }
+
+        let is_active = self
+            .tabs
+            .get(self.active_tab_index)
+            .is_some_and(|t| t.id == tab_id);
+        if is_active {
+            self.pty_exited = true;
+            self.pty_exit_code = code;
+            let exit_msg = match code {
+                Some(c) => format!("{} [Process exited - {c}]", self.title),
+                None => format!("{} [Process exited]", self.title),
+            };
+            if let Some(ref win) = self.window {
+                win.set_title(&exit_msg);
+                win.request_redraw();
+            }
         }
     }
 
@@ -500,19 +804,37 @@ impl App {
         let palette = self.config.theme.to_f32_palette();
         let cursor_color = self.config.theme.cursor.to_rgba_array(1.0);
         let selection_color = self.config.theme.selection_bg.to_rgba_array(1.0);
+        let accent_color = palette[12]; // Vivid cyan/blue accent for active tab
 
-        let mut quad_vertices = build_cell_background_vertices(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &palette,
-        );
-        quad_vertices.extend_from_slice(&build_text_decoration_vertices(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &palette,
+        let mut quad_vertices = Vec::new();
+
+        // 1. Tab bar quads (background, tab bodies, active indicator, dividers)
+        quad_vertices.extend_from_slice(&assemble_tab_bar_quads(
+            self.tabs.len(),
+            self.active_tab_index,
+            screen_size[0],
+            accent_color,
         ));
+
+        // 2. Cell backgrounds offset below the tab bar
+        quad_vertices.extend_from_slice(&build_cell_background_vertices_offset(
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &palette,
+            TAB_BAR_HEIGHT,
+        ));
+
+        // 3. Text decorations offset below the tab bar
+        quad_vertices.extend_from_slice(&build_text_decoration_vertices_offset(
+            &self.terminal.grid,
+            self.cell_metrics.cell_width,
+            self.cell_metrics.cell_height,
+            &palette,
+            TAB_BAR_HEIGHT,
+        ));
+
+        // 4. Cursor offset below the tab bar
         let should_draw_cursor = self.terminal.grid.display_offset == 0
             && self.terminal.grid.cursor.visible
             && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
@@ -523,23 +845,27 @@ impl App {
                 .grid
                 .get(self.terminal.grid.cursor.row, self.terminal.grid.cursor.col)
                 .map_or(1, |c| c.width.max(1));
-            let cursor_vertices = build_cursor_vertices_with_width(
+            let cursor_vertices = build_cursor_vertices_with_offset(
                 &self.terminal.grid.cursor,
                 &self.cell_metrics,
                 cursor_color,
                 cursor_width,
+                TAB_BAR_HEIGHT,
             );
             quad_vertices.extend_from_slice(&cursor_vertices);
         }
 
-        quad_vertices.extend_from_slice(&build_selection_vertices(
+        // 5. Selection highlight offset below the tab bar
+        quad_vertices.extend_from_slice(&build_selection_vertices_offset(
             &self.terminal.grid,
             self.selection.as_ref(),
             self.cell_metrics.cell_width,
             self.cell_metrics.cell_height,
             selection_color,
+            TAB_BAR_HEIGHT,
         ));
 
+        // 6. Visual bell overlay
         if bell_active {
             quad_vertices.extend_from_slice(&build_quad_vertices(
                 0.0,
@@ -565,6 +891,7 @@ impl App {
             None => return,
         };
         let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
+        let tab_labels = self.build_tab_labels(screen_size[0]);
 
         let palette = self.config.theme.to_f32_palette();
         let bg_color = self.config.theme.background.to_rgba_array(1.0);
@@ -642,6 +969,8 @@ impl App {
                 metrics: &self.cell_metrics,
                 palette: &palette,
                 dirty_rows: Some(&self.terminal.dirty_rows),
+                y_offset: TAB_BAR_HEIGHT,
+                tab_labels: &tab_labels,
             };
             let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
         }
@@ -683,17 +1012,15 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::PtyOutput(bytes) => {
                 self.handle_pty_output(&bytes);
             }
+            AppEvent::TabPtyOutput { tab_id, bytes } => {
+                self.handle_tab_pty_output(tab_id, &bytes);
+            }
             AppEvent::PtyExited(code) => {
-                self.pty_exited = true;
-                self.pty_exit_code = code;
-                let exit_msg = match code {
-                    Some(c) => format!("{} [Process exited - {c}]", self.title),
-                    None => format!("{} [Process exited]", self.title),
-                };
-                if let Some(ref win) = self.window {
-                    win.set_title(&exit_msg);
-                    win.request_redraw();
-                }
+                let active_id = self.tabs.get(self.active_tab_index).map_or(0, |t| t.id);
+                self.handle_tab_pty_exited(active_id, code);
+            }
+            AppEvent::TabPtyExited { tab_id, code } => {
+                self.handle_tab_pty_exited(tab_id, code);
             }
             AppEvent::ConfigReloaded => {
                 log::info!("Configuration file reloaded from disk");
@@ -726,6 +1053,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -775,6 +1103,32 @@ impl ApplicationHandler<AppEvent> for App {
                 button: winit::event::MouseButton::Left,
                 ..
             } if !self.terminal.modes.mouse_reporting => {
+                if self.cursor_pixel_pos.1 <= f64::from(TAB_BAR_HEIGHT) {
+                    if state == winit::event::ElementState::Pressed {
+                        let win_w = win.inner_size().width as f32;
+                        let action = hit_test(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            self.tabs.len(),
+                            win_w,
+                        );
+                        match action {
+                            TabBarAction::SelectTab(idx) => {
+                                self.select_tab(idx);
+                            }
+                            TabBarAction::CloseTab(idx) => {
+                                self.close_tab(idx);
+                            }
+                            TabBarAction::NewTab => {
+                                self.create_tab(None);
+                            }
+                            TabBarAction::None => {}
+                        }
+                        win.request_redraw();
+                    }
+                    return;
+                }
+
                 let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
                 if state == winit::event::ElementState::Pressed {
                     self.mouse_down_pos = Some(pt);
@@ -909,9 +1263,9 @@ mod tests {
         app.handle_resize(PhysicalSize::new(1000, 800));
 
         assert_eq!(app.terminal.grid.cols, 100);
-        assert_eq!(app.terminal.grid.rows, 40);
+        assert_eq!(app.terminal.grid.rows, 38);
         assert_eq!(app.terminal.alternate_grid.cols, 100);
-        assert_eq!(app.terminal.alternate_grid.rows, 40);
+        assert_eq!(app.terminal.alternate_grid.rows, 38);
         assert!(app.terminal.has_damage());
     }
 
@@ -937,7 +1291,7 @@ mod tests {
 
             app.handle_resize(PhysicalSize::new(1000, 800));
             assert_eq!(app.terminal.grid.cols, 100);
-            assert_eq!(app.terminal.grid.rows, 40);
+            assert_eq!(app.terminal.grid.rows, 38);
         }
     }
 
@@ -1029,5 +1383,75 @@ mod tests {
         let dracula = crate::config::load_theme_by_name("dracula").expect("dracula theme");
         app.config.theme = dracula;
         assert_eq!(app.config.theme.name, "dracula");
+    }
+
+    #[test]
+    fn multi_tab_creation_selection_and_closing() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab_index, 0);
+
+        // Create Tab 2
+        app.create_tab(Some("Claude Tab".to_string()));
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_index, 1);
+        assert_eq!(app.title, "Claude Tab");
+
+        // Create Tab 3
+        app.create_tab(Some("Codex Tab".to_string()));
+        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.active_tab_index, 2);
+        assert_eq!(app.title, "Codex Tab");
+
+        // Switch to Tab 0
+        app.select_tab(0);
+        assert_eq!(app.active_tab_index, 0);
+        assert_eq!(app.title, "Tab 1");
+
+        // Close Tab 1 (Claude Tab)
+        app.close_tab(1);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_index, 0);
+        assert_eq!(app.tabs[1].title, "Codex Tab");
+
+        // Verify closing single remaining tab does not leave 0 tabs
+        app.close_tab(1);
+        assert_eq!(app.tabs.len(), 1);
+        app.close_tab(0);
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn multi_tab_pty_output_routes_to_correct_tab() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.create_tab(Some("Second".to_string()));
+
+        // Tab 1 is active, Tab 0 is in background
+        assert_eq!(app.active_tab_index, 1);
+
+        // Feed output to Tab 0 (background)
+        app.handle_tab_pty_output(0, b"Hello from Tab 0");
+        assert_eq!(app.tabs[0].terminal.grid[0][0].ch, 'H');
+        // Active terminal (Tab 1) is not affected yet
+        assert_ne!(app.terminal.grid[0][0].ch, 'H');
+
+        // Switch to Tab 0: active terminal now receives Tab 0's grid
+        app.select_tab(0);
+        assert_eq!(app.terminal.grid[0][0].ch, 'H');
+    }
+
+    #[test]
+    fn build_tab_labels_generates_expected_labels() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.create_tab(Some("Workspaces".to_string()));
+
+        let labels = app.build_tab_labels(800.0);
+        // 2 tabs * 2 labels (title + close) + 1 plus button = 5 labels
+        assert_eq!(labels.len(), 5);
+        assert_eq!(labels[0].text, "Tab 1");
+        assert_eq!(labels[1].text, "×");
+        assert_eq!(labels[2].text, "Workspaces");
+        assert_eq!(labels[3].text, "×");
+        assert_eq!(labels[4].text, "+");
     }
 }
