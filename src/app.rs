@@ -203,8 +203,8 @@ pub struct App {
     pub diff_view_open: bool,
     /// State representation for the side-by-side diff view.
     pub diff_view_state: crate::diff_view::DiffViewState,
-    /// Whether the theme dropdown menu in the status bar ribbon is open.
-    pub theme_menu_open: bool,
+    /// Whether the dedicated settings modal overlay is open.
+    pub settings_open: bool,
     /// Dynamic width of the left collapsible sidebar.
     pub sidebar_width: f32,
     /// Terminal width ratio in the central area when diff view is open (0.15..0.85).
@@ -215,6 +215,24 @@ pub struct App {
     pub dragging_splitter: DraggingSplitter,
     /// Splitter currently under the mouse cursor.
     pub hovered_splitter: DraggingSplitter,
+}
+
+/// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneGeometry {
+    pub win_w: f32,
+    pub win_h: f32,
+    pub tab_bar_px: f32,
+    pub status_bar_px: f32,
+    pub content_top: f32,
+    pub content_bottom: f32,
+    pub content_h: f32,
+    pub sidebar_w: f32,
+    pub changes_panel_w: f32,
+    pub term_w: f32,
+    pub diff_w: f32,
+    pub diff_x: f32,
+    pub panel_x: f32,
 }
 
 /// Active draggable pane splitter dividing GUI columns.
@@ -387,12 +405,102 @@ impl App {
             changes_panel_state,
             diff_view_open: true,
             diff_view_state,
-            theme_menu_open: false,
+            settings_open: false,
             sidebar_width: crate::sidebar::SIDEBAR_WIDTH,
             term_split_ratio: 0.45,
             changes_panel_width: crate::changes_panel::CHANGES_PANEL_WIDTH,
             dragging_splitter: DraggingSplitter::None,
             hovered_splitter: DraggingSplitter::None,
+        }
+    }
+
+    /// Precomputes synchronized pane layout dimensions for rendering, labels, and hit testing.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    pub fn compute_pane_geometry(&self, win_w: f32, win_h: f32) -> PaneGeometry {
+        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let content_top = tab_bar_px;
+        let content_bottom = (win_h - status_bar_px).max(content_top);
+        let content_h = (content_bottom - content_top).max(0.0);
+
+        let sidebar_w = if self.sidebar_open {
+            (self.sidebar_width * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+        let changes_panel_w = if self.changes_panel_open {
+            (self.changes_panel_width * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
+
+        let avail_middle = (win_w - sidebar_w - changes_panel_w).max(0.0);
+        let term_w = if self.diff_view_open {
+            (avail_middle * self.term_split_ratio).clamp(160.0, (avail_middle - 160.0).max(160.0))
+        } else {
+            avail_middle
+        };
+        let diff_w = if self.diff_view_open {
+            (avail_middle - term_w).max(0.0)
+        } else {
+            0.0
+        };
+        let diff_x = sidebar_w + term_w;
+        let panel_x = win_w - changes_panel_w;
+
+        PaneGeometry {
+            win_w,
+            win_h,
+            tab_bar_px,
+            status_bar_px,
+            content_top,
+            content_bottom,
+            content_h,
+            sidebar_w,
+            changes_panel_w,
+            term_w,
+            diff_w,
+            diff_x,
+            panel_x,
+        }
+    }
+
+    /// Builds current state representation for the settings modal dialog.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn build_settings_modal_state(&self) -> crate::settings_modal::SettingsModalState {
+        use crate::settings_modal::{CursorShapeChoice, PaddingChoice, SettingsModalState};
+        let shape = match self.terminal.grid.cursor.shape {
+            crate::grid::CursorShape::Block => CursorShapeChoice::Block,
+            crate::grid::CursorShape::Underline => CursorShapeChoice::Underline,
+            crate::grid::CursorShape::Bar => CursorShapeChoice::Beam,
+        };
+        let padding = if self.config.padding_x <= 4.0 {
+            PaddingChoice::Compact
+        } else if self.config.padding_x <= 8.0 {
+            PaddingChoice::Normal
+        } else {
+            PaddingChoice::Roomy
+        };
+        let zoom_pct = ((self.base_font_size / Self::DEFAULT_FONT_SIZE) * 100.0).round() as usize;
+        SettingsModalState {
+            is_open: self.settings_open,
+            active_theme: self.config.theme.name.clone(),
+            font_size: self.base_font_size,
+            zoom_pct,
+            cursor_shape: shape,
+            cursor_blink: self.cursor_blink_visible,
+            padding,
+            status_bar_visible: self.config.status_bar,
         }
     }
 
@@ -422,10 +530,24 @@ impl App {
         self.cursor_blink_visible = true;
         self.last_blink = std::time::Instant::now();
 
+        if key_ev.state == winit::event::ElementState::Pressed {
+            use winit::keyboard::{Key, NamedKey};
+            if self.settings_open && key_ev.logical_key == Key::Named(NamedKey::Escape) {
+                self.settings_open = false;
+                win.request_redraw();
+                return;
+            }
+        }
+
         // Multi-tab keyboard shortcuts
         if key_ev.state == winit::event::ElementState::Pressed && self.modifiers.control_key() {
             use winit::keyboard::{Key, NamedKey};
             match &key_ev.logical_key {
+                Key::Character(c) if c == "," => {
+                    self.settings_open = !self.settings_open;
+                    win.request_redraw();
+                    return;
+                }
                 Key::Character(c) if c.eq_ignore_ascii_case("t") && self.modifiers.shift_key() => {
                     self.create_tab(None);
                     win.request_redraw();
@@ -925,7 +1047,7 @@ impl App {
             tab_current,
             tab_total,
             git_branch: self.git_branch.clone(),
-            theme_menu_open: self.theme_menu_open,
+            settings_open: self.settings_open,
         }
     }
 
@@ -1100,7 +1222,8 @@ impl App {
             .is_some_and(|t| t.id == tab_id);
 
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            // Respond to DSR (Device Status Report: \x1b[6n) if requested
+            // Respond to DSR (Device Status Report: \x1b[6n) if requested on Unix
+            #[cfg(not(windows))]
             if bytes.windows(4).any(|w| w == b"\x1b[6n")
                 && let Some(ref writer) = tab.pty_writer
                 && let Ok(mut guard) = writer.lock()
@@ -1177,21 +1300,11 @@ impl App {
         let selection_color = self.config.theme.selection_bg.to_rgba_array(1.0);
         let accent_color = palette[12]; // Vivid cyan/blue accent for active tab
 
+        let geo = self.compute_pane_geometry(screen_size[0], screen_size[1]);
         let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
         let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
-        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-        let status_bar_px = if self.config.status_bar {
-            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let sidebar_w = if self.sidebar_open {
-            (self.sidebar_width * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let x_offset = sidebar_w + effective_pad_x;
-        let y_offset = tab_bar_px + effective_pad_y;
+        let x_offset = geo.sidebar_w + effective_pad_x;
+        let y_offset = geo.tab_bar_px + effective_pad_y;
 
         let mut quad_vertices = Vec::new();
 
@@ -1205,10 +1318,9 @@ impl App {
 
         // 1.5. Sidebar quads (if expanded)
         if self.sidebar_open {
-            let sidebar_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
             quad_vertices.extend_from_slice(&crate::sidebar::assemble_sidebar_quads(
-                tab_bar_px,
-                sidebar_h,
+                geo.tab_bar_px,
+                geo.content_h,
                 accent_color,
                 self.active_tab_index,
                 self.tabs.len(),
@@ -1269,45 +1381,24 @@ impl App {
         ));
 
         // 5.5. Central Side-by-side Diff View workspace quads (if open)
-        let changes_panel_w = if self.changes_panel_open {
-            (self.changes_panel_width * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let avail_middle = (screen_size[0] - sidebar_w - changes_panel_w).max(0.0);
-        let term_w = if self.diff_view_open {
-            (avail_middle * self.term_split_ratio).clamp(160.0, (avail_middle - 160.0).max(160.0))
-        } else {
-            avail_middle
-        };
-        let diff_w = if self.diff_view_open {
-            (avail_middle - term_w).max(0.0)
-        } else {
-            0.0
-        };
-        let diff_x = sidebar_w + term_w;
-        let panel_x = screen_size[0] - changes_panel_w;
-
-        if self.diff_view_open && diff_w > 10.0 {
-            let diff_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+        if self.diff_view_open && geo.diff_w > 10.0 {
             quad_vertices.extend_from_slice(&crate::diff_view::assemble_diff_view_quads(
-                diff_x,
-                tab_bar_px,
-                diff_w,
-                diff_h,
+                geo.diff_x,
+                geo.tab_bar_px,
+                geo.diff_w,
+                geo.content_h,
                 accent_color,
                 &self.diff_view_state,
             ));
         }
 
         // 5.6. Right Changes & Git Panel quads (if open)
-        if self.changes_panel_open && changes_panel_w > 10.0 {
-            let panel_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+        if self.changes_panel_open && geo.changes_panel_w > 10.0 {
             quad_vertices.extend_from_slice(&crate::changes_panel::assemble_changes_panel_quads(
-                panel_x,
-                tab_bar_px,
-                changes_panel_w,
-                panel_h,
+                geo.panel_x,
+                geo.tab_bar_px,
+                geo.changes_panel_w,
+                geo.content_h,
                 accent_color,
                 &self.changes_panel_state,
             ));
@@ -1321,17 +1412,16 @@ impl App {
         };
         if highlight_splitter != DraggingSplitter::None {
             let split_x = match highlight_splitter {
-                DraggingSplitter::Sidebar => sidebar_w,
-                DraggingSplitter::ChangesPanel => screen_size[0] - changes_panel_w,
-                DraggingSplitter::TerminalDiff => sidebar_w + term_w,
+                DraggingSplitter::Sidebar => geo.sidebar_w,
+                DraggingSplitter::ChangesPanel => geo.panel_x,
+                DraggingSplitter::TerminalDiff => geo.diff_x,
                 DraggingSplitter::None => 0.0,
             };
-            let split_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
             quad_vertices.extend_from_slice(&build_quad_vertices(
                 split_x - 1.0,
-                tab_bar_px,
+                geo.tab_bar_px,
                 3.0,
-                split_h,
+                geo.content_h,
                 [0.0, 0.94, 1.0, 0.9], // Bright retro electric cyan highlight
             ));
         }
@@ -1345,15 +1435,6 @@ impl App {
                 accent_color,
                 &sb_state,
             ));
-
-            if self.theme_menu_open {
-                quad_vertices.extend_from_slice(&crate::status_bar::assemble_theme_menu_quads(
-                    screen_size[0],
-                    screen_size[1],
-                    accent_color,
-                    &sb_state,
-                ));
-            }
         }
 
         // 7. Scrollbar indicator (rendered when viewing history / display_offset > 0)
@@ -1363,6 +1444,17 @@ impl App {
             effective_pad_y,
             accent_color,
         ));
+
+        // 8. Settings modal overlay (if open)
+        if self.settings_open {
+            let sm_state = self.build_settings_modal_state();
+            quad_vertices.extend_from_slice(&crate::settings_modal::assemble_settings_modal_quads(
+                screen_size[0],
+                screen_size[1],
+                &sm_state,
+                accent_color,
+            ));
+        }
 
         // 8. Visual bell overlay
         if bell_active {
@@ -1446,37 +1538,9 @@ impl App {
             Some(ref gpu) => [gpu.config.width as f32, gpu.config.height as f32],
             None => return,
         };
+        let geo = self.compute_pane_geometry(screen_size[0], screen_size[1]);
         let quad_vertices = self.assemble_quad_vertices(is_bell_active, screen_size);
         let mut tab_labels = self.build_tab_labels(screen_size[0]);
-        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-        let status_bar_px = if self.config.status_bar {
-            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let sidebar_w = if self.sidebar_open {
-            (crate::sidebar::SIDEBAR_WIDTH * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let changes_panel_w = if self.changes_panel_open {
-            (crate::changes_panel::CHANGES_PANEL_WIDTH * self.scale_factor as f32).round()
-        } else {
-            0.0
-        };
-        let avail_middle = (screen_size[0] - sidebar_w - changes_panel_w).max(0.0);
-        let term_w = if self.diff_view_open {
-            (avail_middle * 0.4).clamp(240.0, 520.0)
-        } else {
-            avail_middle
-        };
-        let diff_w = if self.diff_view_open {
-            (avail_middle - term_w).max(0.0)
-        } else {
-            0.0
-        };
-        let diff_x = sidebar_w + term_w;
-        let panel_x = screen_size[0] - changes_panel_w;
 
         if self.sidebar_open {
             let sidebar_state = crate::sidebar::SidebarState {
@@ -1490,34 +1554,41 @@ impl App {
             };
             tab_labels.extend(crate::sidebar::build_sidebar_labels(
                 &sidebar_state,
-                tab_bar_px,
+                geo.tab_bar_px,
             ));
         }
 
-        if self.diff_view_open && diff_w > 10.0 {
-            let diff_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+        if self.diff_view_open && geo.diff_w > 10.0 {
             tab_labels.extend(crate::diff_view::build_diff_view_labels(
-                diff_x,
-                tab_bar_px,
-                diff_w,
-                diff_h,
+                geo.diff_x,
+                geo.tab_bar_px,
+                geo.diff_w,
+                geo.content_h,
                 &self.diff_view_state,
             ));
         }
 
-        if self.changes_panel_open && changes_panel_w > 10.0 {
-            let panel_h = (screen_size[1] - tab_bar_px - status_bar_px).max(0.0);
+        if self.changes_panel_open && geo.changes_panel_w > 10.0 {
             tab_labels.extend(crate::changes_panel::build_changes_panel_labels(
-                panel_x,
-                tab_bar_px,
-                changes_panel_w,
-                panel_h,
+                geo.panel_x,
+                geo.tab_bar_px,
+                geo.changes_panel_w,
+                geo.content_h,
                 &self.changes_panel_state,
             ));
         }
 
         if self.config.status_bar {
             tab_labels.extend(self.build_status_bar_labels(screen_size[0], screen_size[1]));
+        }
+
+        if self.settings_open {
+            let sm_state = self.build_settings_modal_state();
+            tab_labels.extend(crate::settings_modal::build_settings_modal_labels(
+                screen_size[0],
+                screen_size[1],
+                &sm_state,
+            ));
         }
 
         let palette = self.config.theme.to_f32_palette();
@@ -1590,8 +1661,8 @@ impl App {
 
             let effective_pad_x = (self.config.padding_x * self.scale_factor as f32).round();
             let effective_pad_y = (self.config.padding_y * self.scale_factor as f32).round();
-            let x_offset = sidebar_w + effective_pad_x;
-            let y_offset = tab_bar_px + effective_pad_y;
+            let x_offset = geo.sidebar_w + effective_pad_x;
+            let y_offset = geo.tab_bar_px + effective_pad_y;
 
             let draw_ctx = DrawContext {
                 device: &gpu.device,
@@ -1730,47 +1801,19 @@ impl ApplicationHandler<AppEvent> for App {
                 self.cursor_pixel_pos = (position.x, position.y);
                 let win_w = win.inner_size().width as f32;
                 let win_h = win.inner_size().height as f32;
-                let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-                let status_bar_px = if self.config.status_bar {
-                    (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
-                } else {
-                    0.0
-                };
-                let content_top = tab_bar_px;
-                let content_bottom = win_h - status_bar_px;
+                let geo = self.compute_pane_geometry(win_w, win_h);
 
                 if self.dragging_splitter == DraggingSplitter::None {
                     let mut detected = DraggingSplitter::None;
                     let cursor_y = position.y as f32;
                     let cursor_x = position.x as f32;
 
-                    if cursor_y >= content_top && cursor_y <= content_bottom {
-                        let sidebar_px = if self.sidebar_open {
-                            (self.sidebar_width * self.scale_factor as f32).round()
-                        } else {
-                            0.0
-                        };
-                        let changes_px = if self.changes_panel_open {
-                            (self.changes_panel_width * self.scale_factor as f32).round()
-                        } else {
-                            0.0
-                        };
-                        let avail = (win_w - sidebar_px - changes_px).max(0.0);
-                        let term_px = if self.diff_view_open {
-                            (avail * self.term_split_ratio).clamp(160.0, (avail - 160.0).max(160.0))
-                        } else {
-                            avail
-                        };
-
-                        if self.sidebar_open && (cursor_x - sidebar_px).abs() <= 5.0 {
+                    if cursor_y >= geo.tab_bar_px && cursor_y <= (win_h - geo.status_bar_px) {
+                        if self.sidebar_open && (cursor_x - geo.sidebar_w).abs() <= 8.0 {
                             detected = DraggingSplitter::Sidebar;
-                        } else if self.changes_panel_open
-                            && (cursor_x - (win_w - changes_px)).abs() <= 5.0
-                        {
+                        } else if self.changes_panel_open && (cursor_x - geo.panel_x).abs() <= 8.0 {
                             detected = DraggingSplitter::ChangesPanel;
-                        } else if self.diff_view_open
-                            && (cursor_x - (sidebar_px + term_px)).abs() <= 5.0
-                        {
+                        } else if self.diff_view_open && (cursor_x - geo.diff_x).abs() <= 8.0 {
                             detected = DraggingSplitter::TerminalDiff;
                         }
                     }
@@ -1820,8 +1863,7 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         DraggingSplitter::None => {}
                     }
-                    self.handle_resize(win.inner_size());
-                    self.terminal.mark_all_dirty();
+                    // Only request redraw during drag for high-fps responsiveness; resize PTY on release
                     win.request_redraw();
                 }
             }
@@ -1830,10 +1872,83 @@ impl ApplicationHandler<AppEvent> for App {
                 button: winit::event::MouseButton::Left,
                 ..
             } if !self.terminal.modes.mouse_reporting => {
+                // If settings modal is open, let it capture all click events
+                if self.settings_open {
+                    if state == winit::event::ElementState::Pressed {
+                        let win_w = win.inner_size().width as f32;
+                        let win_h = win.inner_size().height as f32;
+                        let sm_state = self.build_settings_modal_state();
+                        let sm_action = crate::settings_modal::hit_test_settings_modal(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            win_w,
+                            win_h,
+                            &sm_state,
+                        );
+                        match sm_action {
+                            crate::settings_modal::SettingsAction::Close => {
+                                self.settings_open = false;
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::SelectTheme(theme_name) => {
+                                if let Some(new_theme) =
+                                    crate::theme::Theme::preset_by_name(&theme_name)
+                                {
+                                    self.config.theme = new_theme;
+                                    self.terminal.mark_all_dirty();
+                                    win.request_redraw();
+                                }
+                            }
+                            crate::settings_modal::SettingsAction::DecreaseFontSize => {
+                                self.zoom_out();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::IncreaseFontSize => {
+                                self.zoom_in();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::ResetFontSize => {
+                                self.zoom_reset();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::SetCursorShape(shape) => {
+                                self.terminal.grid.cursor.shape = shape.to_cursor_shape();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::ToggleCursorBlink => {
+                                self.terminal.cursor_blinking = !self.terminal.cursor_blinking;
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::SetPadding(choice) => {
+                                let (px, py) = choice.pixels();
+                                self.config.padding_x = px;
+                                self.config.padding_y = py;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::ToggleStatusBar => {
+                                self.config.status_bar = !self.config.status_bar;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                                win.request_redraw();
+                            }
+                            crate::settings_modal::SettingsAction::None => {
+                                // Clicked outside the modal card closes the modal
+                                self.settings_open = false;
+                                win.request_redraw();
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 if state == winit::event::ElementState::Pressed
                     && self.hovered_splitter != DraggingSplitter::None
                 {
                     self.dragging_splitter = self.hovered_splitter;
+                    self.mouse_down_pos = None;
+                    self.selection = None;
                     win.request_redraw();
                     return;
                 }
@@ -1841,6 +1956,8 @@ impl ApplicationHandler<AppEvent> for App {
                     && self.dragging_splitter != DraggingSplitter::None
                 {
                     self.dragging_splitter = DraggingSplitter::None;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
                     win.request_redraw();
                     return;
                 }
@@ -2082,40 +2199,20 @@ impl ApplicationHandler<AppEvent> for App {
                 }
 
                 // Check diff view click if diff view is open
-                let avail_middle_f64 = (win_w_f64 - sidebar_px - changes_panel_px).max(0.0);
-                let term_w_f64 = if self.diff_view_open {
-                    (avail_middle_f64 * f64::from(self.term_split_ratio))
-                        .clamp(160.0, (avail_middle_f64 - 160.0).max(160.0))
-                } else {
-                    avail_middle_f64
-                };
-                let diff_pane_x = sidebar_px + term_w_f64;
-                let diff_pane_width = if self.diff_view_open {
-                    (avail_middle_f64 - term_w_f64).max(0.0)
-                } else {
-                    0.0
-                };
+                let geo =
+                    self.compute_pane_geometry(win_w_f64 as f32, win.inner_size().height as f32);
                 if self.diff_view_open
-                    && self.cursor_pixel_pos.0 >= diff_pane_x
-                    && self.cursor_pixel_pos.0 < diff_pane_x + diff_pane_width
+                    && (self.cursor_pixel_pos.0 as f32) >= geo.diff_x
+                    && (self.cursor_pixel_pos.0 as f32) < geo.diff_x + geo.diff_w
                 {
                     if state == winit::event::ElementState::Pressed {
-                        let tab_bar_px = (TAB_BAR_HEIGHT * self.scale_factor as f32).round();
-                        let status_bar_px = if self.config.status_bar {
-                            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32)
-                                .round()
-                        } else {
-                            0.0
-                        };
-                        let diff_h =
-                            (win.inner_size().height as f32 - tab_bar_px - status_bar_px).max(0.0);
                         let action = crate::diff_view::hit_test_diff_view(
                             self.cursor_pixel_pos.0 as f32,
                             self.cursor_pixel_pos.1 as f32,
-                            diff_pane_x as f32,
-                            tab_bar_px,
-                            diff_pane_width as f32,
-                            diff_h,
+                            geo.diff_x,
+                            geo.tab_bar_px,
+                            geo.diff_w,
+                            geo.content_h,
                             &self.diff_view_state,
                         );
                         match action {
@@ -2177,8 +2274,8 @@ impl ApplicationHandler<AppEvent> for App {
                                     self.diff_view_state.file_name.clone()
                                 } else {
                                     format!(
-                                        "{}{}",
-                                        self.diff_view_state.path_info,
+                                        "{}/{}",
+                                        self.diff_view_state.path_info.trim_end_matches('/'),
                                         self.diff_view_state.file_name
                                     )
                                 };
@@ -2197,11 +2294,56 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::OpenFile => {
-                                log::info!("Open file action triggered");
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let rel_path = if self.diff_view_state.path_info == "." {
+                                    self.diff_view_state.file_name.clone()
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        self.diff_view_state.path_info.trim_end_matches('/'),
+                                        self.diff_view_state.file_name
+                                    )
+                                };
+                                let full_path = cwd.join(&rel_path);
+                                #[cfg(windows)]
+                                {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/c",
+                                            "start",
+                                            "",
+                                            full_path.to_str().unwrap_or_default(),
+                                        ])
+                                        .spawn();
+                                }
+                                #[cfg(target_os = "macos")]
+                                {
+                                    let _ =
+                                        std::process::Command::new("open").arg(&full_path).spawn();
+                                }
+                                #[cfg(target_os = "linux")]
+                                {
+                                    let _ = std::process::Command::new("xdg-open")
+                                        .arg(&full_path)
+                                        .spawn();
+                                }
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::Restore => {
-                                log::info!("Restore file action triggered");
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let rel_path = if self.diff_view_state.path_info == "." {
+                                    self.diff_view_state.file_name.clone()
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        self.diff_view_state.path_info.trim_end_matches('/'),
+                                        self.diff_view_state.file_name
+                                    )
+                                };
+                                let _ = crate::git::restore_file(&cwd, &rel_path);
+                                self.refresh_git_status();
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::None => {}
@@ -2210,7 +2352,7 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
 
-                // Check bottom status bar and theme popover clicks
+                // Check bottom status bar clicks
                 if self.config.status_bar {
                     let win_w = win.inner_size().width as f32;
                     let win_h = win.inner_size().height as f32;
@@ -2218,7 +2360,7 @@ impl ApplicationHandler<AppEvent> for App {
                         - (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round();
                     let state_sb = self.build_status_bar_state();
 
-                    if self.theme_menu_open || self.cursor_pixel_pos.1 as f32 >= bar_y {
+                    if self.cursor_pixel_pos.1 as f32 >= bar_y {
                         if state == winit::event::ElementState::Pressed {
                             let sb_action = crate::status_bar::hit_test_status_bar(
                                 self.cursor_pixel_pos.0 as f32,
@@ -2229,39 +2371,15 @@ impl ApplicationHandler<AppEvent> for App {
                             );
 
                             match sb_action {
-                                crate::status_bar::StatusBarAction::ToggleThemeMenu => {
-                                    self.theme_menu_open = !self.theme_menu_open;
+                                crate::status_bar::StatusBarAction::OpenSettings => {
+                                    self.settings_open = !self.settings_open;
                                     win.request_redraw();
                                     return;
                                 }
-                                crate::status_bar::StatusBarAction::SelectTheme(theme_name) => {
-                                    self.theme_menu_open = false;
-                                    if let Some(new_theme) =
-                                        crate::theme::Theme::preset_by_name(&theme_name)
-                                    {
-                                        log::info!("Status bar switched theme to '{theme_name}'");
-                                        self.config.theme = new_theme;
-                                        self.terminal.mark_all_dirty();
-                                        win.request_redraw();
-                                    }
-                                    return;
-                                }
-                                crate::status_bar::StatusBarAction::CloseThemeMenu => {
-                                    if self.theme_menu_open {
-                                        self.theme_menu_open = false;
-                                        win.request_redraw();
-                                        return;
-                                    }
-                                }
                                 crate::status_bar::StatusBarAction::None => {}
                             }
-
-                            if self.cursor_pixel_pos.1 as f32 >= bar_y {
-                                return;
-                            }
-                        } else if self.theme_menu_open {
-                            return;
                         }
+                        return;
                     }
                 }
 
@@ -2649,7 +2767,7 @@ mod tests {
         assert_eq!(labels[0].text, "NORMAL");
         assert!(labels[1].text.starts_with("⌁"));
         assert!(labels[2].text.contains("Ln 1, Col 1"));
-        assert!(labels[3].text.contains("default-dark"));
+        assert_eq!(labels[3].text, "⚙ Settings");
         assert_eq!(labels[4].text, "1/1");
 
         app.git_branch = Some("main".to_string());
