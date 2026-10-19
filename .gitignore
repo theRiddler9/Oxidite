@@ -13,3 +13,4 @@ Thumbs.db
 *.code-workspace
 .cargo-cache/
 .agents/
+code-review.md

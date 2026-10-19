@@ -693,6 +693,32 @@ pub fn stage_all(cwd: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Unstages all files with `git restore --staged .` or `git reset HEAD`.
+pub fn unstage_all(cwd: &Path) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .args(["restore", "--staged", "."])
+        .current_dir(cwd)
+        .status();
+
+    if let Ok(st) = status
+        && st.success()
+    {
+        return Ok(());
+    }
+
+    // Fallback to git reset for older git versions
+    let fallback = Command::new("git")
+        .args(["reset", "HEAD"])
+        .current_dir(cwd)
+        .status()?;
+
+    if fallback.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("git unstage all failed"))
+    }
+}
+
 /// Commits staged files with `git commit -m <message>`.
 pub fn commit_changes(cwd: &Path, message: &str) -> std::io::Result<()> {
     let status = Command::new("git")
