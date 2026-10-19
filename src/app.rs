@@ -939,15 +939,11 @@ impl App {
                 glyphon::Color::rgb(140, 145, 160)
             };
 
-            // Tab title with agent badge icon
-            let display_title = if agent != crate::tab::AgentKind::Shell {
-                format!("{agent_icon} {agent_name}")
-            } else if tab.title.starts_with("Tab ") {
-                format!("⌁ {}", tab.title)
-            } else if !tab.title.starts_with('⌁') && !tab.title.starts_with('❯') {
-                format!("❯ {}", tab.title)
-            } else {
+            // Tab title with agent badge
+            let display_title = if agent == crate::tab::AgentKind::Shell {
                 tab.title.clone()
+            } else {
+                format!("{agent_icon} {agent_name}")
             };
 
             let max_text_width = (layout.width - crate::tab::TAB_BUTTON_SIZE - 12.0).max(10.0);
@@ -1053,9 +1049,20 @@ impl App {
 
     /// Builds formatted text labels for the bottom status bar.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn build_status_bar_labels(&self, window_width: f32, window_height: f32) -> Vec<TabLabel> {
+        let status_bar_px = if self.config.status_bar {
+            (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round()
+        } else {
+            0.0
+        };
         let state = self.build_status_bar_state();
-        crate::status_bar::build_status_bar_labels(&state, window_width, window_height)
+        crate::status_bar::build_status_bar_labels(
+            &state,
+            window_width,
+            window_height,
+            status_bar_px,
+        )
     }
 
     /// Creates and switches to a new tab, spawning a shell PTY if proxy is available.
@@ -1222,19 +1229,26 @@ impl App {
             .is_some_and(|t| t.id == tab_id);
 
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            // Respond to DSR (Device Status Report: \x1b[6n) if requested on Unix
-            #[cfg(not(windows))]
-            if bytes.windows(4).any(|w| w == b"\x1b[6n")
-                && let Some(ref writer) = tab.pty_writer
-                && let Ok(mut guard) = writer.lock()
-            {
-                let row = tab.terminal.grid.cursor.row + 1;
-                let col = tab.terminal.grid.cursor.col + 1;
-                let response = format!("\x1b[{row};{col}R");
-                let _ = guard.write(response.as_bytes());
+            // Process bytes in order: if bytes contain DSR (\x1b[6n), advance parser
+            // up to the query before responding with the accurate cursor coordinates.
+            let mut remaining = bytes;
+            while let Some(pos) = remaining.windows(4).position(|w| w == b"\x1b[6n") {
+                if pos > 0 {
+                    tab.advance_parser(&remaining[..pos]);
+                }
+                if let Some(ref writer) = tab.pty_writer
+                    && let Ok(mut guard) = writer.lock()
+                {
+                    let row = tab.terminal.grid.cursor.row + 1;
+                    let col = tab.terminal.grid.cursor.col + 1;
+                    let response = format!("\x1b[{row};{col}R");
+                    let _ = guard.write(response.as_bytes());
+                }
+                remaining = &remaining[pos + 4..];
             }
-
-            tab.advance_parser(bytes);
+            if !remaining.is_empty() {
+                tab.advance_parser(remaining);
+            }
 
             if is_active {
                 self.terminal = tab.terminal.clone();
@@ -1429,9 +1443,12 @@ impl App {
         // 6. Status bar quads (if enabled)
         if self.config.status_bar {
             let sb_state = self.build_status_bar_state();
+            let status_bar_px =
+                (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round();
             quad_vertices.extend_from_slice(&crate::status_bar::assemble_status_bar_quads(
                 screen_size[0],
                 screen_size[1],
+                status_bar_px,
                 accent_color,
                 &sb_state,
             ));
@@ -1702,6 +1719,7 @@ impl ApplicationHandler<AppEvent> for App {
                         Err(err) => eprintln!("Failed to initialize GPU context: {err}"),
                     }
                     self.window = Some(win.clone());
+                    self.handle_resize(win.inner_size());
                     self.update_scale();
                     win.request_redraw();
                 }
@@ -1895,6 +1913,9 @@ impl ApplicationHandler<AppEvent> for App {
                                     crate::theme::Theme::preset_by_name(&theme_name)
                                 {
                                     self.config.theme = new_theme;
+                                    for tab in &mut self.tabs {
+                                        tab.terminal.mark_all_dirty();
+                                    }
                                     self.terminal.mark_all_dirty();
                                     win.request_redraw();
                                 }
@@ -1912,11 +1933,23 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::settings_modal::SettingsAction::SetCursorShape(shape) => {
-                                self.terminal.grid.cursor.shape = shape.to_cursor_shape();
+                                let s = shape.to_cursor_shape();
+                                for tab in &mut self.tabs {
+                                    tab.terminal.grid.cursor.shape = s;
+                                    tab.terminal.mark_all_dirty();
+                                }
+                                self.terminal.grid.cursor.shape = s;
+                                self.terminal.mark_all_dirty();
                                 win.request_redraw();
                             }
                             crate::settings_modal::SettingsAction::ToggleCursorBlink => {
-                                self.terminal.cursor_blinking = !self.terminal.cursor_blinking;
+                                let blinking = !self.terminal.cursor_blinking;
+                                for tab in &mut self.tabs {
+                                    tab.terminal.cursor_blinking = blinking;
+                                    tab.terminal.mark_all_dirty();
+                                }
+                                self.terminal.cursor_blinking = blinking;
+                                self.terminal.mark_all_dirty();
                                 win.request_redraw();
                             }
                             crate::settings_modal::SettingsAction::SetPadding(choice) => {
@@ -2005,6 +2038,39 @@ impl ApplicationHandler<AppEvent> for App {
                         win.request_redraw();
                     }
                     return;
+                }
+
+                // Check bottom status bar clicks before pane checks
+                if self.config.status_bar {
+                    let win_w = win.inner_size().width as f32;
+                    let win_h = win.inner_size().height as f32;
+                    let status_bar_px =
+                        (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round();
+                    let bar_y = win_h - status_bar_px;
+                    let state_sb = self.build_status_bar_state();
+
+                    if (self.cursor_pixel_pos.1 as f32) >= bar_y {
+                        if state == winit::event::ElementState::Pressed {
+                            let sb_action = crate::status_bar::hit_test_status_bar(
+                                self.cursor_pixel_pos.0 as f32,
+                                self.cursor_pixel_pos.1 as f32,
+                                win_w,
+                                win_h,
+                                status_bar_px,
+                                &state_sb,
+                            );
+
+                            match sb_action {
+                                crate::status_bar::StatusBarAction::OpenSettings => {
+                                    self.settings_open = !self.settings_open;
+                                    win.request_redraw();
+                                    return;
+                                }
+                                crate::status_bar::StatusBarAction::None => {}
+                            }
+                        }
+                        return;
+                    }
                 }
 
                 // Check sidebar click if sidebar is open
@@ -2153,7 +2219,16 @@ impl ApplicationHandler<AppEvent> for App {
                             crate::changes_panel::ChangesAction::StageAll => {
                                 let cwd = std::env::current_dir()
                                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                                let _ = crate::git::stage_all(&cwd);
+                                let any_unstaged = self
+                                    .changes_panel_state
+                                    .changed_files
+                                    .iter()
+                                    .any(|f| !f.staged);
+                                if any_unstaged {
+                                    let _ = crate::git::stage_all(&cwd);
+                                } else {
+                                    let _ = crate::git::unstage_all(&cwd);
+                                }
                                 self.refresh_git_status();
                                 win.request_redraw();
                             }
@@ -2240,6 +2315,19 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             crate::diff_view::DiffAction::CopyReviewSummary => {
                                 let md = self.diff_view_state.generate_review_markdown();
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let out_file = cwd.join("code-review.md");
+                                match std::fs::write(&out_file, &md) {
+                                    Ok(()) => log::info!(
+                                        "Exported code review markdown to {}",
+                                        out_file.display()
+                                    ),
+                                    Err(e) => log::warn!(
+                                        "Failed to write code review to {}: {e}",
+                                        out_file.display()
+                                    ),
+                                }
                                 if let Some(ref mut clip) = self.clipboard {
                                     let _ = clip.set_text(md);
                                     log::info!("Copied code review markdown to clipboard");
@@ -2350,37 +2438,6 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                     return;
-                }
-
-                // Check bottom status bar clicks
-                if self.config.status_bar {
-                    let win_w = win.inner_size().width as f32;
-                    let win_h = win.inner_size().height as f32;
-                    let bar_y = win_h
-                        - (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round();
-                    let state_sb = self.build_status_bar_state();
-
-                    if self.cursor_pixel_pos.1 as f32 >= bar_y {
-                        if state == winit::event::ElementState::Pressed {
-                            let sb_action = crate::status_bar::hit_test_status_bar(
-                                self.cursor_pixel_pos.0 as f32,
-                                self.cursor_pixel_pos.1 as f32,
-                                win_w,
-                                win_h,
-                                &state_sb,
-                            );
-
-                            match sb_action {
-                                crate::status_bar::StatusBarAction::OpenSettings => {
-                                    self.settings_open = !self.settings_open;
-                                    win.request_redraw();
-                                    return;
-                                }
-                                crate::status_bar::StatusBarAction::None => {}
-                            }
-                        }
-                        return;
-                    }
                 }
 
                 let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
@@ -2720,9 +2777,9 @@ mod tests {
         // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button + 2 chrome buttons = 8 labels
         assert_eq!(labels.len(), 8);
         assert_eq!(labels[0].text, "◨");
-        assert_eq!(labels[1].text, "⌁ Tab 1");
+        assert_eq!(labels[1].text, "Tab 1");
         assert_eq!(labels[2].text, "×");
-        assert_eq!(labels[3].text, "❯ Workspaces");
+        assert_eq!(labels[3].text, "Workspaces");
         assert_eq!(labels[4].text, "×");
         assert_eq!(labels[5].text, "+");
         assert_eq!(labels[6].text, "◫");
@@ -2731,7 +2788,7 @@ mod tests {
         // Verify agent detection badge formatting
         app.create_tab(Some("claude-code".to_string()));
         let agent_labels = app.build_tab_labels(800.0);
-        assert!(agent_labels.iter().any(|l| l.text == "✳ claude"));
+        assert!(agent_labels.iter().any(|l| l.text == "[claude] claude"));
     }
 
     #[test]
@@ -2765,15 +2822,13 @@ mod tests {
         let labels = app.build_status_bar_labels(800.0, 600.0);
         assert_eq!(labels.len(), 5);
         assert_eq!(labels[0].text, "NORMAL");
-        assert!(labels[1].text.starts_with("⌁"));
-        assert!(labels[2].text.contains("Ln 1, Col 1"));
-        assert_eq!(labels[3].text, "⚙ Settings");
+        assert_eq!(labels[3].text, "[ Settings ]");
         assert_eq!(labels[4].text, "1/1");
 
         app.git_branch = Some("main".to_string());
         let labels_with_git = app.build_status_bar_labels(800.0, 600.0);
         assert_eq!(labels_with_git.len(), 6);
-        assert_eq!(labels_with_git[2].text, " main");
+        assert_eq!(labels_with_git[2].text, "Branch: main");
     }
 
     #[test]
