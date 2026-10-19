@@ -6,6 +6,7 @@ pub mod app;
 pub mod changes_panel;
 pub mod config;
 pub mod diff_view;
+pub mod git;
 pub mod grid;
 pub mod handler;
 pub mod input;

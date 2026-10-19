@@ -100,24 +100,14 @@ impl Default for SidebarState {
             git_status: Some("modified".to_string()),
             tab_titles: vec!["Tab 1".to_string()],
             active_tab_index: 0,
-            workspaces: vec![
-                WorkspaceEntry {
-                    name: "Oxidite".to_string(),
-                    branch: "main".to_string(),
-                    sessions_count: 1,
-                    modified_count: 3,
-                    diff_stat: Some((441, 440)),
-                    is_active: true,
-                },
-                WorkspaceEntry {
-                    name: "ExamCooker-2024".to_string(),
-                    branch: "feat/sw".to_string(),
-                    sessions_count: 2,
-                    modified_count: 1,
-                    diff_stat: Some((2, 1)),
-                    is_active: false,
-                },
-            ],
+            workspaces: vec![WorkspaceEntry {
+                name: "Oxidite (Rust)".to_string(),
+                branch: "main".to_string(),
+                sessions_count: 1,
+                modified_count: 2,
+                diff_stat: Some((171, 1)),
+                is_active: true,
+            }],
             chats: vec![
                 ChatEntry {
                     title: "Implement pitch black UI".to_string(),

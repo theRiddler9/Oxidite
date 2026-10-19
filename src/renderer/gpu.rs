@@ -91,12 +91,20 @@ impl GpuContext {
             }
         };
 
+        let info = adapter.get_info();
+        log::info!(
+            "Initialized GPU adapter: '{}' ({:?}, {:?})",
+            info.name,
+            info.device_type,
+            info.backend
+        );
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("oxidite-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
                 ..Default::default()
             })
             .await?;
@@ -109,7 +117,9 @@ impl GpuContext {
             .ok_or(GpuError::NoSurfaceConfig)?;
 
         let caps = surface.get_capabilities(&adapter);
-        if caps.present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+        if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            config.present_mode = wgpu::PresentMode::Mailbox;
+        } else if caps.present_modes.contains(&wgpu::PresentMode::AutoVsync) {
             config.present_mode = wgpu::PresentMode::AutoVsync;
         } else if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
             config.present_mode = wgpu::PresentMode::Fifo;

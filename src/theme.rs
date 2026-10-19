@@ -476,11 +476,175 @@ impl Theme {
         }
     }
 
+    /// Built-in Bright White daylight preset theme.
+    #[must_use]
+    pub fn bright_white() -> Self {
+        Self {
+            name: "bright-white".to_string(),
+            foreground: Rgb::new(0x18, 0x1a, 0x20),
+            background: Rgb::new(0xff, 0xff, 0xff),
+            cursor: Rgb::new(0x0f, 0x17, 0x2a),
+            selection_bg: Rgb::new(0xbf, 0xdb, 0xfe),
+            ansi: [
+                Rgb::new(0x0f, 0x17, 0x2a), // 0 black
+                Rgb::new(0xef, 0x44, 0x44), // 1 red
+                Rgb::new(0x10, 0xb9, 0x81), // 2 green
+                Rgb::new(0xf5, 0x9e, 0x0b), // 3 yellow
+                Rgb::new(0x3b, 0x82, 0xf6), // 4 blue
+                Rgb::new(0x8b, 0x5c, 0xf6), // 5 magenta
+                Rgb::new(0x06, 0xb6, 0xd4), // 6 cyan
+                Rgb::new(0x47, 0x55, 0x69), // 7 white
+                Rgb::new(0x64, 0x74, 0x8b), // 8 bright black
+                Rgb::new(0xdc, 0x26, 0x26), // 9 bright red
+                Rgb::new(0x05, 0x96, 0x69), // 10 bright green
+                Rgb::new(0xd9, 0x77, 0x06), // 11 bright yellow
+                Rgb::new(0x25, 0x63, 0xeb), // 12 bright blue
+                Rgb::new(0x7c, 0x3a, 0xed), // 13 bright magenta
+                Rgb::new(0x08, 0x91, 0xb2), // 14 bright cyan
+                Rgb::new(0x1e, 0x29, 0x3b), // 15 bright dark
+            ],
+        }
+    }
+
+    /// Built-in Vampiric gothic crimson-and-pitch-black preset theme.
+    #[must_use]
+    pub fn vampiric() -> Self {
+        Self {
+            name: "vampiric".to_string(),
+            foreground: Rgb::new(0xf1, 0xd2, 0xd8),
+            background: Rgb::new(0x08, 0x02, 0x04),
+            cursor: Rgb::new(0xff, 0x2a, 0x55),
+            selection_bg: Rgb::new(0x4a, 0x0e, 0x1c),
+            ansi: [
+                Rgb::new(0x18, 0x06, 0x0a), // 0 black
+                Rgb::new(0xff, 0x2a, 0x4b), // 1 crimson red
+                Rgb::new(0x10, 0xb9, 0x81), // 2 green
+                Rgb::new(0xf5, 0x9e, 0x0b), // 3 yellow
+                Rgb::new(0xa8, 0x55, 0xf7), // 4 purple
+                Rgb::new(0xec, 0x48, 0x99), // 5 blood magenta
+                Rgb::new(0x06, 0xb6, 0xd4), // 6 cyan
+                Rgb::new(0xf1, 0xd2, 0xd8), // 7 pale bone white
+                Rgb::new(0x52, 0x1a, 0x24), // 8 bright black
+                Rgb::new(0xff, 0x55, 0x77), // 9 bright red
+                Rgb::new(0x34, 0xd3, 0x99), // 10 bright green
+                Rgb::new(0xfb, 0xbf, 0x24), // 11 bright yellow
+                Rgb::new(0xc0, 0x84, 0xfc), // 12 bright purple
+                Rgb::new(0xf4, 0x72, 0xb6), // 13 bright magenta
+                Rgb::new(0x22, 0xd3, 0xee), // 14 bright cyan
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Graphite monochromatic slate preset theme.
+    #[must_use]
+    pub fn graphite() -> Self {
+        Self {
+            name: "graphite".to_string(),
+            foreground: Rgb::new(0xd4, 0xd8, 0xe2),
+            background: Rgb::new(0x12, 0x13, 0x16),
+            cursor: Rgb::new(0x94, 0xa3, 0xb8),
+            selection_bg: Rgb::new(0x27, 0x2a, 0x32),
+            ansi: [
+                Rgb::new(0x1c, 0x1e, 0x24), // 0 black
+                Rgb::new(0xf8, 0x71, 0x71), // 1 red
+                Rgb::new(0x4a, 0xde, 0x80), // 2 green
+                Rgb::new(0xfb, 0xbf, 0x24), // 3 yellow
+                Rgb::new(0x60, 0xa5, 0xfa), // 4 blue
+                Rgb::new(0xc0, 0x84, 0xfc), // 5 magenta
+                Rgb::new(0x38, 0xbd, 0xf8), // 6 cyan
+                Rgb::new(0xe2, 0xe8, 0xf0), // 7 white
+                Rgb::new(0x47, 0x55, 0x69), // 8 bright black
+                Rgb::new(0xef, 0x44, 0x44), // 9 bright red
+                Rgb::new(0x22, 0xc5, 0x5e), // 10 bright green
+                Rgb::new(0xf5, 0x9e, 0x0b), // 11 bright yellow
+                Rgb::new(0x3b, 0x82, 0xf6), // 12 bright blue
+                Rgb::new(0xa8, 0x55, 0xf7), // 13 bright magenta
+                Rgb::new(0x06, 0xb6, 0xd4), // 14 bright cyan
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Sunset twilight neon dusk preset theme.
+    #[must_use]
+    pub fn sunset() -> Self {
+        Self {
+            name: "sunset".to_string(),
+            foreground: Rgb::new(0xf8, 0xed, 0xf2),
+            background: Rgb::new(0x0e, 0x08, 0x18),
+            cursor: Rgb::new(0xff, 0x7b, 0x00),
+            selection_bg: Rgb::new(0x38, 0x15, 0x3d),
+            ansi: [
+                Rgb::new(0x1a, 0x10, 0x2a), // 0 black
+                Rgb::new(0xff, 0x33, 0x66), // 1 red
+                Rgb::new(0x10, 0xb9, 0x81), // 2 green
+                Rgb::new(0xff, 0x9e, 0x3b), // 3 sunset orange
+                Rgb::new(0x81, 0x8c, 0xf8), // 4 indigo
+                Rgb::new(0xf4, 0x3f, 0x5e), // 5 rose
+                Rgb::new(0xa8, 0x55, 0xf7), // 6 purple
+                Rgb::new(0xf1, 0xf5, 0xf9), // 7 white
+                Rgb::new(0x4c, 0x33, 0x66), // 8 bright black
+                Rgb::new(0xff, 0x55, 0x88), // 9 bright red
+                Rgb::new(0x34, 0xd3, 0x99), // 10 bright green
+                Rgb::new(0xff, 0xb7, 0x4d), // 11 bright orange
+                Rgb::new(0xa5, 0xb4, 0xfc), // 12 bright indigo
+                Rgb::new(0xfb, 0x71, 0x85), // 13 bright rose
+                Rgb::new(0xc0, 0x84, 0xfc), // 14 bright purple
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Cyber Red gaming chassis preset theme.
+    #[must_use]
+    pub fn cyber_red() -> Self {
+        Self {
+            name: "cyber-red".to_string(),
+            foreground: Rgb::new(0xff, 0xeb, 0xee),
+            background: Rgb::new(0x0a, 0x04, 0x04),
+            cursor: Rgb::new(0xff, 0x1f, 0x3d),
+            selection_bg: Rgb::new(0x42, 0x0c, 0x0c),
+            ansi: [
+                Rgb::new(0x1a, 0x08, 0x08), // 0 black
+                Rgb::new(0xff, 0x1f, 0x3d), // 1 red
+                Rgb::new(0x10, 0xb9, 0x81), // 2 green
+                Rgb::new(0xff, 0xa0, 0x00), // 3 yellow
+                Rgb::new(0x3b, 0x82, 0xf6), // 4 blue
+                Rgb::new(0xd9, 0x46, 0xef), // 5 magenta
+                Rgb::new(0x06, 0xb6, 0xd4), // 6 cyan
+                Rgb::new(0xee, 0xd8, 0xd8), // 7 white
+                Rgb::new(0x5c, 0x1e, 0x1e), // 8 bright black
+                Rgb::new(0xff, 0x4d, 0x66), // 9 bright red
+                Rgb::new(0x34, 0xd3, 0x99), // 10 bright green
+                Rgb::new(0xff, 0xb7, 0x4d), // 11 bright yellow
+                Rgb::new(0x60, 0xa5, 0xfa), // 12 bright blue
+                Rgb::new(0xf4, 0x72, 0xb6), // 13 bright magenta
+                Rgb::new(0x22, 0xd3, 0xee), // 14 bright cyan
+                Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+            ],
+        }
+    }
+
+    /// Built-in Pitch Black retro phosphor preset theme.
+    #[must_use]
+    pub fn pitch_black() -> Self {
+        let mut t = Self::default_dark();
+        t.name = "pitch-black".to_string();
+        t
+    }
+
     /// Returns a list of all built-in preset theme names.
     #[must_use]
     pub fn builtin_presets() -> &'static [&'static str] {
         &[
             "default-dark",
+            "pitch-black",
+            "bright-white",
+            "vampiric",
+            "graphite",
+            "sunset",
+            "cyber-red",
             "dracula",
             "solarized-dark",
             "solarized-light",
@@ -495,6 +659,12 @@ impl Theme {
     pub fn preset_by_name(name: &str) -> Option<Self> {
         match name {
             "default-dark" => Some(Self::default_dark()),
+            "pitch-black" => Some(Self::pitch_black()),
+            "bright-white" => Some(Self::bright_white()),
+            "vampiric" => Some(Self::vampiric()),
+            "graphite" => Some(Self::graphite()),
+            "sunset" => Some(Self::sunset()),
+            "cyber-red" => Some(Self::cyber_red()),
             "dracula" => Some(Self::dracula()),
             "solarized-dark" => Some(Self::solarized_dark()),
             "solarized-light" => Some(Self::solarized_light()),
@@ -715,7 +885,7 @@ ansi = [
     #[test]
     fn all_builtin_presets_are_valid_and_resolvable() {
         let presets = Theme::builtin_presets();
-        assert_eq!(presets.len(), 7);
+        assert_eq!(presets.len(), 13);
         for name in presets {
             let theme = Theme::preset_by_name(name).expect("preset should resolve");
             assert_eq!(theme.name, *name);
