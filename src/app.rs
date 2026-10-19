@@ -203,6 +203,8 @@ pub struct App {
     pub diff_view_open: bool,
     /// State representation for the side-by-side diff view.
     pub diff_view_state: crate::diff_view::DiffViewState,
+    /// Whether the theme dropdown menu in the status bar ribbon is open.
+    pub theme_menu_open: bool,
 }
 
 impl App {
@@ -218,6 +220,7 @@ impl App {
     pub const VISUAL_BELL_DURATION: Duration = Duration::from_millis(100);
 
     /// Creates a new `App` instance with the given event loop proxy, terminal, and optional PTY writer.
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         proxy: Option<EventLoopProxy<AppEvent>>,
         terminal: Terminal,
@@ -244,17 +247,79 @@ impl App {
         let next_tab_id = 1;
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let workspace_name = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace")
-            .to_string();
-        let git_branch = crate::sidebar::detect_git_branch(&cwd);
+        let proj_info = crate::git::detect_project_type(&cwd);
+        let workspace_name = proj_info.name.clone();
+        let git_branch = crate::git::detect_git_branch(&cwd);
+        let changed_files = crate::git::query_git_status(&cwd);
+        let total_adds: usize = changed_files.iter().map(|f| f.additions).sum();
+        let total_dels: usize = changed_files.iter().map(|f| f.deletions).sum();
+
         let sidebar_open = true;
         let sidebar_state = crate::sidebar::SidebarState {
             workspace_name: workspace_name.clone(),
             git_branch: git_branch.clone(),
-            ..crate::sidebar::SidebarState::default()
+            git_status: Some(if changed_files.is_empty() {
+                "clean".to_string()
+            } else {
+                "modified".to_string()
+            }),
+            tab_titles: vec!["Tab 1".to_string()],
+            active_tab_index: 0,
+            workspaces: vec![crate::sidebar::WorkspaceEntry {
+                name: format!("{} ({})", proj_info.name, proj_info.kind),
+                branch: git_branch.clone().unwrap_or_else(|| "main".to_string()),
+                sessions_count: 1,
+                modified_count: changed_files.len(),
+                diff_stat: Some((total_adds, total_dels)),
+                is_active: true,
+            }],
+            chats: vec![
+                crate::sidebar::ChatEntry {
+                    title: "Terminal Session 1".to_string(),
+                    status: crate::sidebar::ChatStatus::Idle,
+                    model: "Local Shell".to_string(),
+                },
+                crate::sidebar::ChatEntry {
+                    title: "AI Review Engine".to_string(),
+                    status: crate::sidebar::ChatStatus::Done,
+                    model: "Antigravity".to_string(),
+                },
+            ],
+        };
+
+        let selected_file_index = if changed_files.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        let changes_panel_state = crate::changes_panel::ChangesPanelState {
+            active_tab: crate::changes_panel::ChangesTab::Changes,
+            changed_files: changed_files.clone(),
+            selected_file_index,
+            commit_message: "Commit Tracked".to_string(),
+            git_branch: git_branch.clone().unwrap_or_else(|| "main".to_string()),
+        };
+
+        let diff_view_state = if let Some(first_file) = changed_files.first() {
+            let rel_path = if first_file.path_info == "." {
+                first_file.filename.clone()
+            } else {
+                format!(
+                    "{}/{}",
+                    first_file.path_info.trim_end_matches('/'),
+                    first_file.filename
+                )
+            };
+            let (fname, pinfo, hunks) = crate::git::query_file_diff(&cwd, &rel_path);
+            crate::diff_view::DiffViewState {
+                file_name: fname,
+                path_info: pinfo,
+                hunks,
+                scroll_offset: 0,
+                staged: first_file.staged,
+            }
+        } else {
+            crate::diff_view::DiffViewState::default()
         };
 
         Self {
@@ -292,9 +357,10 @@ impl App {
             git_branch,
             sidebar_state,
             changes_panel_open: true,
-            changes_panel_state: crate::changes_panel::ChangesPanelState::default(),
+            changes_panel_state,
             diff_view_open: true,
-            diff_view_state: crate::diff_view::DiffViewState::default(),
+            diff_view_state,
+            theme_menu_open: false,
         }
     }
 
@@ -679,6 +745,7 @@ impl App {
             return Vec::new();
         }
         let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(count, window_width);
+        let (split_btn, max_btn) = crate::tab::compute_chrome_buttons(window_width);
         let mut labels = Vec::new();
 
         // Sidebar toggle button label [◨]
@@ -694,14 +761,29 @@ impl App {
         for (idx, layout) in layouts.iter().enumerate() {
             let is_active = idx == self.active_tab_index;
             let tab = &self.tabs[idx];
+            let agent = tab.detect_agent();
+            let (agent_icon, agent_name) = agent.display_badge();
+
             let color = if is_active {
-                glyphon::Color::rgb(240, 242, 250)
+                if agent == crate::tab::AgentKind::Shell {
+                    glyphon::Color::rgb(240, 242, 250)
+                } else {
+                    let [r, g, b] = agent.brand_color();
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    glyphon::Color::rgb(
+                        (r * 255.0).round() as u8,
+                        (g * 255.0).round() as u8,
+                        (b * 255.0).round() as u8,
+                    )
+                }
             } else {
                 glyphon::Color::rgb(140, 145, 160)
             };
 
-            // Tab title with retro badge prefix
-            let display_title = if tab.title.starts_with("Tab ") {
+            // Tab title with agent badge icon
+            let display_title = if agent != crate::tab::AgentKind::Shell {
+                format!("{agent_icon} {agent_name}")
+            } else if tab.title.starts_with("Tab ") {
                 format!("⌁ {}", tab.title)
             } else if !tab.title.starts_with('⌁') && !tab.title.starts_with('❯') {
                 format!("❯ {}", tab.title)
@@ -740,6 +822,26 @@ impl App {
             x: plus_btn.0 + 5.0,
             y: plus_btn.1 + 1.0,
             color: glyphon::Color::rgb(190, 195, 210),
+            bold: true,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
+
+        // Split pane button [◫]
+        labels.push(TabLabel {
+            text: "◫".to_string(),
+            x: split_btn.0 + 3.0,
+            y: split_btn.1 + 1.0,
+            color: glyphon::Color::rgb(180, 185, 200),
+            bold: true,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
+
+        // Maximize button [⤢]
+        labels.push(TabLabel {
+            text: "⤢".to_string(),
+            x: max_btn.0 + 3.0,
+            y: max_btn.1 + 1.0,
+            color: glyphon::Color::rgb(180, 185, 200),
             bold: true,
             max_width: crate::tab::TAB_BUTTON_SIZE,
         });
@@ -786,6 +888,7 @@ impl App {
             tab_current,
             tab_total,
             git_branch: self.git_branch.clone(),
+            theme_menu_open: self.theme_menu_open,
         };
 
         crate::status_bar::build_status_bar_labels(&state, window_width, window_height)
@@ -866,6 +969,47 @@ impl App {
             win.request_redraw();
         }
         self.terminal.mark_all_dirty();
+    }
+
+    /// Refreshes git status, changes panel list, and diff view from repository.
+    pub fn refresh_git_status(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let proj_info = crate::git::detect_project_type(&cwd);
+        self.git_branch = crate::git::detect_git_branch(&cwd);
+        let changed_files = crate::git::query_git_status(&cwd);
+        let total_adds: usize = changed_files.iter().map(|f| f.additions).sum();
+        let total_dels: usize = changed_files.iter().map(|f| f.deletions).sum();
+
+        self.changes_panel_state
+            .changed_files
+            .clone_from(&changed_files);
+        if let Some(ref branch) = self.git_branch {
+            self.changes_panel_state.git_branch.clone_from(branch);
+        }
+
+        if let Some(ws) = self.sidebar_state.workspaces.first_mut() {
+            ws.name = format!("{} ({})", proj_info.name, proj_info.kind);
+            ws.modified_count = changed_files.len();
+            ws.diff_stat = Some((total_adds, total_dels));
+            if let Some(ref branch) = self.git_branch {
+                ws.branch.clone_from(branch);
+            }
+        }
+
+        if let Some(idx) = self.changes_panel_state.selected_file_index
+            && let Some(file) = changed_files.get(idx)
+        {
+            let rel_path = if file.path_info == "." {
+                file.filename.clone()
+            } else {
+                format!("{}/{}", file.path_info.trim_end_matches('/'), file.filename)
+            };
+            let (fname, pinfo, hunks) = crate::git::query_file_diff(&cwd, &rel_path);
+            self.diff_view_state.file_name = fname;
+            self.diff_view_state.path_info = pinfo;
+            self.diff_view_state.hunks = hunks;
+            self.diff_view_state.staged = file.staged;
+        }
     }
 
     /// Closes the tab at `index`. If it's the only tab, it remains open.
@@ -1134,6 +1278,20 @@ impl App {
                 self.terminal.modes.alternate_screen,
                 accent_color,
             ));
+
+            if self.theme_menu_open {
+                let state = crate::status_bar::StatusBarState {
+                    theme_name: self.config.theme.name.clone(),
+                    theme_menu_open: true,
+                    ..crate::status_bar::StatusBarState::default()
+                };
+                quad_vertices.extend_from_slice(&crate::status_bar::assemble_theme_menu_quads(
+                    screen_size[0],
+                    screen_size[1],
+                    accent_color,
+                    &state,
+                ));
+            }
         }
 
         // 7. Scrollbar indicator (rendered when viewing history / display_offset > 0)
@@ -1543,6 +1701,21 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.handle_resize(win.inner_size());
                                 self.terminal.mark_all_dirty();
                             }
+                            TabBarAction::ToggleSplit => {
+                                self.diff_view_open = !self.diff_view_open;
+                                self.handle_resize(win.inner_size());
+                                self.terminal.mark_all_dirty();
+                            }
+                            TabBarAction::ToggleMaximize => {
+                                let is_fullscreen = win.fullscreen().is_some();
+                                if is_fullscreen {
+                                    win.set_fullscreen(None);
+                                } else {
+                                    win.set_fullscreen(Some(
+                                        winit::window::Fullscreen::Borderless(None),
+                                    ));
+                                }
+                            }
                             TabBarAction::None => {}
                         }
                         win.request_redraw();
@@ -1649,9 +1822,24 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.changes_panel_state.selected_file_index = Some(idx);
                                 if let Some(file) = self.changes_panel_state.changed_files.get(idx)
                                 {
-                                    self.diff_view_state.file_name = file.filename.clone();
-                                    self.diff_view_state.path_info = file.path_info.clone();
+                                    let rel_path = if file.path_info == "." {
+                                        file.filename.clone()
+                                    } else {
+                                        format!(
+                                            "{}/{}",
+                                            file.path_info.trim_end_matches('/'),
+                                            file.filename
+                                        )
+                                    };
+                                    let cwd = std::env::current_dir()
+                                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                    let (fname, pinfo, hunks) =
+                                        crate::git::query_file_diff(&cwd, &rel_path);
+                                    self.diff_view_state.file_name = fname;
+                                    self.diff_view_state.path_info = pinfo;
+                                    self.diff_view_state.hunks = hunks;
                                     self.diff_view_state.staged = file.staged;
+                                    self.diff_view_state.scroll_offset = 0;
                                     self.diff_view_open = true;
                                     self.handle_resize(win.inner_size());
                                     self.terminal.mark_all_dirty();
@@ -1659,21 +1847,46 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::ToggleStage(idx) => {
-                                if let Some(file) =
-                                    self.changes_panel_state.changed_files.get_mut(idx)
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                if let Some(file) = self.changes_panel_state.changed_files.get(idx)
                                 {
-                                    file.staged = !file.staged;
+                                    let rel_path = if file.path_info == "." {
+                                        file.filename.clone()
+                                    } else {
+                                        format!(
+                                            "{}/{}",
+                                            file.path_info.trim_end_matches('/'),
+                                            file.filename
+                                        )
+                                    };
+                                    if file.staged {
+                                        let _ = crate::git::unstage_file(&cwd, &rel_path);
+                                    } else {
+                                        let _ = crate::git::stage_file(&cwd, &rel_path);
+                                    }
+                                    self.refresh_git_status();
                                 }
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::StageAll => {
-                                for file in &mut self.changes_panel_state.changed_files {
-                                    file.staged = true;
-                                }
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let _ = crate::git::stage_all(&cwd);
+                                self.refresh_git_status();
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::Commit => {
-                                log::info!("Commit action triggered");
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let msg =
+                                    if self.changes_panel_state.commit_message.trim().is_empty() {
+                                        "Commit Tracked"
+                                    } else {
+                                        &self.changes_panel_state.commit_message
+                                    };
+                                let _ = crate::git::commit_changes(&cwd, msg);
+                                self.refresh_git_status();
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::Fetch => {
@@ -1724,6 +1937,23 @@ impl ApplicationHandler<AppEvent> for App {
                         match action {
                             crate::diff_view::DiffAction::ToggleStage => {
                                 self.diff_view_state.staged = !self.diff_view_state.staged;
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let rel_path = if self.diff_view_state.path_info == "." {
+                                    self.diff_view_state.file_name.clone()
+                                } else {
+                                    format!(
+                                        "{}{}",
+                                        self.diff_view_state.path_info,
+                                        self.diff_view_state.file_name
+                                    )
+                                };
+                                if self.diff_view_state.staged {
+                                    let _ = crate::git::stage_file(&cwd, &rel_path);
+                                } else {
+                                    let _ = crate::git::unstage_file(&cwd, &rel_path);
+                                }
+                                self.refresh_git_status();
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::Close => {
@@ -1744,6 +1974,65 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                     return;
+                }
+
+                // Check bottom status bar and theme popover clicks
+                if self.config.status_bar {
+                    let win_w = win.inner_size().width as f32;
+                    let win_h = win.inner_size().height as f32;
+                    let bar_y = win_h
+                        - (crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor as f32).round();
+                    let state_sb = crate::status_bar::StatusBarState {
+                        theme_name: self.config.theme.name.clone(),
+                        theme_menu_open: self.theme_menu_open,
+                        ..crate::status_bar::StatusBarState::default()
+                    };
+
+                    if self.theme_menu_open || self.cursor_pixel_pos.1 as f32 >= bar_y {
+                        if state == winit::event::ElementState::Pressed {
+                            let sb_action = crate::status_bar::hit_test_status_bar(
+                                self.cursor_pixel_pos.0 as f32,
+                                self.cursor_pixel_pos.1 as f32,
+                                win_w,
+                                win_h,
+                                &state_sb,
+                            );
+
+                            match sb_action {
+                                crate::status_bar::StatusBarAction::ToggleThemeMenu => {
+                                    self.theme_menu_open = !self.theme_menu_open;
+                                    win.request_redraw();
+                                    return;
+                                }
+                                crate::status_bar::StatusBarAction::SelectTheme(theme_name) => {
+                                    self.theme_menu_open = false;
+                                    if let Some(new_theme) =
+                                        crate::theme::Theme::preset_by_name(&theme_name)
+                                    {
+                                        log::info!("Status bar switched theme to '{theme_name}'");
+                                        self.config.theme = new_theme;
+                                        self.terminal.mark_all_dirty();
+                                        win.request_redraw();
+                                    }
+                                    return;
+                                }
+                                crate::status_bar::StatusBarAction::CloseThemeMenu => {
+                                    if self.theme_menu_open {
+                                        self.theme_menu_open = false;
+                                        win.request_redraw();
+                                        return;
+                                    }
+                                }
+                                crate::status_bar::StatusBarAction::None => {}
+                            }
+
+                            if self.cursor_pixel_pos.1 as f32 >= bar_y {
+                                return;
+                            }
+                        } else if self.theme_menu_open {
+                            return;
+                        }
+                    }
                 }
 
                 let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
@@ -2080,14 +2369,21 @@ mod tests {
         app.create_tab(Some("Workspaces".to_string()));
 
         let labels = app.build_tab_labels(800.0);
-        // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button = 6 labels
-        assert_eq!(labels.len(), 6);
+        // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button + 2 chrome buttons = 8 labels
+        assert_eq!(labels.len(), 8);
         assert_eq!(labels[0].text, "◨");
         assert_eq!(labels[1].text, "⌁ Tab 1");
         assert_eq!(labels[2].text, "×");
         assert_eq!(labels[3].text, "❯ Workspaces");
         assert_eq!(labels[4].text, "×");
         assert_eq!(labels[5].text, "+");
+        assert_eq!(labels[6].text, "◫");
+        assert_eq!(labels[7].text, "⤢");
+
+        // Verify agent detection badge formatting
+        app.create_tab(Some("claude-code".to_string()));
+        let agent_labels = app.build_tab_labels(800.0);
+        assert!(agent_labels.iter().any(|l| l.text == "✳ claude"));
     }
 
     #[test]
