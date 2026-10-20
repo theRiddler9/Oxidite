@@ -215,6 +215,8 @@ pub struct App {
     pub dragging_splitter: DraggingSplitter,
     /// Splitter currently under the mouse cursor.
     pub hovered_splitter: DraggingSplitter,
+    /// Last detected current working directory of the active tab.
+    pub last_active_cwd: Option<std::path::PathBuf>,
 }
 
 /// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
@@ -336,8 +338,9 @@ impl App {
             history,
             selected_file_index,
             selected_commit_index: None,
-            commit_message: "Commit Tracked".to_string(),
-            git_branch: git_branch.clone().unwrap_or_else(|| "main".to_string()),
+            commit_message: String::new(),
+            commit_input_focused: false,
+            git_branch: git_branch.clone().unwrap_or_else(|| "--".to_string()),
         };
 
         let diff_view_state = if let Some(first_file) = changed_files.first() {
@@ -411,6 +414,7 @@ impl App {
             changes_panel_width: crate::changes_panel::CHANGES_PANEL_WIDTH,
             dragging_splitter: DraggingSplitter::None,
             hovered_splitter: DraggingSplitter::None,
+            last_active_cwd: Some(cwd),
         }
     }
 
@@ -539,6 +543,89 @@ impl App {
             }
         }
 
+        // If commit message input in the changes panel is focused, handle text editing
+        if self.changes_panel_open && self.changes_panel_state.commit_input_focused {
+            if key_ev.state == winit::event::ElementState::Pressed {
+                use winit::keyboard::{Key, NamedKey};
+                match &key_ev.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.changes_panel_state.commit_input_focused = false;
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        let cwd = self.active_cwd();
+                        let msg = if self.changes_panel_state.commit_message.trim().is_empty() {
+                            "Commit Tracked"
+                        } else {
+                            &self.changes_panel_state.commit_message
+                        };
+                        let _ = crate::git::commit_changes(&cwd, msg);
+                        self.changes_panel_state.commit_message.clear();
+                        self.changes_panel_state.commit_input_focused = false;
+                        self.refresh_git_status();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        self.changes_panel_state.commit_message.pop();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Character(c)
+                        if self.modifiers.control_key() && c.eq_ignore_ascii_case("v") =>
+                    {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(text) = clipboard.get_text()
+                        {
+                            let sanitized: String = text
+                                .chars()
+                                .filter(|ch| !ch.is_control() || *ch == ' ')
+                                .collect();
+                            self.changes_panel_state.commit_message.push_str(&sanitized);
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    Key::Character(c)
+                        if self.modifiers.control_key() && c.eq_ignore_ascii_case("g") =>
+                    {
+                        self.changes_panel_open = false;
+                        self.changes_panel_state.commit_input_focused = false;
+                        self.handle_resize(win.inner_size());
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    _ => {
+                        if !self.modifiers.control_key()
+                            && !self.modifiers.alt_key()
+                            && !self.modifiers.super_key()
+                        {
+                            if let Some(text) = &key_ev.text {
+                                for ch in text.chars() {
+                                    if !ch.is_control() {
+                                        self.changes_panel_state.commit_message.push(ch);
+                                    }
+                                }
+                                win.request_redraw();
+                                return;
+                            } else if let Key::Character(c) = &key_ev.logical_key {
+                                for ch in c.chars() {
+                                    if !ch.is_control() {
+                                        self.changes_panel_state.commit_message.push(ch);
+                                    }
+                                }
+                                win.request_redraw();
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Multi-tab keyboard shortcuts
         if key_ev.state == winit::event::ElementState::Pressed && self.modifiers.control_key() {
             use winit::keyboard::{Key, NamedKey};
@@ -576,6 +663,9 @@ impl App {
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("g") => {
                     self.changes_panel_open = !self.changes_panel_open;
+                    if self.changes_panel_open {
+                        self.refresh_git_status();
+                    }
                     self.handle_resize(win.inner_size());
                     self.terminal.mark_all_dirty();
                     win.request_redraw();
@@ -1135,6 +1225,7 @@ impl App {
         self.pty_exit_code = new_tab.pty_exit_code;
         self.title = new_tab.title.clone();
 
+        self.refresh_git_status();
         if let Some(ref win) = self.window {
             win.set_title(&self.title);
             win.request_redraw();
@@ -1142,9 +1233,26 @@ impl App {
         self.terminal.mark_all_dirty();
     }
 
+    /// Returns the detected current working directory of the active tab,
+    /// falling back to the process working directory if detection yields nothing.
+    #[must_use]
+    pub fn active_cwd(&self) -> std::path::PathBuf {
+        if let Some(tab) = self.tabs.get(self.active_tab_index)
+            && let Some(cwd) = tab.detect_cwd()
+        {
+            return cwd;
+        }
+        if let Some(ref cwd) = self.terminal.cwd
+            && cwd.is_dir()
+        {
+            return cwd.clone();
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
     /// Refreshes git status, changes panel list, and diff view from repository.
     pub fn refresh_git_status(&mut self) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cwd = self.active_cwd();
         let proj_info = crate::git::detect_project_type(&cwd);
         self.git_branch = crate::git::detect_git_branch(&cwd);
         let changed_files = crate::git::query_git_status(&cwd);
@@ -1155,17 +1263,14 @@ impl App {
             .changed_files
             .clone_from(&changed_files);
         self.changes_panel_state.history = crate::git::query_git_history(&cwd, 30);
-        if let Some(ref branch) = self.git_branch {
-            self.changes_panel_state.git_branch.clone_from(branch);
-        }
+        self.changes_panel_state.git_branch =
+            self.git_branch.clone().unwrap_or_else(|| "--".to_string());
 
         if let Some(ws) = self.sidebar_state.workspaces.first_mut() {
             ws.name = format!("{} ({})", proj_info.name, proj_info.kind);
             ws.modified_count = changed_files.len();
             ws.diff_stat = Some((total_adds, total_dels));
-            if let Some(ref branch) = self.git_branch {
-                ws.branch.clone_from(branch);
-            }
+            ws.branch = self.git_branch.clone().unwrap_or_else(|| "--".to_string());
         }
 
         if let Some(idx) = self.changes_panel_state.selected_file_index
@@ -1181,6 +1286,9 @@ impl App {
             self.diff_view_state.path_info = pinfo;
             self.diff_view_state.hunks = hunks;
             self.diff_view_state.staged = file.staged;
+        } else if changed_files.is_empty() {
+            self.changes_panel_state.selected_file_index = None;
+            self.diff_view_state = crate::diff_view::DiffViewState::default();
         }
     }
 
@@ -1228,6 +1336,7 @@ impl App {
             .get(self.active_tab_index)
             .is_some_and(|t| t.id == tab_id);
 
+        let mut cwd_changed = false;
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             // Process bytes in order: if bytes contain DSR (\x1b[6n), advance parser
             // up to the query before responding with the accurate cursor coordinates.
@@ -1252,6 +1361,11 @@ impl App {
 
             if is_active {
                 self.terminal = tab.terminal.clone();
+                let current_cwd = tab.detect_cwd();
+                if current_cwd.is_some() && current_cwd != self.last_active_cwd {
+                    self.last_active_cwd = current_cwd;
+                    cwd_changed = true;
+                }
                 if !tab.title.is_empty() && tab.title != self.title {
                     self.title = tab.title.clone();
                     if let Some(ref win) = self.window {
@@ -1275,6 +1389,10 @@ impl App {
             } else if let Some(ref win) = self.window {
                 win.request_redraw();
             }
+        }
+
+        if cwd_changed {
+            self.refresh_git_status();
         }
     }
 
@@ -2162,10 +2280,12 @@ impl ApplicationHandler<AppEvent> for App {
                         );
                         match action {
                             crate::changes_panel::ChangesAction::SwitchTab(tab) => {
+                                self.changes_panel_state.commit_input_focused = false;
                                 self.changes_panel_state.active_tab = tab;
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::SelectFile(idx) => {
+                                self.changes_panel_state.commit_input_focused = false;
                                 self.changes_panel_state.selected_file_index = Some(idx);
                                 if let Some(file) = self.changes_panel_state.changed_files.get(idx)
                                 {
@@ -2178,8 +2298,7 @@ impl ApplicationHandler<AppEvent> for App {
                                             file.filename
                                         )
                                     };
-                                    let cwd = std::env::current_dir()
-                                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                    let cwd = self.active_cwd();
                                     let (fname, pinfo, hunks) =
                                         crate::git::query_file_diff(&cwd, &rel_path);
                                     self.diff_view_state.file_name = fname;
@@ -2194,8 +2313,8 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::ToggleStage(idx) => {
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                self.changes_panel_state.commit_input_focused = false;
+                                let cwd = self.active_cwd();
                                 if let Some(file) = self.changes_panel_state.changed_files.get(idx)
                                 {
                                     let rel_path = if file.path_info == "." {
@@ -2217,8 +2336,8 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::StageAll => {
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                self.changes_panel_state.commit_input_focused = false;
+                                let cwd = self.active_cwd();
                                 let any_unstaged = self
                                     .changes_panel_state
                                     .changed_files
@@ -2233,8 +2352,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::Commit => {
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let cwd = self.active_cwd();
                                 let msg =
                                     if self.changes_panel_state.commit_message.trim().is_empty() {
                                         "Commit Tracked"
@@ -2242,18 +2360,20 @@ impl ApplicationHandler<AppEvent> for App {
                                         &self.changes_panel_state.commit_message
                                     };
                                 let _ = crate::git::commit_changes(&cwd, msg);
+                                self.changes_panel_state.commit_message.clear();
+                                self.changes_panel_state.commit_input_focused = false;
                                 self.refresh_git_status();
                                 win.request_redraw();
                             }
-                            crate::changes_panel::ChangesAction::Fetch => {
-                                log::info!("Git fetch triggered");
+                            crate::changes_panel::ChangesAction::FocusCommitInput => {
+                                self.changes_panel_state.commit_input_focused = true;
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::SelectCommit(idx) => {
+                                self.changes_panel_state.commit_input_focused = false;
                                 self.changes_panel_state.selected_commit_index = Some(idx);
                                 if let Some(commit) = self.changes_panel_state.history.get(idx) {
-                                    let cwd = std::env::current_dir()
-                                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                    let cwd = self.active_cwd();
                                     let (fname, pinfo, hunks) =
                                         crate::git::query_commit_diff(&cwd, &commit.hash);
                                     self.diff_view_state.file_name = fname;
@@ -2267,10 +2387,18 @@ impl ApplicationHandler<AppEvent> for App {
                                 }
                                 win.request_redraw();
                             }
-                            crate::changes_panel::ChangesAction::None => {}
+                            crate::changes_panel::ChangesAction::None => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                win.request_redraw();
+                            }
                         }
                     }
                     return;
+                } else if state == winit::event::ElementState::Pressed
+                    && self.changes_panel_state.commit_input_focused
+                {
+                    self.changes_panel_state.commit_input_focused = false;
+                    win.request_redraw();
                 }
 
                 // Check diff view click if diff view is open
@@ -2315,8 +2443,7 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             crate::diff_view::DiffAction::CopyReviewSummary => {
                                 let md = self.diff_view_state.generate_review_markdown();
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let cwd = self.active_cwd();
                                 let out_file = cwd.join("code-review.md");
                                 match std::fs::write(&out_file, &md) {
                                     Ok(()) => log::info!(
@@ -2356,8 +2483,7 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             crate::diff_view::DiffAction::ToggleStage => {
                                 self.diff_view_state.staged = !self.diff_view_state.staged;
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let cwd = self.active_cwd();
                                 let rel_path = if self.diff_view_state.path_info == "." {
                                     self.diff_view_state.file_name.clone()
                                 } else {
@@ -2382,8 +2508,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::OpenFile => {
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let cwd = self.active_cwd();
                                 let rel_path = if self.diff_view_state.path_info == "." {
                                     self.diff_view_state.file_name.clone()
                                 } else {
@@ -2419,8 +2544,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::Restore => {
-                                let cwd = std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let cwd = self.active_cwd();
                                 let rel_path = if self.diff_view_state.path_info == "." {
                                     self.diff_view_state.file_name.clone()
                                 } else {

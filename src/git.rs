@@ -719,14 +719,27 @@ pub fn unstage_all(cwd: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Commits staged files with `git commit -m <message>`.
+/// Commits staged files with `git commit -m <message>`, falling back to `git commit -a -m <message>`
+/// if no changes were explicitly staged but modified tracked files exist.
 pub fn commit_changes(cwd: &Path, message: &str) -> std::io::Result<()> {
     let status = Command::new("git")
         .args(["commit", "-m", message])
         .current_dir(cwd)
+        .status();
+
+    if let Ok(st) = status
+        && st.success()
+    {
+        return Ok(());
+    }
+
+    // Fallback: commit tracked modifications directly if nothing was staged
+    let status_all = Command::new("git")
+        .args(["commit", "-a", "-m", message])
+        .current_dir(cwd)
         .status()?;
 
-    if status.success() {
+    if status_all.success() {
         Ok(())
     } else {
         Err(std::io::Error::other("git commit failed"))
