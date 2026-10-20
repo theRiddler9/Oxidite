@@ -53,6 +53,8 @@ pub struct ChangesPanelState {
     pub selected_commit_index: Option<usize>,
     /// Pending commit message.
     pub commit_message: String,
+    /// Whether the commit message input box currently has user focus.
+    pub commit_input_focused: bool,
     /// Current git branch name.
     pub git_branch: String,
 }
@@ -93,8 +95,9 @@ impl Default for ChangesPanelState {
             ],
             selected_file_index: Some(0),
             selected_commit_index: Some(0),
-            commit_message: "Commit Tracked".to_string(),
-            git_branch: "main".to_string(),
+            commit_message: String::new(),
+            commit_input_focused: false,
+            git_branch: "--".to_string(),
         }
     }
 }
@@ -116,8 +119,8 @@ pub enum ChangesAction {
     StageAll,
     /// Commit staged changes.
     Commit,
-    /// Trigger git fetch.
-    Fetch,
+    /// Focus the commit message input field.
+    FocusCommitInput,
 }
 
 /// Builds quads for rendering the changes panel: pure pitch-black background, 1px left divider,
@@ -267,14 +270,68 @@ pub fn assemble_changes_panel_quads(
                 [0.095, 0.105, 0.13, 1.0],
             ));
 
-            // Commit message input field quad (#08090C)
+            // Commit message input field quad (#08090C) with 1px border
+            let input_x = panel_x + 10.0;
+            let input_y = commit_y + 32.0;
+            let input_w = panel_width - 20.0;
+            let input_h = 28.0;
+
+            let input_bg = if state.commit_input_focused {
+                [0.06, 0.07, 0.10, 0.98]
+            } else {
+                [0.04, 0.045, 0.06, 0.95]
+            };
+            let input_border = if state.commit_input_focused {
+                accent_color
+            } else {
+                [0.18, 0.20, 0.26, 0.8]
+            };
+
             quads.extend_from_slice(&build_quad_vertices(
-                panel_x + 10.0,
-                commit_y + 32.0,
-                panel_width - 20.0,
-                28.0,
-                [0.04, 0.045, 0.06, 0.95],
+                input_x, input_y, input_w, input_h, input_bg,
             ));
+            quads.extend_from_slice(&build_quad_vertices(
+                input_x,
+                input_y,
+                input_w,
+                1.0,
+                input_border,
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                input_x,
+                input_y + input_h - 1.0,
+                input_w,
+                1.0,
+                input_border,
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                input_x,
+                input_y,
+                1.0,
+                input_h,
+                input_border,
+            ));
+            quads.extend_from_slice(&build_quad_vertices(
+                input_x + input_w - 1.0,
+                input_y,
+                1.0,
+                input_h,
+                input_border,
+            ));
+
+            // If focused, render a vertical beam cursor (|) after typed text or at start
+            if state.commit_input_focused {
+                let char_w = 7.5;
+                let text_len = state.commit_message.len() as f32;
+                let cursor_x = (input_x + 8.0 + text_len * char_w).min(input_x + input_w - 6.0);
+                quads.extend_from_slice(&build_quad_vertices(
+                    cursor_x,
+                    input_y + 4.0,
+                    2.0,
+                    input_h - 8.0,
+                    accent_color,
+                ));
+            }
 
             // Commit button quad (#14161F) with border
             let commit_btn_x = panel_x + panel_width - 120.0;
@@ -494,7 +551,7 @@ pub fn build_changes_panel_labels(
 
             // Commit Area controls
             let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
-            let branch_text = format!("Branch: {} | Fetch", state.git_branch);
+            let branch_text = format!("Branch: {}", state.git_branch);
             labels.push(TabLabel {
                 text: branch_text,
                 x: panel_x + 10.0,
@@ -504,15 +561,26 @@ pub fn build_changes_panel_labels(
                 max_width: panel_width - 20.0,
             });
 
-            // Commit placeholder
-            labels.push(TabLabel {
-                text: "Enter commit message".to_string(),
-                x: panel_x + 18.0,
-                y: commit_y + 37.0,
-                color: GlyphonColor::rgb(105, 110, 125),
-                bold: false,
-                max_width: panel_width - 40.0,
-            });
+            // Commit message or placeholder
+            if state.commit_message.is_empty() {
+                labels.push(TabLabel {
+                    text: "Enter commit message".to_string(),
+                    x: panel_x + 18.0,
+                    y: commit_y + 37.0,
+                    color: GlyphonColor::rgb(105, 110, 125),
+                    bold: false,
+                    max_width: panel_width - 40.0,
+                });
+            } else {
+                labels.push(TabLabel {
+                    text: state.commit_message.clone(),
+                    x: panel_x + 18.0,
+                    y: commit_y + 37.0,
+                    color: GlyphonColor::rgb(240, 245, 255),
+                    bold: false,
+                    max_width: panel_width - 40.0,
+                });
+            }
 
             // Commit button text
             labels.push(TabLabel {
@@ -634,13 +702,17 @@ pub fn hit_test_changes_panel(
             }
 
             // Commit button
-            if y >= commit_y + 66.0 && y <= commit_y + 90.0 && x >= panel_x + panel_width - 120.0 {
+            if y >= commit_y + 64.0 && y <= commit_y + 92.0 && x >= panel_x + panel_width - 124.0 {
                 return ChangesAction::Commit;
             }
 
-            // Branch line / fetch button
-            if y >= commit_y + 4.0 && y <= commit_y + 24.0 {
-                return ChangesAction::Fetch;
+            // Commit message input field
+            if y >= commit_y + 30.0
+                && y <= commit_y + 62.0
+                && x >= panel_x + 8.0
+                && x <= panel_x + panel_width - 8.0
+            {
+                return ChangesAction::FocusCommitInput;
             }
         }
         ChangesTab::History => {
@@ -668,7 +740,9 @@ mod tests {
         assert_eq!(state.active_tab, ChangesTab::Changes);
         assert_ne!(state.changed_files.len(), 0);
         assert_ne!(state.history.len(), 0);
-        assert_eq!(state.git_branch, "main");
+        assert_eq!(state.git_branch, "--");
+        assert!(!state.commit_input_focused);
+        assert_eq!(state.commit_message, "");
     }
 
     #[test]
@@ -739,5 +813,30 @@ mod tests {
         let cb_action =
             hit_test_changes_panel(panel_x + w - 10.0, list_y, panel_x, panel_y, w, h, &state);
         assert_eq!(cb_action, ChangesAction::ToggleStage(0));
+
+        // Click commit message input
+        let commit_y = panel_y + h - COMMIT_AREA_HEIGHT;
+        let input_action = hit_test_changes_panel(
+            panel_x + 50.0,
+            commit_y + 40.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(input_action, ChangesAction::FocusCommitInput);
+
+        // Click Commit button
+        let commit_action = hit_test_changes_panel(
+            panel_x + w - 50.0,
+            commit_y + 75.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(commit_action, ChangesAction::Commit);
     }
 }
