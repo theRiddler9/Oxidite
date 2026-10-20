@@ -195,6 +195,8 @@ pub struct Tab {
     pub selection: Option<Selection>,
     /// Mouse drag start coordinate when selecting text in this tab.
     pub mouse_down_pos: Option<GridPoint>,
+    /// Current working directory of this tab (from OSC 7 or detected from prompt).
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl Tab {
@@ -216,6 +218,7 @@ impl Tab {
             pty_exit_code: None,
             selection: None,
             mouse_down_pos: None,
+            cwd: None,
         }
     }
 
@@ -224,6 +227,9 @@ impl Tab {
         self.parser.advance(&mut self.terminal, bytes);
         if !self.terminal.title.is_empty() {
             self.title = self.terminal.title.clone();
+        }
+        if let Some(ref cwd) = self.terminal.cwd {
+            self.cwd = Some(cwd.clone());
         }
     }
 
@@ -318,6 +324,134 @@ impl Tab {
         }
         sample
     }
+
+    /// Attempts to detect the current working directory of this tab from OSC 7 or the prompt.
+    #[must_use]
+    pub fn detect_cwd(&self) -> Option<std::path::PathBuf> {
+        if let Some(ref cwd) = self.cwd {
+            if cwd.is_dir() {
+                return Some(cwd.clone());
+            }
+        }
+        self.detect_cwd_from_prompt()
+    }
+
+    /// Scans the prompt row and preceding rows to extract an existing directory path.
+    #[must_use]
+    pub fn detect_cwd_from_prompt(&self) -> Option<std::path::PathBuf> {
+        let total_rows = self.terminal.grid.rows;
+        if total_rows == 0 {
+            return None;
+        }
+        let cur_row = self
+            .terminal
+            .grid
+            .cursor
+            .row
+            .min(total_rows.saturating_sub(1));
+        let start_row = cur_row.saturating_sub(3);
+
+        for row in (start_row..=cur_row).rev() {
+            let mut row_text = String::new();
+            for col in 0..self.terminal.grid.cols {
+                if let Some(cell) = self.terminal.grid.get(row, col) {
+                    if cell.ch == '\0' {
+                        row_text.push(' ');
+                    } else {
+                        row_text.push(cell.ch);
+                    }
+                }
+            }
+            let trimmed = row_text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(path) = extract_path_from_prompt_line(trimmed) {
+                return Some(path);
+            }
+        }
+
+        None
+    }
+}
+
+/// Extracts and verifies an existing directory path from a shell prompt line.
+#[must_use]
+pub fn extract_path_from_prompt_line(line: &str) -> Option<std::path::PathBuf> {
+    // 1. Windows PowerShell prompt: e.g. "PS C:\path\to\dir> ..."
+    if let Some(ps_idx) = line.find("PS ") {
+        let after_ps = &line[ps_idx + 3..];
+        if let Some(gt_idx) = after_ps.find('>') {
+            let candidate = after_ps[..gt_idx].trim();
+            let p = std::path::Path::new(candidate);
+            if p.is_dir() {
+                return Some(p.to_path_buf());
+            }
+        }
+    }
+
+    // 2. Windows cmd prompt or standard arrow prompt: e.g. "C:\path\to\dir>"
+    if let Some(gt_idx) = line.find('>') {
+        let candidate = line[..gt_idx].trim();
+        let p = std::path::Path::new(candidate);
+        if p.is_dir() {
+            return Some(p.to_path_buf());
+        }
+    }
+
+    // 3. Drive letter match on Windows: e.g. "C:\something" anywhere before space or end
+    #[cfg(windows)]
+    {
+        for (i, b) in line.as_bytes().iter().enumerate() {
+            if b.is_ascii_alphabetic()
+                && i + 2 < line.len()
+                && line.as_bytes()[i + 1] == b':'
+                && (line.as_bytes()[i + 2] == b'\\' || line.as_bytes()[i + 2] == b'/')
+            {
+                let rest = &line[i..];
+                let end = rest
+                    .find(|c: char| c == '>' || c == ' ' || c == '\t' || c == '\r' || c == '\n')
+                    .unwrap_or(rest.len());
+                let candidate = rest[..end].trim();
+                let p = std::path::Path::new(candidate);
+                if p.is_dir() {
+                    return Some(p.to_path_buf());
+                }
+            }
+        }
+    }
+
+    // 4. Unix prompt: e.g. "user@host:/path/to/dir$ " or "user@host:~/dir$ "
+    for delim in ['$', '#', '%'] {
+        if let Some(delim_idx) = line.find(delim) {
+            let before = line[..delim_idx].trim();
+            let candidate = if let Some(colon_idx) = before.rfind(':') {
+                before[colon_idx + 1..].trim()
+            } else if let Some(space_idx) = before.rfind(' ') {
+                before[space_idx + 1..].trim()
+            } else {
+                before
+            };
+
+            if candidate.starts_with('/') {
+                let p = std::path::Path::new(candidate);
+                if p.is_dir() {
+                    return Some(p.to_path_buf());
+                }
+            } else if candidate.starts_with('~') {
+                if let Some(home) = dirs::home_dir() {
+                    let rel = candidate.trim_start_matches('~').trim_start_matches('/');
+                    let expanded = home.join(rel);
+                    if expanded.is_dir() {
+                        return Some(expanded);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Bounding box layout for a tab in the top tab bar.
@@ -657,5 +791,17 @@ mod tests {
             AgentKind::detect("bash", "", "normal git log containing claude text"),
             AgentKind::Shell
         );
+    }
+
+    #[test]
+    fn extract_path_from_prompt_detects_real_directories() {
+        let cwd = std::env::current_dir().unwrap();
+        let prompt_line = format!("PS {}> cargo check", cwd.display());
+        let detected = extract_path_from_prompt_line(&prompt_line);
+        assert_eq!(detected, Some(cwd));
+
+        // Non-existent directory returns None
+        let invalid = "PS C:\\non_existent_folder_xyz_123> ";
+        assert!(extract_path_from_prompt_line(invalid).is_none());
     }
 }
