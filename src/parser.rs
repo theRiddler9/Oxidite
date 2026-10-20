@@ -80,12 +80,10 @@ impl vte::Perform for Dispatcher<'_> {
                 String::new()
             };
             self.handler.set_title(title);
-        } else if matches!(params.first().copied(), Some(b"7")) {
-            if params.len() > 1 {
-                let uri_bytes = params[1..].join(&b';');
-                let uri = String::from_utf8_lossy(&uri_bytes);
-                self.handler.set_working_directory(&uri);
-            }
+        } else if matches!(params.first().copied(), Some(b"7")) && params.len() > 1 {
+            let uri_bytes = params[1..].join(&b';');
+            let uri = String::from_utf8_lossy(&uri_bytes);
+            self.handler.set_working_directory(&uri);
         }
     }
 

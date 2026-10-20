@@ -301,14 +301,12 @@ impl Handler for Terminal {
             uri
         };
         #[cfg(windows)]
-        let path_str = if path_str.starts_with('/')
-            && path_str.len() > 3
-            && path_str.as_bytes()[2] == b':'
-        {
-            &path_str[1..]
-        } else {
-            path_str
-        };
+        let path_str =
+            if path_str.starts_with('/') && path_str.len() > 3 && path_str.as_bytes()[2] == b':' {
+                &path_str[1..]
+            } else {
+                path_str
+            };
         let p = std::path::PathBuf::from(path_str);
         if p.is_dir() {
             self.cwd = Some(p);

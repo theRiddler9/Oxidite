@@ -328,10 +328,10 @@ impl Tab {
     /// Attempts to detect the current working directory of this tab from OSC 7 or the prompt.
     #[must_use]
     pub fn detect_cwd(&self) -> Option<std::path::PathBuf> {
-        if let Some(ref cwd) = self.cwd {
-            if cwd.is_dir() {
-                return Some(cwd.clone());
-            }
+        if let Some(ref cwd) = self.cwd
+            && cwd.is_dir()
+        {
+            return Some(cwd.clone());
         }
         self.detect_cwd_from_prompt()
     }
@@ -411,7 +411,7 @@ pub fn extract_path_from_prompt_line(line: &str) -> Option<std::path::PathBuf> {
             {
                 let rest = &line[i..];
                 let end = rest
-                    .find(|c: char| c == '>' || c == ' ' || c == '\t' || c == '\r' || c == '\n')
+                    .find(['>', ' ', '\t', '\r', '\n'])
                     .unwrap_or(rest.len());
                 let candidate = rest[..end].trim();
                 let p = std::path::Path::new(candidate);
@@ -439,13 +439,13 @@ pub fn extract_path_from_prompt_line(line: &str) -> Option<std::path::PathBuf> {
                 if p.is_dir() {
                     return Some(p.to_path_buf());
                 }
-            } else if candidate.starts_with('~') {
-                if let Some(home) = dirs::home_dir() {
-                    let rel = candidate.trim_start_matches('~').trim_start_matches('/');
-                    let expanded = home.join(rel);
-                    if expanded.is_dir() {
-                        return Some(expanded);
-                    }
+            } else if candidate.starts_with('~')
+                && let Some(home) = dirs::home_dir()
+            {
+                let rel = candidate.trim_start_matches('~').trim_start_matches('/');
+                let expanded = home.join(rel);
+                if expanded.is_dir() {
+                    return Some(expanded);
                 }
             }
         }
