@@ -80,6 +80,12 @@ impl vte::Perform for Dispatcher<'_> {
                 String::new()
             };
             self.handler.set_title(title);
+        } else if matches!(params.first().copied(), Some(b"7")) {
+            if params.len() > 1 {
+                let uri_bytes = params[1..].join(&b';');
+                let uri = String::from_utf8_lossy(&uri_bytes);
+                self.handler.set_working_directory(&uri);
+            }
         }
     }
 
@@ -458,6 +464,10 @@ impl Handler for LoggingHandler {
             .push(format!("set_cursor_shape({shape:?}, {blinking})"));
     }
 
+    fn set_working_directory(&mut self, uri: &str) {
+        self.events.push(format!("set_working_directory({uri:?})"));
+    }
+
     fn save_cursor(&mut self) {
         self.events.push("save_cursor".into());
     }
@@ -711,6 +721,18 @@ mod tests {
                 "set_title(\"Oxidite Shell\")",
                 "set_title(\"Project - Oxidite; v1\")",
             ]
+        );
+    }
+
+    #[test]
+    fn parser_handles_osc_working_directory() {
+        let mut parser = Parser::new();
+        let mut handler = LoggingHandler::new();
+
+        parser.advance(&mut handler, b"\x1b]7;file://localhost/tmp/project\x07");
+        assert_eq!(
+            handler.events,
+            vec!["set_working_directory(\"file://localhost/tmp/project\")"]
         );
     }
 

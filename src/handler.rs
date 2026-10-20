@@ -141,4 +141,7 @@ pub trait Handler {
 
     /// Sets the cursor shape/style and blinking state (`CSI Ps SP q`, DECSCUSR).
     fn set_cursor_shape(&mut self, _shape: crate::grid::CursorShape, _blinking: bool) {}
+
+    /// Sets the current working directory from an OSC 7 escape sequence.
+    fn set_working_directory(&mut self, _uri: &str) {}
 }

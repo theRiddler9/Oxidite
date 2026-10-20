@@ -79,6 +79,8 @@ pub struct Terminal {
     pub bg: Color,
     /// Active SGR style attributes applied to newly printed cells.
     pub attrs: Attrs,
+    /// Current working directory set via OSC 7.
+    pub cwd: Option<std::path::PathBuf>,
     /// Number of bell events received.
     pub bell_count: u64,
     /// Flags marking which visible rows need redrawing.
@@ -105,6 +107,7 @@ impl Terminal {
             fg: Color::Default,
             bg: Color::Default,
             attrs: Attrs::empty(),
+            cwd: None,
             bell_count: 0,
             dirty_rows: vec![true; rows],
             cursor_blinking: true,
@@ -284,6 +287,32 @@ impl Handler for Terminal {
     /// Sets the window title from an OSC sequence.
     fn set_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    /// Sets the current working directory from an OSC 7 sequence.
+    fn set_working_directory(&mut self, uri: &str) {
+        let path_str = if let Some(stripped) = uri.strip_prefix("file://") {
+            if let Some(slash_idx) = stripped.find('/') {
+                &stripped[slash_idx..]
+            } else {
+                stripped
+            }
+        } else {
+            uri
+        };
+        #[cfg(windows)]
+        let path_str = if path_str.starts_with('/')
+            && path_str.len() > 3
+            && path_str.as_bytes()[2] == b':'
+        {
+            &path_str[1..]
+        } else {
+            path_str
+        };
+        let p = std::path::PathBuf::from(path_str);
+        if p.is_dir() {
+            self.cwd = Some(p);
+        }
     }
 
     /// Sets the cursor shape and blinking state (`CSI Ps SP q`, DECSCUSR).
@@ -565,5 +594,16 @@ mod tests {
         term.set_cursor_shape(crate::grid::CursorShape::Bar, true);
         assert_eq!(term.grid.cursor.shape, crate::grid::CursorShape::Bar);
         assert!(term.cursor_blinking);
+    }
+
+    #[test]
+    fn terminal_set_working_directory() {
+        let mut term = Terminal::new(10, 4);
+        assert!(term.cwd.is_none());
+
+        let cwd = std::env::current_dir().unwrap();
+        let uri = format!("file://localhost/{}", cwd.display());
+        term.set_working_directory(&uri);
+        assert!(term.cwd.is_some());
     }
 }
