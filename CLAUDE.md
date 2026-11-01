@@ -27,8 +27,8 @@ Our current phased plan progresses through three focus areas in sequence:
 ### Focus 2: Core Feature Enhancements
 - **Objective**: Expand terminal capabilities and advanced productivity features.
 - **Key Tasks**:
+  - **In-Terminal Search** `[DONE]`: Incremental scrollback and visible grid search with regex support (`regex 1.13`), amber/orange quad match highlighting, viewport auto-scrolling, navigation shortcuts (`Ctrl+Shift+F`, `F3`, `Shift+F3`), case toggle (`Alt+C`), regex toggle (`Alt+R`), and interactive floating search bar overlay.
   - **Pane Splitting**: Support vertical and horizontal split panes within tabs, allowing side-by-side terminal sessions.
-  - **In-Terminal Search**: Incremental scrollback buffer search with regex support, highlighted matches, and navigation shortcuts (`Ctrl+Shift+F`, `F3`, `Shift+F3`).
   - **Shell Integration**: Parse OSC 133 sequences for command boundaries, prompts, and execution exit codes (click-to-copy output, prompt jumping).
   - **URL & Path Detection**: Auto-detect clickable hyperlinks (`OSC 8` and regex-based URL/path recognition) with hover underlines and click-to-open.
   - **Tabs Refinement**: Drag-and-drop tab reordering, customizable tab naming, and close-tab confirmations.
