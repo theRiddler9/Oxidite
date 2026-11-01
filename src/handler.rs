@@ -144,4 +144,16 @@ pub trait Handler {
 
     /// Sets the current working directory from an OSC 7 escape sequence.
     fn set_working_directory(&mut self, _uri: &str) {}
+
+    /// Marks the start of a shell command prompt (`OSC 133 ; A`).
+    fn shell_prompt_start(&mut self) {}
+
+    /// Marks the end of a command prompt and beginning of user command input (`OSC 133 ; B`).
+    fn shell_prompt_end(&mut self) {}
+
+    /// Marks the start of command execution and output (`OSC 133 ; C`).
+    fn shell_command_start(&mut self) {}
+
+    /// Marks the completion of a command with an optional exit status code (`OSC 133 ; D [; exit_code]`).
+    fn shell_command_finished(&mut self, _exit_code: Option<i32>) {}
 }
