@@ -217,6 +217,8 @@ pub struct App {
     pub hovered_splitter: DraggingSplitter,
     /// Last detected current working directory of the active tab.
     pub last_active_cwd: Option<std::path::PathBuf>,
+    /// In-terminal search state for scrollback and visible grid search.
+    pub search_state: crate::search::SearchState,
 }
 
 /// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
@@ -415,6 +417,7 @@ impl App {
             dragging_splitter: DraggingSplitter::None,
             hovered_splitter: DraggingSplitter::None,
             last_active_cwd: Some(cwd),
+            search_state: crate::search::SearchState::default(),
         }
     }
 
@@ -541,6 +544,93 @@ impl App {
                 win.request_redraw();
                 return;
             }
+        }
+
+        // If in-terminal search overlay is open, handle search query input and navigation
+        if self.search_state.is_open {
+            if key_ev.state == winit::event::ElementState::Pressed {
+                use winit::keyboard::{Key, NamedKey};
+                match &key_ev.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.search_state.close();
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter | NamedKey::F3) => {
+                        if self.modifiers.shift_key() {
+                            self.search_state.prev_match();
+                        } else {
+                            self.search_state.next_match();
+                        }
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        self.search_state.query.pop();
+                        self.search_state.execute_search(&self.terminal.grid);
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Character(c)
+                        if self.modifiers.alt_key() && c.eq_ignore_ascii_case("c") =>
+                    {
+                        self.search_state.case_sensitive = !self.search_state.case_sensitive;
+                        self.search_state.execute_search(&self.terminal.grid);
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Character(c)
+                        if self.modifiers.alt_key() && c.eq_ignore_ascii_case("r") =>
+                    {
+                        self.search_state.is_regex = !self.search_state.is_regex;
+                        self.search_state.execute_search(&self.terminal.grid);
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Character(c)
+                        if (self.modifiers.control_key() && self.modifiers.shift_key())
+                            && c.eq_ignore_ascii_case("f") =>
+                    {
+                        self.search_state.close();
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                        return;
+                    }
+                    _ => {
+                        if !self.modifiers.control_key()
+                            && !self.modifiers.alt_key()
+                            && !self.modifiers.super_key()
+                            && let Some(text) = &key_ev.text
+                        {
+                            for ch in text.chars() {
+                                if !ch.is_control() {
+                                    self.search_state.query.push(ch);
+                                }
+                            }
+                            self.search_state.execute_search(&self.terminal.grid);
+                            self.search_state
+                                .scroll_to_current_match(&mut self.terminal.grid);
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                    }
+                }
+            }
+            return;
         }
 
         // If commit message input in the changes panel is focused, handle text editing
@@ -768,6 +858,34 @@ impl App {
                     self.handle_resize(win.inner_size());
                     self.terminal.mark_all_dirty();
                     win.request_redraw();
+                }
+                InputAction::ToggleSearch => {
+                    self.search_state.toggle();
+                    if self.search_state.is_open {
+                        self.search_state.execute_search(&self.terminal.grid);
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                    }
+                    self.terminal.mark_all_dirty();
+                    win.request_redraw();
+                }
+                InputAction::SearchNext => {
+                    if self.search_state.is_open {
+                        self.search_state.next_match();
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                    }
+                }
+                InputAction::SearchPrev => {
+                    if self.search_state.is_open {
+                        self.search_state.prev_match();
+                        self.search_state
+                            .scroll_to_current_match(&mut self.terminal.grid);
+                        self.terminal.mark_all_dirty();
+                        win.request_redraw();
+                    }
                 }
             }
             return;
@@ -1226,6 +1344,11 @@ impl App {
         self.title = new_tab.title.clone();
 
         self.refresh_git_status();
+        if self.search_state.is_open {
+            self.search_state.execute_search(&self.terminal.grid);
+            self.search_state
+                .scroll_to_current_match(&mut self.terminal.grid);
+        }
         if let Some(ref win) = self.window {
             win.set_title(&self.title);
             win.request_redraw();
@@ -1361,6 +1484,9 @@ impl App {
 
             if is_active {
                 self.terminal = tab.terminal.clone();
+                if self.search_state.is_open && !self.search_state.query.is_empty() {
+                    self.search_state.execute_search(&self.terminal.grid);
+                }
                 let current_cwd = tab.detect_cwd();
                 if current_cwd.is_some() && current_cwd != self.last_active_cwd {
                     self.last_active_cwd = current_cwd;
@@ -1512,6 +1638,18 @@ impl App {
             y_offset,
         ));
 
+        // 5.2. Search match highlights offset below the tab bar with padding
+        if self.search_state.is_open && !self.search_state.matches.is_empty() {
+            quad_vertices.extend_from_slice(&crate::search::build_search_highlight_vertices(
+                &self.terminal.grid,
+                &self.search_state,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                x_offset,
+                y_offset,
+            ));
+        }
+
         // 5.5. Central Side-by-side Diff View workspace quads (if open)
         if self.diff_view_open && geo.diff_w > 10.0 {
             quad_vertices.extend_from_slice(&crate::diff_view::assemble_diff_view_quads(
@@ -1579,6 +1717,17 @@ impl App {
             effective_pad_y,
             accent_color,
         ));
+
+        // 7.5. Floating search bar overlay (if open)
+        if self.search_state.is_open {
+            quad_vertices.extend_from_slice(&crate::search::assemble_search_bar_quads(
+                geo.sidebar_w,
+                geo.tab_bar_px,
+                geo.term_w,
+                accent_color,
+                &self.search_state,
+            ));
+        }
 
         // 8. Settings modal overlay (if open)
         if self.settings_open {
@@ -1715,6 +1864,15 @@ impl App {
 
         if self.config.status_bar {
             tab_labels.extend(self.build_status_bar_labels(screen_size[0], screen_size[1]));
+        }
+
+        if self.search_state.is_open {
+            tab_labels.extend(crate::search::build_search_bar_labels(
+                geo.sidebar_w,
+                geo.tab_bar_px,
+                geo.term_w,
+                &self.search_state,
+            ));
         }
 
         if self.settings_open {
@@ -2092,6 +2250,64 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                     return;
+                }
+
+                // If in-terminal search overlay is open, test for clicks on search bar controls
+                if self.search_state.is_open && state == winit::event::ElementState::Pressed {
+                    let win_w = win.inner_size().width as f32;
+                    let win_h = win.inner_size().height as f32;
+                    let geo = self.compute_pane_geometry(win_w, win_h);
+                    let action = crate::search::hit_test_search_bar(
+                        self.cursor_pixel_pos.0 as f32,
+                        self.cursor_pixel_pos.1 as f32,
+                        geo.sidebar_w,
+                        geo.tab_bar_px,
+                        geo.term_w,
+                        &self.search_state,
+                    );
+                    match action {
+                        crate::search::SearchBarAction::ToggleCase => {
+                            self.search_state.case_sensitive = !self.search_state.case_sensitive;
+                            self.search_state.execute_search(&self.terminal.grid);
+                            self.search_state
+                                .scroll_to_current_match(&mut self.terminal.grid);
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                        crate::search::SearchBarAction::ToggleRegex => {
+                            self.search_state.is_regex = !self.search_state.is_regex;
+                            self.search_state.execute_search(&self.terminal.grid);
+                            self.search_state
+                                .scroll_to_current_match(&mut self.terminal.grid);
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                        crate::search::SearchBarAction::NextMatch => {
+                            self.search_state.next_match();
+                            self.search_state
+                                .scroll_to_current_match(&mut self.terminal.grid);
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                        crate::search::SearchBarAction::PrevMatch => {
+                            self.search_state.prev_match();
+                            self.search_state
+                                .scroll_to_current_match(&mut self.terminal.grid);
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                        crate::search::SearchBarAction::Close => {
+                            self.search_state.close();
+                            self.terminal.mark_all_dirty();
+                            win.request_redraw();
+                            return;
+                        }
+                        crate::search::SearchBarAction::None => {}
+                    }
                 }
 
                 if state == winit::event::ElementState::Pressed

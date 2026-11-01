@@ -100,6 +100,8 @@ pub struct KeybindingsConfig {
     pub cycle_theme: String,
     /// Toggle visibility of the bottom status bar.
     pub toggle_status_bar: String,
+    /// Toggle visibility of the in-terminal search bar.
+    pub search: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -116,6 +118,7 @@ impl Default for KeybindingsConfig {
             scroll_to_bottom: "Shift+End".to_string(),
             cycle_theme: "Ctrl+Shift+T".to_string(),
             toggle_status_bar: "Ctrl+Shift+B".to_string(),
+            search: "Ctrl+Shift+F".to_string(),
         }
     }
 }
@@ -230,6 +233,9 @@ impl KeybindingsConfig {
         }
         if matches_keybinding(&self.toggle_status_bar, event) {
             return Some(crate::input::InputAction::ToggleStatusBar);
+        }
+        if matches_keybinding(&self.search, event) {
+            return Some(crate::input::InputAction::ToggleSearch);
         }
         None
     }
