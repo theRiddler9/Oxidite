@@ -36,7 +36,7 @@ Our current phased plan progresses through three focus areas in sequence:
 ### Focus 3: Workspace Cockpit & UI/Diff Refinements
 - **Objective**: Perfect the modern developer cockpit inspired by `DESIGN.md`.
 - **Key Tasks**:
-  - **Side-by-Side Diff Viewer**: Enhance file diff syntax highlighting, inline review annotations, and multi-file review flows.
+  - **Side-by-Side Diff Viewer** `[DONE]`: File diff syntax highlighting with token-level language categorization (Rust, JS/TS, Python, C/C++, Config), inline review annotations with `CommentDraft` interactive tag selection and keyboard comment entry, and multi-file review queue navigation (`< Prev` / `Next >`) with auto-advance upon review verdict.
   - **Git Changes Panel**: Polished stage/unstage toggle UX, interactive branch switching, remote fetch/pull status indicators.
   - **Theme & Appearance Customizer**: Rich live preview in the settings modal for user themes, font selection, and cursor styles.
   - **Splitter & Layout Smoothness**: Fluid resize handling across multi-pane layouts without ConPTY throttling or layout jitter.

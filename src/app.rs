@@ -381,6 +381,9 @@ impl App {
                 comments: Vec::new(),
                 next_comment_id: 1,
                 selected_line: None,
+                file_index: 0,
+                total_files: changed_files.len(),
+                comment_draft: None,
             }
         } else {
             crate::diff_view::DiffViewState::default()
@@ -676,6 +679,63 @@ impl App {
                 }
             }
             self.tab_rename_state = Some(rename);
+            return;
+        }
+
+        // If inline review comment draft is open, handle typing, backspace, Enter to submit, Escape to cancel
+        if self.diff_view_open
+            && let Some(mut draft) = self.diff_view_state.comment_draft.take()
+        {
+            if key_ev.state == winit::event::ElementState::Pressed {
+                use winit::keyboard::{Key, NamedKey};
+                match &key_ev.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.diff_view_state.comment_draft = None;
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        let content = if draft.content.trim().is_empty() {
+                            "Reviewed".to_string()
+                        } else {
+                            draft.content
+                        };
+                        self.diff_view_state.add_comment(
+                            draft.line_number,
+                            draft.side,
+                            draft.tag,
+                            content,
+                            "Reviewer".to_string(),
+                        );
+                        self.diff_view_state.comment_draft = None;
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        draft.content.pop();
+                        self.diff_view_state.comment_draft = Some(draft);
+                        win.request_redraw();
+                        return;
+                    }
+                    _ => {
+                        if !self.modifiers.control_key()
+                            && !self.modifiers.alt_key()
+                            && !self.modifiers.super_key()
+                            && let Some(text) = &key_ev.text
+                        {
+                            for ch in text.chars() {
+                                if !ch.is_control() {
+                                    draft.content.push(ch);
+                                }
+                            }
+                            self.diff_view_state.comment_draft = Some(draft);
+                            win.request_redraw();
+                            return;
+                        }
+                    }
+                }
+            }
+            self.diff_view_state.comment_draft = Some(draft);
             return;
         }
 
@@ -1628,10 +1688,37 @@ impl App {
             self.diff_view_state.path_info = pinfo;
             self.diff_view_state.hunks = hunks;
             self.diff_view_state.staged = file.staged;
+            self.diff_view_state.file_index = idx;
+            self.diff_view_state.total_files = changed_files.len();
         } else if changed_files.is_empty() {
             self.changes_panel_state.selected_file_index = None;
             self.diff_view_state = crate::diff_view::DiffViewState::default();
         }
+    }
+
+    /// Selects and loads a changed file by index into the active diff view.
+    pub fn select_diff_file(&mut self, file_index: usize) {
+        if file_index >= self.changes_panel_state.changed_files.len() {
+            return;
+        }
+        self.changes_panel_state.selected_file_index = Some(file_index);
+        let cwd = self.active_cwd();
+        let file = &self.changes_panel_state.changed_files[file_index];
+        let rel_path = if file.path_info == "." {
+            file.filename.clone()
+        } else {
+            format!("{}/{}", file.path_info.trim_end_matches('/'), file.filename)
+        };
+        let (fname, pinfo, hunks) = crate::git::query_file_diff(&cwd, &rel_path);
+        self.diff_view_state.file_name = fname;
+        self.diff_view_state.path_info = pinfo;
+        self.diff_view_state.hunks = hunks;
+        self.diff_view_state.staged = file.staged;
+        self.diff_view_state.scroll_offset = 0;
+        self.diff_view_state.file_index = file_index;
+        self.diff_view_state.total_files = self.changes_panel_state.changed_files.len();
+        self.diff_view_state.comment_draft = None;
+        self.diff_view_open = true;
     }
 
     /// Requests closing the tab at `index`, displaying confirmation modal if child process is still active.
@@ -3503,6 +3590,12 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             crate::diff_view::DiffAction::SetVerdict(verdict) => {
                                 self.diff_view_state.set_verdict(verdict);
+                                // Auto-advance to next file in review queue if available
+                                if self.diff_view_state.file_index + 1
+                                    < self.diff_view_state.total_files
+                                {
+                                    self.select_diff_file(self.diff_view_state.file_index + 1);
+                                }
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::CycleVerdict => {
@@ -3541,21 +3634,50 @@ impl ApplicationHandler<AppEvent> for App {
                             crate::diff_view::DiffAction::SelectLine(line_num, side) => {
                                 self.diff_view_state.selected_line = Some((line_num, side));
                                 if self.diff_view_state.review_mode {
-                                    let exists = self
-                                        .diff_view_state
-                                        .comments
-                                        .iter()
-                                        .any(|c| c.side == side && c.line_number == line_num);
-                                    if !exists {
-                                        self.diff_view_state.add_comment(
-                                            line_num,
-                                            side,
-                                            crate::diff_view::ReviewTag::Note,
-                                            "Reviewed line".to_string(),
-                                            "Reviewer".to_string(),
-                                        );
-                                    }
+                                    self.diff_view_state.comment_draft =
+                                        Some(crate::diff_view::CommentDraft::new(line_num, side));
                                 }
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::PrevFile => {
+                                if self.diff_view_state.file_index > 0 {
+                                    self.select_diff_file(self.diff_view_state.file_index - 1);
+                                    win.request_redraw();
+                                }
+                            }
+                            crate::diff_view::DiffAction::NextFile => {
+                                if self.diff_view_state.file_index + 1
+                                    < self.diff_view_state.total_files
+                                {
+                                    self.select_diff_file(self.diff_view_state.file_index + 1);
+                                    win.request_redraw();
+                                }
+                            }
+                            crate::diff_view::DiffAction::SetDraftTag(tag) => {
+                                if let Some(ref mut draft) = self.diff_view_state.comment_draft {
+                                    draft.tag = tag;
+                                    win.request_redraw();
+                                }
+                            }
+                            crate::diff_view::DiffAction::SubmitDraft => {
+                                if let Some(draft) = self.diff_view_state.comment_draft.take() {
+                                    let content = if draft.content.trim().is_empty() {
+                                        "Reviewed".to_string()
+                                    } else {
+                                        draft.content
+                                    };
+                                    self.diff_view_state.add_comment(
+                                        draft.line_number,
+                                        draft.side,
+                                        draft.tag,
+                                        content,
+                                        "Reviewer".to_string(),
+                                    );
+                                    win.request_redraw();
+                                }
+                            }
+                            crate::diff_view::DiffAction::CancelDraft => {
+                                self.diff_view_state.comment_draft = None;
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::ToggleStage => {
