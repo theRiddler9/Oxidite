@@ -29,8 +29,8 @@ Our current phased plan progresses through three focus areas in sequence:
 - **Key Tasks**:
   - **In-Terminal Search** `[DONE]`: Incremental scrollback and visible grid search with regex support (`regex 1.13`), amber/orange quad match highlighting, viewport auto-scrolling, navigation shortcuts (`Ctrl+Shift+F`, `F3`, `Shift+F3`), case toggle (`Alt+C`), regex toggle (`Alt+R`), and interactive floating search bar overlay.
   - **Shell Integration** `[DONE]`: Parse semantic OSC 133 sequences (`A` prompt start, `B` prompt end/input, `C` output start, `D` command finished with exit code), tracking command boundaries and process exit status in `Terminal`, with keyboard prompt jumping (`Ctrl+Shift+Up` / `Ctrl+Shift+Down`).
+  - **URL & Path Detection** `[DONE]`: Auto-detect clickable hyperlinks (`OSC 8` and regex-based URL/path recognition) with hover underlines, pointer cursor, and Ctrl+Click system launching.
   - **Pane Splitting**: Support vertical and horizontal split panes within tabs, allowing side-by-side terminal sessions.
-  - **URL & Path Detection**: Auto-detect clickable hyperlinks (`OSC 8` and regex-based URL/path recognition) with hover underlines and click-to-open.
   - **Tabs Refinement**: Drag-and-drop tab reordering, customizable tab naming, and close-tab confirmations.
 
 ### Focus 3: Workspace Cockpit & UI/Diff Refinements
