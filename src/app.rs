@@ -215,6 +215,10 @@ pub struct App {
     pub dragging_splitter: DraggingSplitter,
     /// Splitter currently under the mouse cursor.
     pub hovered_splitter: DraggingSplitter,
+    /// Active split divider currently being dragged inside multi-pane layout.
+    pub dragging_pane_divider: Option<crate::pane::SplitDivider>,
+    /// Split divider currently hovered inside multi-pane layout.
+    pub hovered_pane_divider: Option<crate::pane::SplitDivider>,
     /// Last detected current working directory of the active tab.
     pub last_active_cwd: Option<std::path::PathBuf>,
     /// In-terminal search state for scrollback and visible grid search.
@@ -418,6 +422,8 @@ impl App {
             changes_panel_width: crate::changes_panel::CHANGES_PANEL_WIDTH,
             dragging_splitter: DraggingSplitter::None,
             hovered_splitter: DraggingSplitter::None,
+            dragging_pane_divider: None,
+            hovered_pane_divider: None,
             last_active_cwd: Some(cwd),
             search_state: crate::search::SearchState::default(),
             hovered_url: None,
@@ -900,6 +906,21 @@ impl App {
                         win.request_redraw();
                     }
                 }
+                InputAction::SplitVertical => {
+                    self.split_active_pane(crate::pane::SplitDirection::Vertical);
+                }
+                InputAction::SplitHorizontal => {
+                    self.split_active_pane(crate::pane::SplitDirection::Horizontal);
+                }
+                InputAction::ClosePane => {
+                    self.close_active_pane();
+                }
+                InputAction::NextPane => {
+                    self.cycle_pane_forward();
+                }
+                InputAction::PrevPane => {
+                    self.cycle_pane_backward();
+                }
             }
             return;
         }
@@ -984,7 +1005,8 @@ impl App {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_precision_loss
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
     )]
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
         if size.width == 0 || size.height == 0 {
@@ -1042,15 +1064,61 @@ impl App {
         let pty_size = window_size_to_pty_size(content_size, &self.cell_metrics);
 
         for tab in &mut self.tabs {
-            tab.resize(cols as usize, rows as usize, pty_size);
+            let container = crate::pane::PaneRect::new(
+                0.0,
+                0.0,
+                content_size.width as f32,
+                content_size.height as f32,
+                cols as usize,
+                rows as usize,
+            );
+            let (layouts, _) = tab.pane_tree.compute_layout(
+                container,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                0.0,
+                0.0,
+            );
+            for (pane_id, pane_rect) in layouts {
+                let pane_pty_size = crate::pty::PtySize {
+                    rows: u16::try_from(pane_rect.rows).unwrap_or(24),
+                    cols: u16::try_from(pane_rect.cols).unwrap_or(80),
+                    px_w: (pane_rect.cols as f32 * self.cell_metrics.cell_width) as u16,
+                    px_h: (pane_rect.rows as f32 * self.cell_metrics.cell_height) as u16,
+                };
+                if let Some(pane) = tab.pane_mut(pane_id) {
+                    pane.rect = pane_rect;
+                    pane.resize(pane_rect.cols, pane_rect.rows, pane_pty_size);
+                }
+                if pane_id == tab.active_pane_id {
+                    tab.terminal.resize(pane_rect.cols, pane_rect.rows);
+                }
+            }
         }
-        self.terminal.resize(cols as usize, rows as usize);
 
         // 3. PTY master
-        if let Some(ref writer) = self.pty_writer
-            && let Ok(mut guard) = writer.lock()
-        {
-            let _ = guard.resize(pty_size);
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            let active_cols = active_tab.terminal.grid.cols;
+            let active_rows = active_tab.terminal.grid.rows;
+            self.terminal.resize(active_cols, active_rows);
+            let active_pty_size = crate::pty::PtySize {
+                rows: u16::try_from(active_rows).unwrap_or(24),
+                cols: u16::try_from(active_cols).unwrap_or(80),
+                px_w: (active_cols as f32 * self.cell_metrics.cell_width) as u16,
+                px_h: (active_rows as f32 * self.cell_metrics.cell_height) as u16,
+            };
+            if let Some(ref writer) = self.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let _ = guard.resize(active_pty_size);
+            }
+        } else {
+            self.terminal.resize(cols as usize, rows as usize);
+            if let Some(ref writer) = self.pty_writer
+                && let Ok(mut guard) = writer.lock()
+            {
+                let _ = guard.resize(pty_size);
+            }
         }
     }
 
@@ -1460,6 +1528,127 @@ impl App {
         self.terminal.mark_all_dirty();
     }
 
+    /// Splits the currently active pane in the active tab either vertically or horizontally.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    pub fn split_active_pane(&mut self, direction: crate::pane::SplitDirection) {
+        let new_pane_id = self.next_tab_id;
+        self.next_tab_id += 1;
+
+        let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) else {
+            return;
+        };
+
+        let current_cols = active_tab.terminal.grid.cols;
+        let current_rows = active_tab.terminal.grid.rows;
+        let (new_cols, new_rows) = match direction {
+            crate::pane::SplitDirection::Vertical => ((current_cols / 2).max(10), current_rows),
+            crate::pane::SplitDirection::Horizontal => (current_cols, (current_rows / 2).max(4)),
+        };
+
+        let new_terminal = Terminal::new(new_cols, new_rows);
+        let mut pty_writer = None;
+        if let Some(ref proxy) = self.proxy {
+            let cmd = if let Some(ref custom_shell) = self.config.shell {
+                crate::pty::ShellCommand::with_args(
+                    custom_shell.clone(),
+                    self.config.shell_args.clone(),
+                )
+            } else {
+                crate::pty::ShellCommand::default_shell()
+            };
+
+            let pty_size = crate::pty::PtySize {
+                rows: u16::try_from(new_rows).unwrap_or(24),
+                cols: u16::try_from(new_cols).unwrap_or(80),
+                px_w: (new_cols as f32 * self.cell_metrics.cell_width) as u16,
+                px_h: (new_rows as f32 * self.cell_metrics.cell_height) as u16,
+            };
+
+            if let Ok((writer, reader)) = crate::pty::spawn(cmd, pty_size) {
+                let writer = Arc::new(Mutex::new(writer));
+                spawn_tab_pty_forwarder(new_pane_id, reader, Arc::clone(&writer), proxy.clone());
+                pty_writer = Some(writer);
+            }
+        }
+
+        let new_pane = crate::pane::Pane::new(
+            new_pane_id,
+            format!("Pane {new_pane_id}"),
+            new_terminal,
+            pty_writer,
+        );
+
+        active_tab.split_active_pane(new_pane, direction);
+        self.terminal = active_tab.terminal.clone();
+        self.pty_writer = active_tab.pty_writer.clone();
+        self.pty_exited = active_tab.pty_exited;
+        self.pty_exit_code = active_tab.pty_exit_code;
+
+        if let Some(win) = self.window.clone() {
+            self.handle_resize(win.inner_size());
+            win.request_redraw();
+        }
+    }
+
+    /// Closes the currently active pane. If it is the last pane in the tab, closes the tab.
+    pub fn close_active_pane(&mut self) {
+        let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) else {
+            return;
+        };
+
+        if active_tab.panes.len() <= 1 {
+            self.close_tab(self.active_tab_index);
+            return;
+        }
+
+        active_tab.close_active_pane();
+        self.terminal = active_tab.terminal.clone();
+        self.pty_writer = active_tab.pty_writer.clone();
+        self.pty_exited = active_tab.pty_exited;
+        self.pty_exit_code = active_tab.pty_exit_code;
+
+        if let Some(win) = self.window.clone() {
+            self.handle_resize(win.inner_size());
+            win.request_redraw();
+        }
+    }
+
+    /// Cycles keyboard focus to the next split pane in the active tab.
+    pub fn cycle_pane_forward(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.cycle_pane_forward();
+            self.terminal = tab.terminal.clone();
+            self.pty_writer = tab.pty_writer.clone();
+            self.pty_exited = tab.pty_exited;
+            self.pty_exit_code = tab.pty_exit_code;
+            self.selection = tab.selection;
+            self.mouse_down_pos = tab.mouse_down_pos;
+            if let Some(ref win) = self.window {
+                win.request_redraw();
+            }
+        }
+    }
+
+    /// Cycles keyboard focus to the previous split pane in the active tab.
+    pub fn cycle_pane_backward(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.cycle_pane_backward();
+            self.terminal = tab.terminal.clone();
+            self.pty_writer = tab.pty_writer.clone();
+            self.pty_exited = tab.pty_exited;
+            self.pty_exit_code = tab.pty_exit_code;
+            self.selection = tab.selection;
+            self.mouse_down_pos = tab.mouse_down_pos;
+            if let Some(ref win) = self.window {
+                win.request_redraw();
+            }
+        }
+    }
+
     /// Feeds PTY output bytes to the active tab's VT parser and requests a redraw if damaged.
     pub fn handle_pty_output(&mut self, bytes: &[u8]) {
         let active_id = self.tabs.get(self.active_tab_index).map_or(0, |t| t.id);
@@ -1468,35 +1657,47 @@ impl App {
 
     /// Feeds PTY output bytes to a specific tab's parser and terminal state.
     pub fn handle_tab_pty_output(&mut self, tab_id: usize, bytes: &[u8]) {
-        let is_active = self
+        let is_active_tab = self
             .tabs
             .get(self.active_tab_index)
-            .is_some_and(|t| t.id == tab_id);
+            .is_some_and(|t| t.id == tab_id || t.panes.iter().any(|p| p.id == tab_id));
 
         let mut cwd_changed = false;
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id || t.panes.iter().any(|p| p.id == tab_id))
+        {
+            let pane_id = if tab.panes.iter().any(|p| p.id == tab_id) {
+                tab_id
+            } else {
+                tab.active_pane_id
+            };
+            let is_active_pane = is_active_tab && pane_id == tab.active_pane_id;
+
             // Process bytes in order: if bytes contain DSR (\x1b[6n), advance parser
             // up to the query before responding with the accurate cursor coordinates.
             let mut remaining = bytes;
             while let Some(pos) = remaining.windows(4).position(|w| w == b"\x1b[6n") {
                 if pos > 0 {
-                    tab.advance_parser(&remaining[..pos]);
+                    tab.advance_pane_parser(pane_id, &remaining[..pos]);
                 }
-                if let Some(ref writer) = tab.pty_writer
+                if let Some(pane) = tab.pane(pane_id)
+                    && let Some(ref writer) = pane.pty_writer
                     && let Ok(mut guard) = writer.lock()
                 {
-                    let row = tab.terminal.grid.cursor.row + 1;
-                    let col = tab.terminal.grid.cursor.col + 1;
+                    let row = pane.terminal.grid.cursor.row + 1;
+                    let col = pane.terminal.grid.cursor.col + 1;
                     let response = format!("\x1b[{row};{col}R");
                     let _ = guard.write(response.as_bytes());
                 }
                 remaining = &remaining[pos + 4..];
             }
             if !remaining.is_empty() {
-                tab.advance_parser(remaining);
+                tab.advance_pane_parser(pane_id, remaining);
             }
 
-            if is_active {
+            if is_active_pane {
                 self.terminal = tab.terminal.clone();
                 if self.search_state.is_open && !self.search_state.query.is_empty() {
                     self.search_state.execute_search(&self.terminal.grid);
@@ -1538,9 +1739,26 @@ impl App {
 
     /// Handles child process exit notification for a specific tab.
     pub fn handle_tab_pty_exited(&mut self, tab_id: usize, code: Option<i32>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            tab.pty_exited = true;
-            tab.pty_exit_code = code;
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id || t.panes.iter().any(|p| p.id == tab_id))
+        {
+            let pane_id = if tab.panes.iter().any(|p| p.id == tab_id) {
+                tab_id
+            } else {
+                tab.active_pane_id
+            };
+            if let Some(pane) = tab.pane_mut(pane_id) {
+                pane.pty_exited = true;
+                pane.pty_exit_code = code;
+            }
+            if pane_id == tab.active_pane_id {
+                tab.pty_exited = true;
+                tab.pty_exit_code = code;
+                self.pty_exited = true;
+                self.pty_exit_code = code;
+            }
         }
 
         let is_active = self
@@ -1599,58 +1817,165 @@ impl App {
             ));
         }
 
-        // 2. Cell backgrounds offset below the tab bar with padding
-        quad_vertices.extend_from_slice(&build_cell_background_vertices_with_offsets(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &palette,
-            x_offset,
-            y_offset,
-        ));
+        let is_multi_pane = self
+            .tabs
+            .get(self.active_tab_index)
+            .is_some_and(|t| t.panes.len() > 1);
 
-        // 3. Text decorations offset below the tab bar with padding
-        quad_vertices.extend_from_slice(&build_text_decoration_vertices_with_offsets(
-            &self.terminal.grid,
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            &palette,
-            x_offset,
-            y_offset,
-        ));
-
-        // 4. Cursor offset below the tab bar with padding
-        let should_draw_cursor = self.terminal.grid.display_offset == 0
-            && self.terminal.grid.cursor.visible
-            && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
-
-        if should_draw_cursor {
-            let cursor_width = self
-                .terminal
-                .grid
-                .get(self.terminal.grid.cursor.row, self.terminal.grid.cursor.col)
-                .map_or(1, |c| c.width.max(1));
-            let cursor_vertices = build_cursor_vertices_with_offsets(
-                &self.terminal.grid.cursor,
-                &self.cell_metrics,
-                cursor_color,
-                cursor_width,
+        if !is_multi_pane {
+            // 2. Cell backgrounds offset below the tab bar with padding
+            quad_vertices.extend_from_slice(&build_cell_background_vertices_with_offsets(
+                &self.terminal.grid,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                &palette,
                 x_offset,
                 y_offset,
-            );
-            quad_vertices.extend_from_slice(&cursor_vertices);
-        }
+            ));
 
-        // 5. Selection highlight offset below the tab bar with padding
-        quad_vertices.extend_from_slice(&build_selection_vertices_with_offsets(
-            &self.terminal.grid,
-            self.selection.as_ref(),
-            self.cell_metrics.cell_width,
-            self.cell_metrics.cell_height,
-            selection_color,
-            x_offset,
-            y_offset,
-        ));
+            // 3. Text decorations offset below the tab bar with padding
+            quad_vertices.extend_from_slice(&build_text_decoration_vertices_with_offsets(
+                &self.terminal.grid,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                &palette,
+                x_offset,
+                y_offset,
+            ));
+
+            // 4. Cursor offset below the tab bar with padding
+            let should_draw_cursor = self.terminal.grid.display_offset == 0
+                && self.terminal.grid.cursor.visible
+                && (!self.terminal.cursor_blinking || self.cursor_blink_visible || !self.has_focus);
+
+            if should_draw_cursor {
+                let cursor_width = self
+                    .terminal
+                    .grid
+                    .get(self.terminal.grid.cursor.row, self.terminal.grid.cursor.col)
+                    .map_or(1, |c| c.width.max(1));
+                let cursor_vertices = build_cursor_vertices_with_offsets(
+                    &self.terminal.grid.cursor,
+                    &self.cell_metrics,
+                    cursor_color,
+                    cursor_width,
+                    x_offset,
+                    y_offset,
+                );
+                quad_vertices.extend_from_slice(&cursor_vertices);
+            }
+
+            // 5. Selection highlight offset below the tab bar with padding
+            quad_vertices.extend_from_slice(&build_selection_vertices_with_offsets(
+                &self.terminal.grid,
+                self.selection.as_ref(),
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                selection_color,
+                x_offset,
+                y_offset,
+            ));
+        } else if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            let container = crate::pane::PaneRect::new(
+                geo.sidebar_w,
+                geo.tab_bar_px,
+                geo.term_w,
+                geo.content_h,
+                self.terminal.grid.cols,
+                self.terminal.grid.rows,
+            );
+            let (layouts, dividers) = active_tab.pane_tree.compute_layout(
+                container,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                effective_pad_x,
+                effective_pad_y,
+            );
+
+            // Divider separator lines
+            let divider_color = [0.25, 0.28, 0.38, 0.95];
+            quad_vertices.extend_from_slice(&crate::pane::PaneTree::build_divider_quads(
+                &dividers,
+                divider_color,
+            ));
+
+            for (pane_id, pane_rect) in &layouts {
+                if let Some(pane) = active_tab.pane(*pane_id) {
+                    let pane_x = pane_rect.x + effective_pad_x;
+                    let pane_y = pane_rect.y + effective_pad_y;
+
+                    // Cell backgrounds
+                    quad_vertices.extend_from_slice(&build_cell_background_vertices_with_offsets(
+                        &pane.terminal.grid,
+                        self.cell_metrics.cell_width,
+                        self.cell_metrics.cell_height,
+                        &palette,
+                        pane_x,
+                        pane_y,
+                    ));
+
+                    // Text decorations
+                    quad_vertices.extend_from_slice(&build_text_decoration_vertices_with_offsets(
+                        &pane.terminal.grid,
+                        self.cell_metrics.cell_width,
+                        self.cell_metrics.cell_height,
+                        &palette,
+                        pane_x,
+                        pane_y,
+                    ));
+
+                    // Cursor
+                    let is_active_pane = *pane_id == active_tab.active_pane_id;
+                    let should_draw = pane.terminal.grid.display_offset == 0
+                        && pane.terminal.grid.cursor.visible
+                        && (!pane.terminal.cursor_blinking
+                            || self.cursor_blink_visible
+                            || !self.has_focus);
+
+                    if should_draw && is_active_pane {
+                        let cursor_width = pane
+                            .terminal
+                            .grid
+                            .get(pane.terminal.grid.cursor.row, pane.terminal.grid.cursor.col)
+                            .map_or(1, |c| c.width.max(1));
+                        let cursor_vertices = build_cursor_vertices_with_offsets(
+                            &pane.terminal.grid.cursor,
+                            &self.cell_metrics,
+                            cursor_color,
+                            cursor_width,
+                            pane_x,
+                            pane_y,
+                        );
+                        quad_vertices.extend_from_slice(&cursor_vertices);
+                    }
+
+                    // Selection
+                    if is_active_pane {
+                        quad_vertices.extend_from_slice(&build_selection_vertices_with_offsets(
+                            &pane.terminal.grid,
+                            pane.selection.as_ref(),
+                            self.cell_metrics.cell_width,
+                            self.cell_metrics.cell_height,
+                            selection_color,
+                            pane_x,
+                            pane_y,
+                        ));
+                    }
+
+                    // Focus border for active pane
+                    if is_active_pane {
+                        let active_border_color = [0.35, 0.65, 1.0, 0.85];
+                        quad_vertices.extend_from_slice(
+                            &crate::pane::PaneTree::build_pane_border_quads(
+                                pane_rect,
+                                active_border_color,
+                                1.5,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
 
         // 5.1. URL hover underline
         if let Some((hover_row, start_col, end_col, _)) = &self.hovered_url {
@@ -1988,18 +2313,67 @@ impl App {
             let x_offset = geo.sidebar_w + effective_pad_x;
             let y_offset = geo.tab_bar_px + effective_pad_y;
 
-            let draw_ctx = DrawContext {
-                device: &gpu.device,
-                queue: &gpu.queue,
-                screen_size: [gpu.config.width, gpu.config.height],
-                metrics: &self.cell_metrics,
-                palette: &palette,
-                dirty_rows: Some(&self.terminal.dirty_rows),
-                x_offset,
-                y_offset,
-                tab_labels: &tab_labels,
-            };
-            let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
+            let is_multi_pane = self
+                .tabs
+                .get(self.active_tab_index)
+                .is_some_and(|t| t.panes.len() > 1);
+
+            if !is_multi_pane {
+                let draw_ctx = DrawContext {
+                    device: &gpu.device,
+                    queue: &gpu.queue,
+                    screen_size: [gpu.config.width, gpu.config.height],
+                    metrics: &self.cell_metrics,
+                    palette: &palette,
+                    dirty_rows: Some(&self.terminal.dirty_rows),
+                    x_offset,
+                    y_offset,
+                    tab_labels: &tab_labels,
+                };
+                let _ = glyph_pipeline.draw(&draw_ctx, &mut rpass, &self.terminal.grid);
+            } else if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+                let container = crate::pane::PaneRect::new(
+                    geo.sidebar_w,
+                    geo.tab_bar_px,
+                    geo.term_w,
+                    geo.content_h,
+                    self.terminal.grid.cols,
+                    self.terminal.grid.rows,
+                );
+                let (layouts, _) = active_tab.pane_tree.compute_layout(
+                    container,
+                    self.cell_metrics.cell_width,
+                    self.cell_metrics.cell_height,
+                    effective_pad_x,
+                    effective_pad_y,
+                );
+
+                let mut pane_draw_list: Vec<(&crate::grid::Grid, f32, f32, f32, f32)> = Vec::new();
+                for (pane_id, pane_rect) in &layouts {
+                    if let Some(pane) = active_tab.pane(*pane_id) {
+                        pane_draw_list.push((
+                            &pane.terminal.grid,
+                            pane_rect.x + effective_pad_x,
+                            pane_rect.y + effective_pad_y,
+                            pane_rect.width - 2.0 * effective_pad_x,
+                            pane_rect.height - 2.0 * effective_pad_y,
+                        ));
+                    }
+                }
+
+                let draw_ctx = DrawContext {
+                    device: &gpu.device,
+                    queue: &gpu.queue,
+                    screen_size: [gpu.config.width, gpu.config.height],
+                    metrics: &self.cell_metrics,
+                    palette: &palette,
+                    dirty_rows: None,
+                    x_offset,
+                    y_offset,
+                    tab_labels: &tab_labels,
+                };
+                let _ = glyph_pipeline.draw_panes(&draw_ctx, &mut rpass, &pane_draw_list);
+            }
         }
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -2128,6 +2502,34 @@ impl ApplicationHandler<AppEvent> for App {
                 let win_h = win.inner_size().height as f32;
                 let geo = self.compute_pane_geometry(win_w, win_h);
 
+                // Handle active multi-pane divider dragging
+                if let Some(div) = self.dragging_pane_divider {
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+                        let cursor_x = position.x as f32;
+                        let cursor_y = position.y as f32;
+                        let container = crate::pane::PaneRect::new(
+                            geo.sidebar_w,
+                            geo.tab_bar_px,
+                            geo.term_w,
+                            geo.content_h,
+                            self.terminal.grid.cols,
+                            self.terminal.grid.rows,
+                        );
+                        let ratio = match div.direction {
+                            crate::pane::SplitDirection::Vertical => {
+                                (cursor_x - container.x) / container.width.max(1.0)
+                            }
+                            crate::pane::SplitDirection::Horizontal => {
+                                (cursor_y - container.y) / container.height.max(1.0)
+                            }
+                        };
+                        tab.pane_tree.root.adjust_split_ratio(div.split_id, ratio);
+                        self.handle_resize(win.inner_size());
+                        win.request_redraw();
+                    }
+                    return;
+                }
+
                 if self.dragging_splitter == DraggingSplitter::None {
                     let mut detected = DraggingSplitter::None;
                     let cursor_y = position.y as f32;
@@ -2153,6 +2555,55 @@ impl ApplicationHandler<AppEvent> for App {
                         win.request_redraw();
                     }
 
+                    // Check multi-pane split divider hover
+                    let mut pane_div_hit = None;
+                    if self.hovered_splitter == DraggingSplitter::None
+                        && let Some(active_tab) = self.tabs.get(self.active_tab_index)
+                        && active_tab.panes.len() > 1
+                    {
+                        let effective_pad_x =
+                            (self.config.padding_x * self.scale_factor as f32).round();
+                        let effective_pad_y =
+                            (self.config.padding_y * self.scale_factor as f32).round();
+                        let container = crate::pane::PaneRect::new(
+                            geo.sidebar_w,
+                            geo.tab_bar_px,
+                            geo.term_w,
+                            geo.content_h,
+                            self.terminal.grid.cols,
+                            self.terminal.grid.rows,
+                        );
+                        let (_, dividers) = active_tab.pane_tree.compute_layout(
+                            container,
+                            self.cell_metrics.cell_width,
+                            self.cell_metrics.cell_height,
+                            effective_pad_x,
+                            effective_pad_y,
+                        );
+                        pane_div_hit = crate::pane::PaneTree::hit_test_divider(
+                            &dividers, cursor_x, cursor_y, 4.0,
+                        );
+                    }
+
+                    if pane_div_hit != self.hovered_pane_divider {
+                        self.hovered_pane_divider = pane_div_hit;
+                        if let Some(div) = pane_div_hit {
+                            win.set_cursor(match div.direction {
+                                crate::pane::SplitDirection::Vertical => {
+                                    winit::window::CursorIcon::ColResize
+                                }
+                                crate::pane::SplitDirection::Horizontal => {
+                                    winit::window::CursorIcon::RowResize
+                                }
+                            });
+                        } else if self.hovered_splitter == DraggingSplitter::None
+                            && self.hovered_url.is_none()
+                        {
+                            win.set_cursor(winit::window::CursorIcon::Default);
+                        }
+                        win.request_redraw();
+                    }
+
                     if let Some(start) = self.mouse_down_pos {
                         let current = self.pixel_to_grid_point(self.cursor_pixel_pos);
                         self.selection = Some(Selection::new(start, current));
@@ -2160,7 +2611,9 @@ impl ApplicationHandler<AppEvent> for App {
                             self.hovered_url = None;
                         }
                         win.request_redraw();
-                    } else if self.hovered_splitter == DraggingSplitter::None && !self.settings_open
+                    } else if self.hovered_splitter == DraggingSplitter::None
+                        && self.hovered_pane_divider.is_none()
+                        && !self.settings_open
                     {
                         // Check URL hover within terminal content pane
                         let in_terminal = cursor_x >= geo.sidebar_w
@@ -2372,6 +2825,25 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         crate::search::SearchBarAction::None => {}
                     }
+                }
+
+                if state == winit::event::ElementState::Pressed
+                    && self.hovered_pane_divider.is_some()
+                {
+                    self.dragging_pane_divider = self.hovered_pane_divider;
+                    self.mouse_down_pos = None;
+                    self.selection = None;
+                    win.request_redraw();
+                    return;
+                }
+                if state == winit::event::ElementState::Released
+                    && self.dragging_pane_divider.is_some()
+                {
+                    self.dragging_pane_divider = None;
+                    self.handle_resize(win.inner_size());
+                    self.terminal.mark_all_dirty();
+                    win.request_redraw();
+                    return;
                 }
 
                 if state == winit::event::ElementState::Pressed
@@ -2846,6 +3318,45 @@ impl ApplicationHandler<AppEvent> for App {
 
                 let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
                 if state == winit::event::ElementState::Pressed {
+                    if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index)
+                        && active_tab.panes.len() > 1
+                    {
+                        let effective_pad_x =
+                            (self.config.padding_x * self.scale_factor as f32).round();
+                        let effective_pad_y =
+                            (self.config.padding_y * self.scale_factor as f32).round();
+                        let container = crate::pane::PaneRect::new(
+                            geo.sidebar_w,
+                            geo.tab_bar_px,
+                            geo.term_w,
+                            geo.content_h,
+                            self.terminal.grid.cols,
+                            self.terminal.grid.rows,
+                        );
+                        let (layouts, _) = active_tab.pane_tree.compute_layout(
+                            container,
+                            self.cell_metrics.cell_width,
+                            self.cell_metrics.cell_height,
+                            effective_pad_x,
+                            effective_pad_y,
+                        );
+                        if let Some(clicked_pane_id) = crate::pane::PaneTree::find_pane_at(
+                            &layouts,
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                        ) && clicked_pane_id != active_tab.active_pane_id
+                        {
+                            active_tab.select_pane(clicked_pane_id);
+                            self.terminal = active_tab.terminal.clone();
+                            self.pty_writer = active_tab.pty_writer.clone();
+                            self.pty_exited = active_tab.pty_exited;
+                            self.pty_exit_code = active_tab.pty_exit_code;
+                            self.selection = active_tab.selection;
+                            self.mouse_down_pos = active_tab.mouse_down_pos;
+                            win.request_redraw();
+                        }
+                    }
+
                     let ctrl_held = (cfg!(target_os = "macos") && self.modifiers.super_key())
                         || self.modifiers.control_key();
                     if ctrl_held {
@@ -3283,5 +3794,34 @@ mod tests {
         // 3. Scrolled state: generates track quad (6 vertices) + thumb quad (6 vertices) = 12 vertices
         let quads_scrolled = app.assemble_scrollbar_quads(screen_size, 36.0, 10.0, accent);
         assert_eq!(quads_scrolled.len(), 12);
+    }
+
+    #[test]
+    fn app_multi_pane_split_and_cycle() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        assert_eq!(app.tabs[0].panes.len(), 1);
+
+        // Split vertically
+        app.split_active_pane(crate::pane::SplitDirection::Vertical);
+        assert_eq!(app.tabs[0].panes.len(), 2);
+        let pane2_id = app.tabs[0].active_pane_id;
+
+        // Split horizontally
+        app.split_active_pane(crate::pane::SplitDirection::Horizontal);
+        assert_eq!(app.tabs[0].panes.len(), 3);
+        let pane3_id = app.tabs[0].active_pane_id;
+        assert_ne!(pane2_id, pane3_id);
+
+        // Cycle panes
+        app.cycle_pane_forward();
+        let current_after_fwd = app.tabs[0].active_pane_id;
+        assert_ne!(current_after_fwd, pane3_id);
+
+        app.cycle_pane_backward();
+        assert_eq!(app.tabs[0].active_pane_id, pane3_id);
+
+        // Close pane
+        app.close_active_pane();
+        assert_eq!(app.tabs[0].panes.len(), 2);
     }
 }
