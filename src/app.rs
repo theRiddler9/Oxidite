@@ -225,6 +225,14 @@ pub struct App {
     pub search_state: crate::search::SearchState,
     /// Currently hovered URL span `(viewport_row, start_col, end_col, url)` if any.
     pub hovered_url: Option<(usize, usize, usize, String)>,
+    /// Active tab drag-and-drop state for reordering tabs.
+    pub dragging_tab: Option<crate::tab::TabDragState>,
+    /// Last clicked tab index and timestamp for detecting double clicks.
+    pub last_tab_click: Option<(usize, std::time::Instant)>,
+    /// Active tab rename modal dialog state if user is editing a tab title.
+    pub tab_rename_state: Option<crate::tab::TabRenameState>,
+    /// Active close tab confirmation modal dialog state if closing an active tab.
+    pub tab_close_confirm: Option<crate::tab::CloseConfirmState>,
 }
 
 /// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
@@ -427,6 +435,10 @@ impl App {
             last_active_cwd: Some(cwd),
             search_state: crate::search::SearchState::default(),
             hovered_url: None,
+            dragging_tab: None,
+            last_tab_click: None,
+            tab_rename_state: None,
+            tab_close_confirm: None,
         }
     }
 
@@ -553,6 +565,118 @@ impl App {
                 win.request_redraw();
                 return;
             }
+        }
+
+        // If tab close confirmation modal is open, handle Enter / Escape / Tab / Arrows
+        if let Some(mut confirm) = self.tab_close_confirm.take() {
+            if key_ev.state == winit::event::ElementState::Pressed {
+                use winit::keyboard::{Key, NamedKey};
+                match &key_ev.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.tab_close_confirm = None;
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        self.tab_close_confirm = None;
+                        if confirm.confirm_selected {
+                            self.close_tab(confirm.tab_index);
+                        }
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Tab | NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
+                        confirm.toggle_selection();
+                        self.tab_close_confirm = Some(confirm);
+                        win.request_redraw();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            self.tab_close_confirm = Some(confirm);
+            return;
+        }
+
+        // If tab rename modal is open, handle typing, backspace, delete, cursor movement, and Enter
+        if let Some(mut rename) = self.tab_rename_state.take() {
+            if key_ev.state == winit::event::ElementState::Pressed {
+                use winit::keyboard::{Key, NamedKey};
+                match &key_ev.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.tab_rename_state = None;
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        self.tab_rename_state = None;
+                        let custom = rename.input_text.trim().to_string();
+                        if let Some(tab) = self.tabs.get_mut(rename.tab_index) {
+                            tab.set_custom_title(if custom.is_empty() {
+                                None
+                            } else {
+                                Some(custom)
+                            });
+                        }
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        rename.backspace();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        rename.delete();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        rename.move_cursor_left();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        rename.move_cursor_right();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        rename.move_cursor_home();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    Key::Named(NamedKey::End) => {
+                        rename.move_cursor_end();
+                        self.tab_rename_state = Some(rename);
+                        win.request_redraw();
+                        return;
+                    }
+                    _ => {
+                        if !self.modifiers.control_key()
+                            && !self.modifiers.alt_key()
+                            && !self.modifiers.super_key()
+                            && let Some(text) = &key_ev.text
+                        {
+                            for ch in text.chars() {
+                                if !ch.is_control() {
+                                    rename.insert_char(ch);
+                                }
+                            }
+                            self.tab_rename_state = Some(rename);
+                            win.request_redraw();
+                            return;
+                        }
+                    }
+                }
+            }
+            self.tab_rename_state = Some(rename);
+            return;
         }
 
         // If in-terminal search overlay is open, handle search query input and navigation
@@ -749,7 +873,7 @@ impl App {
                     return;
                 }
                 Key::Character(c) if c.eq_ignore_ascii_case("w") && self.modifiers.shift_key() => {
-                    self.close_tab(self.active_tab_index);
+                    self.request_close_tab(self.active_tab_index);
                     win.request_redraw();
                     return;
                 }
@@ -920,6 +1044,17 @@ impl App {
                 }
                 InputAction::PrevPane => {
                     self.cycle_pane_backward();
+                }
+                InputAction::RenameTab => {
+                    let title = self
+                        .tabs
+                        .get(self.active_tab_index)
+                        .map_or("", |t| t.display_title());
+                    self.tab_rename_state = Some(crate::tab::TabRenameState::new(
+                        self.active_tab_index,
+                        title,
+                    ));
+                    win.request_redraw();
                 }
             }
             return;
@@ -1228,8 +1363,10 @@ impl App {
                 glyphon::Color::rgb(140, 145, 160)
             };
 
-            // Tab title with agent badge
-            let display_title = if agent == crate::tab::AgentKind::Shell {
+            // Tab title with agent badge (honors user-specified custom title)
+            let display_title = if let Some(ref custom) = tab.custom_title {
+                custom.clone()
+            } else if agent == crate::tab::AgentKind::Shell {
                 tab.title.clone()
             } else {
                 format!("{agent_icon} {agent_name}")
@@ -1497,6 +1634,23 @@ impl App {
         }
     }
 
+    /// Requests closing the tab at `index`, displaying confirmation modal if child process is still active.
+    pub fn request_close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() || self.tabs.len() <= 1 {
+            return;
+        }
+
+        if self.config.confirm_close_active_tab && !self.tabs[index].pty_exited {
+            let title = self.tabs[index].display_title().to_string();
+            self.tab_close_confirm = Some(crate::tab::CloseConfirmState::new(index, title));
+            if let Some(ref win) = self.window {
+                win.request_redraw();
+            }
+        } else {
+            self.close_tab(index);
+        }
+    }
+
     /// Closes the tab at `index`. If it's the only tab, it remains open.
     pub fn close_tab(&mut self, index: usize) {
         if index >= self.tabs.len() || self.tabs.len() <= 1 {
@@ -1601,7 +1755,7 @@ impl App {
         };
 
         if active_tab.panes.len() <= 1 {
-            self.close_tab(self.active_tab_index);
+            self.request_close_tab(self.active_tab_index);
             return;
         }
 
@@ -2096,6 +2250,40 @@ impl App {
             ));
         }
 
+        // 8.1. Tab drag-and-drop indicator (if dragging a tab)
+        if let Some(ref drag) = self.dragging_tab
+            && drag.is_dragging
+        {
+            let target_idx =
+                crate::tab::compute_tab_drop_index(drag.current_x, self.tabs.len(), screen_size[0]);
+            quad_vertices.extend_from_slice(&crate::tab::assemble_tab_drag_indicator_quads(
+                self.tabs.len(),
+                drag.origin_idx,
+                target_idx,
+                screen_size[0],
+                accent_color,
+            ));
+        }
+
+        // 8.2. Tab rename modal dialog (if open)
+        if self.tab_rename_state.is_some() {
+            quad_vertices.extend_from_slice(&crate::tab::assemble_tab_rename_quads(
+                screen_size[0],
+                screen_size[1],
+                accent_color,
+            ));
+        }
+
+        // 8.3. Close tab confirmation modal dialog (if open)
+        if let Some(ref confirm_state) = self.tab_close_confirm {
+            quad_vertices.extend_from_slice(&crate::tab::assemble_close_confirm_quads(
+                screen_size[0],
+                screen_size[1],
+                confirm_state.confirm_selected,
+                accent_color,
+            ));
+        }
+
         // 8. Visual bell overlay
         if bell_active {
             quad_vertices.extend_from_slice(&build_quad_vertices(
@@ -2237,6 +2425,23 @@ impl App {
                 screen_size[0],
                 screen_size[1],
                 &sm_state,
+            ));
+        }
+
+        if let Some(ref rename_state) = self.tab_rename_state {
+            tab_labels.extend(crate::tab::build_tab_rename_labels(
+                rename_state,
+                screen_size[0],
+                screen_size[1],
+                self.cursor_blink_visible,
+            ));
+        }
+
+        if let Some(ref confirm_state) = self.tab_close_confirm {
+            tab_labels.extend(crate::tab::build_close_confirm_labels(
+                confirm_state,
+                screen_size[0],
+                screen_size[1],
             ));
         }
 
@@ -2502,6 +2707,14 @@ impl ApplicationHandler<AppEvent> for App {
                 let win_h = win.inner_size().height as f32;
                 let geo = self.compute_pane_geometry(win_w, win_h);
 
+                // Handle active tab header dragging for reordering
+                if let Some(ref mut drag) = self.dragging_tab {
+                    if drag.update_pos(position.x as f32, position.y as f32) {
+                        win.request_redraw();
+                    }
+                    return;
+                }
+
                 // Handle active multi-pane divider dragging
                 if let Some(div) = self.dragging_pane_divider {
                     if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
@@ -2683,6 +2896,96 @@ impl ApplicationHandler<AppEvent> for App {
                 button: winit::event::MouseButton::Left,
                 ..
             } if !self.terminal.modes.mouse_reporting => {
+                // If close tab confirmation modal is open, let it capture all click events
+                if let Some(confirm) = self.tab_close_confirm.clone() {
+                    if state == winit::event::ElementState::Pressed {
+                        let win_w = win.inner_size().width as f32;
+                        let win_h = win.inner_size().height as f32;
+                        let action = crate::tab::hit_test_close_confirm(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            win_w,
+                            win_h,
+                        );
+                        match action {
+                            Some(crate::tab::CloseConfirmAction::Confirm) => {
+                                self.tab_close_confirm = None;
+                                self.close_tab(confirm.tab_index);
+                                win.request_redraw();
+                            }
+                            Some(
+                                crate::tab::CloseConfirmAction::Cancel
+                                | crate::tab::CloseConfirmAction::Backdrop,
+                            ) => {
+                                self.tab_close_confirm = None;
+                                win.request_redraw();
+                            }
+                            None => {}
+                        }
+                    }
+                    return;
+                }
+
+                // If tab rename modal dialog is open, let it capture all click events
+                if let Some(rename) = self.tab_rename_state.clone() {
+                    if state == winit::event::ElementState::Pressed {
+                        let win_w = win.inner_size().width as f32;
+                        let win_h = win.inner_size().height as f32;
+                        let action = crate::tab::hit_test_tab_rename(
+                            self.cursor_pixel_pos.0 as f32,
+                            self.cursor_pixel_pos.1 as f32,
+                            win_w,
+                            win_h,
+                        );
+                        match action {
+                            Some(crate::tab::TabRenameAction::Save) => {
+                                self.tab_rename_state = None;
+                                let custom = rename.input_text.trim().to_string();
+                                if let Some(tab) = self.tabs.get_mut(rename.tab_index) {
+                                    tab.set_custom_title(if custom.is_empty() {
+                                        None
+                                    } else {
+                                        Some(custom)
+                                    });
+                                }
+                                win.request_redraw();
+                            }
+                            Some(
+                                crate::tab::TabRenameAction::Cancel
+                                | crate::tab::TabRenameAction::Backdrop,
+                            ) => {
+                                self.tab_rename_state = None;
+                                win.request_redraw();
+                            }
+                            Some(crate::tab::TabRenameAction::InputBox) | None => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Handle tab drag-and-drop drop release
+                if state == winit::event::ElementState::Released
+                    && let Some(drag) = self.dragging_tab.take()
+                    && drag.is_dragging
+                {
+                    let win_w = win.inner_size().width as f32;
+                    let target_idx = crate::tab::compute_tab_drop_index(
+                        self.cursor_pixel_pos.0 as f32,
+                        self.tabs.len(),
+                        win_w,
+                    );
+                    if target_idx != drag.origin_idx {
+                        crate::tab::reorder_tabs(
+                            &mut self.tabs,
+                            &mut self.active_tab_index,
+                            drag.origin_idx,
+                            target_idx,
+                        );
+                    }
+                    win.request_redraw();
+                    return;
+                }
+
                 // If settings modal is open, let it capture all click events
                 if self.settings_open {
                     if state == winit::event::ElementState::Pressed {
@@ -2875,10 +3178,32 @@ impl ApplicationHandler<AppEvent> for App {
                         );
                         match action {
                             TabBarAction::SelectTab(idx) => {
-                                self.select_tab(idx);
+                                let now = std::time::Instant::now();
+                                let is_double_click =
+                                    if let Some((last_idx, last_time)) = self.last_tab_click {
+                                        last_idx == idx
+                                            && now.duration_since(last_time).as_millis() < 400
+                                    } else {
+                                        false
+                                    };
+                                self.last_tab_click = Some((idx, now));
+                                if is_double_click {
+                                    let title =
+                                        self.tabs.get(idx).map_or("", |t| t.display_title());
+                                    self.tab_rename_state =
+                                        Some(crate::tab::TabRenameState::new(idx, title));
+                                    self.dragging_tab = None;
+                                } else {
+                                    self.select_tab(idx);
+                                    self.dragging_tab = Some(crate::tab::TabDragState::new(
+                                        idx,
+                                        self.cursor_pixel_pos.0 as f32,
+                                        self.cursor_pixel_pos.1 as f32,
+                                    ));
+                                }
                             }
                             TabBarAction::CloseTab(idx) => {
-                                self.close_tab(idx);
+                                self.request_close_tab(idx);
                             }
                             TabBarAction::NewTab => {
                                 self.create_tab(None);
@@ -2973,7 +3298,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 win.request_redraw();
                             }
                             crate::sidebar::SidebarAction::CloseTab(idx) => {
-                                self.close_tab(idx);
+                                self.request_close_tab(idx);
                                 win.request_redraw();
                             }
                             crate::sidebar::SidebarAction::NewSession => {
@@ -3823,5 +4148,48 @@ mod tests {
         // Close pane
         app.close_active_pane();
         assert_eq!(app.tabs[0].panes.len(), 2);
+    }
+
+    #[test]
+    fn app_tab_drag_reorder_and_rename_and_close_confirmation() {
+        let mut app = App::new(None, Terminal::new(80, 24), None);
+        app.create_tab(Some("Second Tab".to_string()));
+        app.create_tab(Some("Third Tab".to_string()));
+        assert_eq!(app.tabs.len(), 3);
+
+        // 1. Rename tab
+        app.tabs[0].set_custom_title(Some("Cockpit Terminal".to_string()));
+        assert_eq!(app.tabs[0].display_title(), "Cockpit Terminal");
+        let labels = app.build_tab_labels(800.0);
+        assert!(labels.iter().any(|l| l.text == "Cockpit Terminal"));
+
+        // 2. Tab reorder
+        let mut active_idx = app.active_tab_index;
+        assert!(crate::tab::reorder_tabs(
+            &mut app.tabs,
+            &mut active_idx,
+            0,
+            2
+        ));
+        assert_eq!(app.tabs[2].display_title(), "Cockpit Terminal");
+
+        // 3. Close tab confirmation on active running shell
+        app.tabs[2].pty_exited = false;
+        app.config.confirm_close_active_tab = true;
+        app.request_close_tab(2);
+        assert!(app.tab_close_confirm.is_some());
+        assert_eq!(app.tabs.len(), 3); // Tab is not closed yet!
+
+        // Confirm close
+        if let Some(confirm) = app.tab_close_confirm.take() {
+            app.close_tab(confirm.tab_index);
+        }
+        assert_eq!(app.tabs.len(), 2);
+
+        // When pty_exited is true, close immediately without confirmation
+        app.tabs[1].pty_exited = true;
+        app.request_close_tab(1);
+        assert!(app.tab_close_confirm.is_none());
+        assert_eq!(app.tabs.len(), 1);
     }
 }
