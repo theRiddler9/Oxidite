@@ -887,6 +887,16 @@ impl App {
                         win.request_redraw();
                     }
                 }
+                InputAction::PrevPrompt => {
+                    if self.terminal.jump_to_prev_prompt() {
+                        win.request_redraw();
+                    }
+                }
+                InputAction::NextPrompt => {
+                    if self.terminal.jump_to_next_prompt() {
+                        win.request_redraw();
+                    }
+                }
             }
             return;
         }
