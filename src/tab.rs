@@ -4,7 +4,7 @@ use crate::input::{GridPoint, Selection};
 use crate::pane::{Pane, PaneTree, SplitDirection};
 use crate::parser::Parser;
 use crate::pty::{PtySize, PtyWriter};
-use crate::renderer::draw::{QuadVertex, build_quad_vertices};
+use crate::renderer::draw::{QuadVertex, TabLabel, build_quad_vertices};
 use crate::terminal::Terminal;
 use std::sync::{Arc, Mutex};
 
@@ -182,6 +182,8 @@ pub struct Tab {
     pub id: usize,
     /// Title displayed in the tab strip.
     pub title: String,
+    /// User-specified custom title overriding automatic shell naming.
+    pub custom_title: Option<String>,
     /// Terminal state containing grid, cursor, modes, and scrollback.
     pub terminal: Terminal,
     /// VT escape sequence parser.
@@ -221,6 +223,7 @@ impl Tab {
         Self {
             id,
             title,
+            custom_title: None,
             terminal,
             parser: Parser::new(),
             pty_writer,
@@ -232,6 +235,26 @@ impl Tab {
             panes,
             active_pane_id: id,
             pane_tree,
+        }
+    }
+
+    /// Returns the active display title for this tab, honoring custom title if set.
+    #[must_use]
+    pub fn display_title(&self) -> &str {
+        if let Some(ref custom) = self.custom_title {
+            custom.as_str()
+        } else if !self.terminal.title.is_empty() {
+            self.terminal.title.as_str()
+        } else {
+            self.title.as_str()
+        }
+    }
+
+    /// Sets or clears the user-specified custom title for this tab.
+    pub fn set_custom_title(&mut self, title: Option<String>) {
+        self.custom_title = title.filter(|s| !s.trim().is_empty());
+        if self.custom_title.is_none() && !self.terminal.title.is_empty() {
+            self.title = self.terminal.title.clone();
         }
     }
 
@@ -268,7 +291,11 @@ impl Tab {
             let selection = pane.selection;
             let mouse_down_pos = pane.mouse_down_pos;
             let cwd = pane.cwd.clone();
-            let title = pane.title.clone();
+            let title = if self.custom_title.is_some() {
+                self.title.clone()
+            } else {
+                pane.title.clone()
+            };
 
             self.terminal = terminal;
             self.pty_writer = pty_writer;
@@ -366,7 +393,7 @@ impl Tab {
     /// Feeds incoming PTY bytes into this tab's VT parser and updates terminal state.
     pub fn advance_parser(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.terminal, bytes);
-        if !self.terminal.title.is_empty() {
+        if !self.terminal.title.is_empty() && self.custom_title.is_none() {
             self.title = self.terminal.title.clone();
         }
         if let Some(ref cwd) = self.terminal.cwd {
@@ -390,7 +417,12 @@ impl Tab {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == pane_id) {
             pane.advance_parser(bytes);
             if is_active {
-                term_update = Some((pane.terminal.clone(), pane.title.clone(), pane.cwd.clone()));
+                let title = if self.custom_title.is_some() {
+                    self.title.clone()
+                } else {
+                    pane.title.clone()
+                };
+                term_update = Some((pane.terminal.clone(), title, pane.cwd.clone()));
             }
         }
         if let Some((term, title, cwd)) = term_update {
@@ -866,6 +898,647 @@ pub fn assemble_tab_bar_quads(
     quads
 }
 
+/// Computes the target drop slot index for a tab being dragged at `drag_x`.
+#[must_use]
+pub fn compute_tab_drop_index(drag_x: f32, count: usize, window_width: f32) -> usize {
+    if count <= 1 {
+        return 0;
+    }
+    let (layouts, _, _) = compute_tab_layouts(count, window_width);
+    if layouts.is_empty() {
+        return 0;
+    }
+    for (i, layout) in layouts.iter().enumerate() {
+        let center = layout.x + layout.width * 0.5;
+        if drag_x < center {
+            return i;
+        }
+    }
+    layouts.len().saturating_sub(1)
+}
+
+/// Reorders tabs by moving a tab from `from_idx` to `to_idx`, adjusting `active_index` accordingly.
+pub fn reorder_tabs(
+    tabs: &mut Vec<Tab>,
+    active_index: &mut usize,
+    from_idx: usize,
+    to_idx: usize,
+) -> bool {
+    let count = tabs.len();
+    if count <= 1 || from_idx >= count || to_idx >= count || from_idx == to_idx {
+        return false;
+    }
+    let tab = tabs.remove(from_idx);
+    tabs.insert(to_idx, tab);
+
+    let cur = *active_index;
+    if cur == from_idx {
+        *active_index = to_idx;
+    } else if from_idx < cur && to_idx >= cur {
+        *active_index = cur.saturating_sub(1);
+    } else if from_idx > cur && to_idx <= cur {
+        *active_index = cur.saturating_add(1);
+    }
+    true
+}
+
+/// Tab drag state tracking the origin index and cursor coordinates during a drag-and-drop reorder.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabDragState {
+    /// Original index of the tab being dragged.
+    pub origin_idx: usize,
+    /// Current mouse X coordinate.
+    pub current_x: f32,
+    /// Current mouse Y coordinate.
+    pub current_y: f32,
+    /// Initial mouse X coordinate when button was pressed.
+    pub start_x: f32,
+    /// Whether the drag has exceeded the minimum movement threshold.
+    pub is_dragging: bool,
+}
+
+impl TabDragState {
+    /// Creates a new `TabDragState` at `(x, y)` for `origin_idx`.
+    #[must_use]
+    pub fn new(origin_idx: usize, x: f32, y: f32) -> Self {
+        Self {
+            origin_idx,
+            current_x: x,
+            current_y: y,
+            start_x: x,
+            is_dragging: false,
+        }
+    }
+
+    /// Updates mouse position and returns whether the movement exceeds the drag threshold (4px).
+    pub fn update_pos(&mut self, x: f32, y: f32) -> bool {
+        self.current_x = x;
+        self.current_y = y;
+        if (x - self.start_x).abs() >= 4.0 {
+            self.is_dragging = true;
+        }
+        self.is_dragging
+    }
+}
+
+/// Builds highlight and drop indicator vertices for a tab drag-and-drop operation.
+#[must_use]
+pub fn assemble_tab_drag_indicator_quads(
+    tab_count: usize,
+    dragged_idx: usize,
+    target_idx: usize,
+    window_width: f32,
+    accent_color: [f32; 4],
+) -> Vec<QuadVertex> {
+    if tab_count == 0 || dragged_idx >= tab_count || target_idx >= tab_count {
+        return Vec::new();
+    }
+    let (layouts, _, _) = compute_tab_layouts(tab_count, window_width);
+    if layouts.is_empty() {
+        return Vec::new();
+    }
+
+    let mut quads = Vec::new();
+
+    // 1. Highlight the tab currently being dragged with a lifted background
+    if let Some(dragged_layout) = layouts.get(dragged_idx) {
+        quads.extend_from_slice(&build_quad_vertices(
+            dragged_layout.x,
+            dragged_layout.y,
+            dragged_layout.width,
+            dragged_layout.height,
+            [0.18, 0.22, 0.32, 0.55],
+        ));
+    }
+
+    // 2. Draw a vertical accent drop indicator bar where the tab will land
+    if let Some(target_layout) = layouts.get(target_idx) {
+        let indicator_x = if target_idx <= dragged_idx {
+            target_layout.x - 2.0
+        } else {
+            target_layout.x + target_layout.width - 1.0
+        };
+        quads.extend_from_slice(&build_quad_vertices(
+            indicator_x,
+            target_layout.y,
+            3.0,
+            target_layout.height,
+            accent_color,
+        ));
+    }
+
+    quads
+}
+
+/// State for an interactive tab rename modal or overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabRenameState {
+    /// Index of the tab currently being renamed.
+    pub tab_index: usize,
+    /// Editable text buffer.
+    pub input_text: String,
+    /// Character cursor position within `input_text`.
+    pub cursor_pos: usize,
+}
+
+impl TabRenameState {
+    /// Creates a new `TabRenameState` initialized with the tab's current title.
+    #[must_use]
+    pub fn new(tab_index: usize, current_title: &str) -> Self {
+        let input_text = current_title.to_string();
+        let cursor_pos = input_text.chars().count();
+        Self {
+            tab_index,
+            input_text,
+            cursor_pos,
+        }
+    }
+
+    /// Inserts a character at the current cursor position.
+    pub fn insert_char(&mut self, c: char) {
+        let char_count = self.input_text.chars().count();
+        let idx = self.cursor_pos.min(char_count);
+        let byte_idx = self
+            .input_text
+            .char_indices()
+            .nth(idx)
+            .map_or(self.input_text.len(), |(b, _)| b);
+        self.input_text.insert(byte_idx, c);
+        self.cursor_pos += 1;
+    }
+
+    /// Deletes the character before the cursor (backspace).
+    pub fn backspace(&mut self) {
+        if self.cursor_pos > 0 {
+            let idx = self.cursor_pos - 1;
+            if let Some((b, ch)) = self.input_text.char_indices().nth(idx) {
+                self.input_text.drain(b..b + ch.len_utf8());
+                self.cursor_pos -= 1;
+            }
+        }
+    }
+
+    /// Deletes the character at the cursor position (delete).
+    pub fn delete(&mut self) {
+        let char_count = self.input_text.chars().count();
+        if self.cursor_pos < char_count
+            && let Some((b, ch)) = self.input_text.char_indices().nth(self.cursor_pos)
+        {
+            self.input_text.drain(b..b + ch.len_utf8());
+        }
+    }
+
+    /// Moves cursor left by one character.
+    pub fn move_cursor_left(&mut self) {
+        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    }
+
+    /// Moves cursor right by one character.
+    pub fn move_cursor_right(&mut self) {
+        let char_count = self.input_text.chars().count();
+        if self.cursor_pos < char_count {
+            self.cursor_pos += 1;
+        }
+    }
+
+    /// Moves cursor to beginning of line.
+    pub fn move_cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Moves cursor to end of line.
+    pub fn move_cursor_end(&mut self) {
+        self.cursor_pos = self.input_text.chars().count();
+    }
+}
+
+/// Action triggered by interacting with the tab rename modal dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabRenameAction {
+    /// Save the new custom title.
+    Save,
+    /// Cancel renaming without changes.
+    Cancel,
+    /// Click fell inside the editable text box.
+    InputBox,
+    /// Click fell outside the dialog card.
+    Backdrop,
+}
+
+/// Builds quad vertices for the tab rename modal dialog.
+#[must_use]
+pub fn assemble_tab_rename_quads(
+    window_width: f32,
+    window_height: f32,
+    accent_color: [f32; 4],
+) -> Vec<QuadVertex> {
+    let mut quads = Vec::new();
+    let card_w = 400.0_f32;
+    let card_h = 140.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    // 1. Fullscreen dimmed backdrop
+    quads.extend_from_slice(&build_quad_vertices(
+        0.0,
+        0.0,
+        window_width,
+        window_height,
+        [0.0, 0.0, 0.0, 0.65],
+    ));
+
+    // 2. Card border (accent)
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x - 1.0,
+        card_y - 1.0,
+        card_w + 2.0,
+        card_h + 2.0,
+        accent_color,
+    ));
+
+    // 3. Card background (#0b0c10)
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x,
+        card_y,
+        card_w,
+        card_h,
+        [0.045, 0.048, 0.065, 0.98],
+    ));
+
+    // 4. Text input box border
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + 19.0,
+        card_y + 44.0,
+        card_w - 38.0,
+        34.0,
+        [0.22, 0.25, 0.35, 0.8],
+    ));
+
+    // 5. Text input box background (#040507)
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + 20.0,
+        card_y + 45.0,
+        card_w - 40.0,
+        32.0,
+        [0.02, 0.025, 0.035, 1.0],
+    ));
+
+    // 6. Save button background
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + card_w - 190.0,
+        card_y + 92.0,
+        80.0,
+        28.0,
+        [0.18, 0.42, 0.78, 0.9],
+    ));
+
+    // 7. Cancel button background
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + card_w - 95.0,
+        card_y + 92.0,
+        75.0,
+        28.0,
+        [0.14, 0.15, 0.20, 0.8],
+    ));
+
+    quads
+}
+
+/// Hit tests click coordinates within the tab rename dialog.
+#[must_use]
+pub fn hit_test_tab_rename(
+    x: f32,
+    y: f32,
+    window_width: f32,
+    window_height: f32,
+) -> Option<TabRenameAction> {
+    let card_w = 400.0_f32;
+    let card_h = 140.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    if x < card_x || x > card_x + card_w || y < card_y || y > card_y + card_h {
+        return Some(TabRenameAction::Backdrop);
+    }
+
+    // Save button: card_x + card_w - 190.0, card_y + 92.0, 80.0, 28.0
+    let save_x = card_x + card_w - 190.0;
+    let save_y = card_y + 92.0;
+    if x >= save_x && x <= save_x + 80.0 && y >= save_y && y <= save_y + 28.0 {
+        return Some(TabRenameAction::Save);
+    }
+
+    // Cancel button: card_x + card_w - 95.0, card_y + 92.0, 75.0, 28.0
+    let cancel_x = card_x + card_w - 95.0;
+    let cancel_y = card_y + 92.0;
+    if x >= cancel_x && x <= cancel_x + 75.0 && y >= cancel_y && y <= cancel_y + 28.0 {
+        return Some(TabRenameAction::Cancel);
+    }
+
+    // Input box: card_x + 20.0, card_y + 45.0, card_w - 40.0, 32.0
+    if x >= card_x + 20.0 && x <= card_x + card_w - 20.0 && y >= card_y + 45.0 && y <= card_y + 77.0
+    {
+        return Some(TabRenameAction::InputBox);
+    }
+
+    None
+}
+
+/// Builds text labels for rendering the tab rename modal.
+#[must_use]
+pub fn build_tab_rename_labels(
+    state: &TabRenameState,
+    window_width: f32,
+    window_height: f32,
+    show_cursor: bool,
+) -> Vec<TabLabel> {
+    let card_w = 400.0_f32;
+    let card_h = 140.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    let mut labels = Vec::new();
+
+    // Dialog title
+    labels.push(TabLabel {
+        text: "Rename Tab".to_string(),
+        x: card_x + 20.0,
+        y: card_y + 14.0,
+        color: glyphon::Color::rgb(240, 242, 250),
+        bold: true,
+        max_width: card_w - 40.0,
+    });
+
+    // Display input text with blinking cursor
+    let input_display = if show_cursor {
+        let char_count = state.input_text.chars().count();
+        let idx = state.cursor_pos.min(char_count);
+        let byte_idx = state
+            .input_text
+            .char_indices()
+            .nth(idx)
+            .map_or(state.input_text.len(), |(b, _)| b);
+        let mut s = state.input_text[..byte_idx].to_string();
+        s.push('|');
+        s.push_str(&state.input_text[byte_idx..]);
+        s
+    } else {
+        state.input_text.clone()
+    };
+
+    labels.push(TabLabel {
+        text: input_display,
+        x: card_x + 28.0,
+        y: card_y + 51.0,
+        color: glyphon::Color::rgb(220, 225, 240),
+        bold: false,
+        max_width: card_w - 56.0,
+    });
+
+    // Save button label
+    labels.push(TabLabel {
+        text: "Save".to_string(),
+        x: card_x + card_w - 168.0,
+        y: card_y + 97.0,
+        color: glyphon::Color::rgb(255, 255, 255),
+        bold: true,
+        max_width: 60.0,
+    });
+
+    // Cancel button label
+    labels.push(TabLabel {
+        text: "Cancel".to_string(),
+        x: card_x + card_w - 82.0,
+        y: card_y + 97.0,
+        color: glyphon::Color::rgb(180, 185, 200),
+        bold: false,
+        max_width: 60.0,
+    });
+
+    labels
+}
+
+/// State for a tab close confirmation modal dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseConfirmState {
+    /// Index of the tab requested to be closed.
+    pub tab_index: usize,
+    /// Display title of the tab.
+    pub title: String,
+    /// Whether the user has selected the Confirm [Close Tab] button vs [Cancel].
+    pub confirm_selected: bool,
+}
+
+impl CloseConfirmState {
+    /// Creates a new `CloseConfirmState` for `tab_index` with default button selection on [Close Tab].
+    #[must_use]
+    pub fn new(tab_index: usize, title: String) -> Self {
+        Self {
+            tab_index,
+            title,
+            confirm_selected: true,
+        }
+    }
+
+    /// Toggles the selected button between [Close Tab] and [Cancel].
+    pub fn toggle_selection(&mut self) {
+        self.confirm_selected = !self.confirm_selected;
+    }
+}
+
+/// Action triggered by interacting with the close tab confirmation dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseConfirmAction {
+    /// Confirm closing the tab.
+    Confirm,
+    /// Cancel and keep the tab open.
+    Cancel,
+    /// Click fell outside the dialog card.
+    Backdrop,
+}
+
+/// Builds quad vertices for the close tab confirmation modal dialog.
+#[must_use]
+pub fn assemble_close_confirm_quads(
+    window_width: f32,
+    window_height: f32,
+    confirm_selected: bool,
+    _accent_color: [f32; 4],
+) -> Vec<QuadVertex> {
+    let mut quads = Vec::new();
+    let card_w = 440.0_f32;
+    let card_h = 160.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    // 1. Fullscreen dimmed backdrop
+    quads.extend_from_slice(&build_quad_vertices(
+        0.0,
+        0.0,
+        window_width,
+        window_height,
+        [0.0, 0.0, 0.0, 0.65],
+    ));
+
+    // 2. Card border
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x - 1.0,
+        card_y - 1.0,
+        card_w + 2.0,
+        card_h + 2.0,
+        [0.25, 0.28, 0.38, 0.9],
+    ));
+
+    // 3. Card body (#0b0c10)
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x,
+        card_y,
+        card_w,
+        card_h,
+        [0.045, 0.048, 0.065, 0.98],
+    ));
+
+    // 4. Header warning accent line (coral red)
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x,
+        card_y,
+        card_w,
+        3.0,
+        [0.92, 0.35, 0.35, 1.0],
+    ));
+
+    // 5. Close Tab button: card_x + card_w - 235.0, card_y + 110.0, 115.0, 32.0
+    let close_bg = if confirm_selected {
+        [0.85, 0.22, 0.25, 0.95] // Highlighted vibrant red
+    } else {
+        [0.18, 0.19, 0.26, 0.8]
+    };
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + card_w - 235.0,
+        card_y + 110.0,
+        115.0,
+        32.0,
+        close_bg,
+    ));
+
+    // 6. Cancel button: card_x + card_w - 105.0, card_y + 110.0, 85.0, 32.0
+    let cancel_bg = if confirm_selected {
+        [0.14, 0.15, 0.20, 0.8]
+    } else {
+        [0.28, 0.32, 0.44, 0.95] // Highlighted gray
+    };
+    quads.extend_from_slice(&build_quad_vertices(
+        card_x + card_w - 105.0,
+        card_y + 110.0,
+        85.0,
+        32.0,
+        cancel_bg,
+    ));
+
+    quads
+}
+
+/// Hit tests click coordinates within the close tab confirmation dialog.
+#[must_use]
+pub fn hit_test_close_confirm(
+    x: f32,
+    y: f32,
+    window_width: f32,
+    window_height: f32,
+) -> Option<CloseConfirmAction> {
+    let card_w = 440.0_f32;
+    let card_h = 160.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    if x < card_x || x > card_x + card_w || y < card_y || y > card_y + card_h {
+        return Some(CloseConfirmAction::Backdrop);
+    }
+
+    // Close button: card_x + card_w - 235.0, card_y + 110.0, 115.0, 32.0
+    let close_x = card_x + card_w - 235.0;
+    let close_y = card_y + 110.0;
+    if x >= close_x && x <= close_x + 115.0 && y >= close_y && y <= close_y + 32.0 {
+        return Some(CloseConfirmAction::Confirm);
+    }
+
+    // Cancel button: card_x + card_w - 105.0, card_y + 110.0, 85.0, 32.0
+    let cancel_x = card_x + card_w - 105.0;
+    let cancel_y = card_y + 110.0;
+    if x >= cancel_x && x <= cancel_x + 85.0 && y >= cancel_y && y <= cancel_y + 32.0 {
+        return Some(CloseConfirmAction::Cancel);
+    }
+
+    None
+}
+
+/// Builds text labels for rendering the close tab confirmation modal.
+#[must_use]
+pub fn build_close_confirm_labels(
+    state: &CloseConfirmState,
+    window_width: f32,
+    window_height: f32,
+) -> Vec<TabLabel> {
+    let card_w = 440.0_f32;
+    let card_h = 160.0_f32;
+    let card_x = ((window_width - card_w) / 2.0).max(10.0);
+    let card_y = ((window_height - card_h) / 2.0).max(10.0);
+
+    let mut labels = Vec::new();
+
+    // Dialog title
+    labels.push(TabLabel {
+        text: "Close Active Tab?".to_string(),
+        x: card_x + 20.0,
+        y: card_y + 16.0,
+        color: glyphon::Color::rgb(250, 100, 100),
+        bold: true,
+        max_width: card_w - 40.0,
+    });
+
+    // Subtitle warning
+    let subtitle = format!("A terminal process is still running in '{}'.", state.title);
+    labels.push(TabLabel {
+        text: subtitle,
+        x: card_x + 20.0,
+        y: card_y + 46.0,
+        color: glyphon::Color::rgb(210, 215, 230),
+        bold: false,
+        max_width: card_w - 40.0,
+    });
+
+    labels.push(TabLabel {
+        text: "Closing this tab will terminate all child processes.".to_string(),
+        x: card_x + 20.0,
+        y: card_y + 68.0,
+        color: glyphon::Color::rgb(140, 145, 160),
+        bold: false,
+        max_width: card_w - 40.0,
+    });
+
+    // Close button label
+    labels.push(TabLabel {
+        text: "Close Tab".to_string(),
+        x: card_x + card_w - 212.0,
+        y: card_y + 117.0,
+        color: glyphon::Color::rgb(255, 255, 255),
+        bold: true,
+        max_width: 90.0,
+    });
+
+    // Cancel button label
+    labels.push(TabLabel {
+        text: "Cancel".to_string(),
+        x: card_x + card_w - 88.0,
+        y: card_y + 117.0,
+        color: glyphon::Color::rgb(220, 225, 240),
+        bold: true,
+        max_width: 70.0,
+    });
+
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,5 +1672,129 @@ mod tests {
 
         // Closing the last pane returns false
         assert!(!tab.close_active_pane());
+    }
+
+    #[test]
+    fn test_custom_title_and_display() {
+        let term = Terminal::new(80, 24);
+        let mut tab = Tab::new(1, "Shell".to_string(), term, None);
+        assert_eq!(tab.display_title(), "Shell");
+
+        // Set custom title
+        tab.set_custom_title(Some("My Project".to_string()));
+        assert_eq!(tab.display_title(), "My Project");
+
+        // Dynamic OSC title does not overwrite custom title
+        tab.advance_parser(b"\x1b]0;Dynamic Shell\x07");
+        assert_eq!(tab.display_title(), "My Project");
+
+        // Clearing custom title reverts to automatic title
+        tab.set_custom_title(None);
+        assert_eq!(tab.display_title(), "Dynamic Shell");
+    }
+
+    #[test]
+    fn test_tab_drag_and_reorder() {
+        let term1 = Terminal::new(80, 24);
+        let term2 = Terminal::new(80, 24);
+        let term3 = Terminal::new(80, 24);
+        let mut tabs = vec![
+            Tab::new(1, "Tab 1".to_string(), term1, None),
+            Tab::new(2, "Tab 2".to_string(), term2, None),
+            Tab::new(3, "Tab 3".to_string(), term3, None),
+        ];
+        let mut active_idx = 0;
+
+        // Reorder tab 0 to slot 2: [Tab 1, Tab 2, Tab 3] -> [Tab 2, Tab 3, Tab 1]
+        assert!(reorder_tabs(&mut tabs, &mut active_idx, 0, 2));
+        assert_eq!(tabs[0].id, 2);
+        assert_eq!(tabs[1].id, 3);
+        assert_eq!(tabs[2].id, 1);
+        assert_eq!(active_idx, 2); // Tab 1 remains active at its new index
+
+        // Reorder tab 2 back to 0: [Tab 2, Tab 3, Tab 1] -> [Tab 1, Tab 2, Tab 3]
+        assert!(reorder_tabs(&mut tabs, &mut active_idx, 2, 0));
+        assert_eq!(tabs[0].id, 1);
+        assert_eq!(tabs[1].id, 2);
+        assert_eq!(tabs[2].id, 3);
+        assert_eq!(active_idx, 0);
+
+        // Test drop target calculation
+        let target = compute_tab_drop_index(50.0, 3, 800.0);
+        assert_eq!(target, 0);
+
+        // Test drag indicator quad generation
+        let indicator_quads =
+            assemble_tab_drag_indicator_quads(3, 0, 1, 800.0, [0.2, 0.6, 1.0, 1.0]);
+        assert!(!indicator_quads.is_empty());
+    }
+
+    #[test]
+    fn test_tab_rename_state_and_dialog() {
+        let mut rename = TabRenameState::new(0, "Tab 1");
+        assert_eq!(rename.input_text, "Tab 1");
+        assert_eq!(rename.cursor_pos, 5);
+
+        // Backspace
+        rename.backspace();
+        assert_eq!(rename.input_text, "Tab ");
+        assert_eq!(rename.cursor_pos, 4);
+
+        // Typing
+        for ch in "Renamed".chars() {
+            rename.insert_char(ch);
+        }
+        assert_eq!(rename.input_text, "Tab Renamed");
+
+        // Cursor movement and deletion
+        rename.move_cursor_home();
+        assert_eq!(rename.cursor_pos, 0);
+        rename.delete();
+        assert_eq!(rename.input_text, "ab Renamed");
+
+        // Hit testing
+        let hit_backdrop = hit_test_tab_rename(5.0, 5.0, 800.0, 600.0);
+        assert_eq!(hit_backdrop, Some(TabRenameAction::Backdrop));
+
+        let card_x = (800.0 - 400.0) / 2.0;
+        let card_y = (600.0 - 140.0) / 2.0;
+        let hit_save = hit_test_tab_rename(card_x + 400.0 - 150.0, card_y + 100.0, 800.0, 600.0);
+        assert_eq!(hit_save, Some(TabRenameAction::Save));
+
+        let hit_cancel = hit_test_tab_rename(card_x + 400.0 - 50.0, card_y + 100.0, 800.0, 600.0);
+        assert_eq!(hit_cancel, Some(TabRenameAction::Cancel));
+
+        // Quads and labels
+        let quads = assemble_tab_rename_quads(800.0, 600.0, [0.2, 0.6, 1.0, 1.0]);
+        assert!(!quads.is_empty());
+        let labels = build_tab_rename_labels(&rename, 800.0, 600.0, true);
+        assert_eq!(labels.len(), 4);
+    }
+
+    #[test]
+    fn test_close_confirm_state_and_dialog() {
+        let mut confirm = CloseConfirmState::new(0, "Active Shell".to_string());
+        assert!(confirm.confirm_selected);
+
+        // Toggle selection
+        confirm.toggle_selection();
+        assert!(!confirm.confirm_selected);
+
+        // Hit testing
+        let card_x = (800.0 - 440.0) / 2.0;
+        let card_y = (600.0 - 160.0) / 2.0;
+        let hit_confirm =
+            hit_test_close_confirm(card_x + 440.0 - 180.0, card_y + 125.0, 800.0, 600.0);
+        assert_eq!(hit_confirm, Some(CloseConfirmAction::Confirm));
+
+        let hit_cancel =
+            hit_test_close_confirm(card_x + 440.0 - 50.0, card_y + 125.0, 800.0, 600.0);
+        assert_eq!(hit_cancel, Some(CloseConfirmAction::Cancel));
+
+        // Quads and labels
+        let quads = assemble_close_confirm_quads(800.0, 600.0, true, [0.9, 0.3, 0.3, 1.0]);
+        assert!(!quads.is_empty());
+        let labels = build_close_confirm_labels(&confirm, 800.0, 600.0);
+        assert_eq!(labels.len(), 5);
     }
 }
