@@ -20,3 +20,4 @@ pub mod status_bar;
 pub mod tab;
 pub mod terminal;
 pub mod theme;
+pub mod url;
