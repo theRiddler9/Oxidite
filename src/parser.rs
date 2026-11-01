@@ -100,6 +100,13 @@ impl vte::Perform for Dispatcher<'_> {
                 }
                 _ => {}
             }
+        } else if matches!(params.first().copied(), Some(b"8")) {
+            let url = if params.len() > 2 && !params[2].is_empty() {
+                Some(String::from_utf8_lossy(params[2]).into_owned())
+            } else {
+                None
+            };
+            self.handler.set_hyperlink(url);
         }
     }
 

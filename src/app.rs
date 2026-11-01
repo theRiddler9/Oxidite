@@ -219,6 +219,8 @@ pub struct App {
     pub last_active_cwd: Option<std::path::PathBuf>,
     /// In-terminal search state for scrollback and visible grid search.
     pub search_state: crate::search::SearchState,
+    /// Currently hovered URL span `(viewport_row, start_col, end_col, url)` if any.
+    pub hovered_url: Option<(usize, usize, usize, String)>,
 }
 
 /// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
@@ -418,6 +420,7 @@ impl App {
             hovered_splitter: DraggingSplitter::None,
             last_active_cwd: Some(cwd),
             search_state: crate::search::SearchState::default(),
+            hovered_url: None,
         }
     }
 
@@ -1352,6 +1355,7 @@ impl App {
         self.pty_exited = new_tab.pty_exited;
         self.pty_exit_code = new_tab.pty_exit_code;
         self.title = new_tab.title.clone();
+        self.hovered_url = None;
 
         self.refresh_git_status();
         if self.search_state.is_open {
@@ -1647,6 +1651,23 @@ impl App {
             x_offset,
             y_offset,
         ));
+
+        // 5.1. URL hover underline
+        if let Some((hover_row, start_col, end_col, _)) = &self.hovered_url {
+            let link_color = [0.35, 0.65, 1.0, 0.95];
+            if let Some(underline_quad) = crate::url::build_url_hover_underline_vertices(
+                *hover_row,
+                *start_col,
+                *end_col,
+                self.cell_metrics.cell_width,
+                self.cell_metrics.cell_height,
+                x_offset,
+                y_offset,
+                link_color,
+            ) {
+                quad_vertices.extend_from_slice(&underline_quad);
+            }
+        }
 
         // 5.2. Search match highlights offset below the tab bar with padding
         if self.search_state.is_open && !self.search_state.matches.is_empty() {
@@ -2135,9 +2156,42 @@ impl ApplicationHandler<AppEvent> for App {
                     if let Some(start) = self.mouse_down_pos {
                         let current = self.pixel_to_grid_point(self.cursor_pixel_pos);
                         self.selection = Some(Selection::new(start, current));
+                        if self.hovered_url.is_some() {
+                            self.hovered_url = None;
+                        }
                         win.request_redraw();
+                    } else if self.hovered_splitter == DraggingSplitter::None && !self.settings_open
+                    {
+                        // Check URL hover within terminal content pane
+                        let in_terminal = cursor_x >= geo.sidebar_w
+                            && cursor_x < (geo.sidebar_w + geo.term_w)
+                            && cursor_y >= geo.tab_bar_px
+                            && cursor_y <= (win_h - geo.status_bar_px);
+
+                        let new_hovered_url = if in_terminal {
+                            let gp = self.pixel_to_grid_point(self.cursor_pixel_pos);
+                            crate::url::find_url_at_coord(&self.terminal.grid, gp.row, gp.col)
+                                .map(|d| (gp.row, d.start_col, d.end_col, d.url))
+                        } else {
+                            None
+                        };
+
+                        if new_hovered_url != self.hovered_url {
+                            let was_hovered = self.hovered_url.is_some();
+                            let is_hovered = new_hovered_url.is_some();
+                            self.hovered_url = new_hovered_url;
+                            if is_hovered {
+                                win.set_cursor(winit::window::CursorIcon::Pointer);
+                            } else if was_hovered {
+                                win.set_cursor(winit::window::CursorIcon::Default);
+                            }
+                            win.request_redraw();
+                        }
                     }
                 } else {
+                    if self.hovered_url.is_some() {
+                        self.hovered_url = None;
+                    }
                     match self.dragging_splitter {
                         DraggingSplitter::Sidebar => {
                             let new_w =
@@ -2792,6 +2846,25 @@ impl ApplicationHandler<AppEvent> for App {
 
                 let pt = self.pixel_to_grid_point(self.cursor_pixel_pos);
                 if state == winit::event::ElementState::Pressed {
+                    let ctrl_held = (cfg!(target_os = "macos") && self.modifiers.super_key())
+                        || self.modifiers.control_key();
+                    if ctrl_held {
+                        let url_to_open = self
+                            .hovered_url
+                            .as_ref()
+                            .map(|(_, _, _, u)| u.clone())
+                            .or_else(|| {
+                                crate::url::find_url_at_coord(&self.terminal.grid, pt.row, pt.col)
+                                    .map(|d| d.url)
+                            });
+                        if let Some(url) = url_to_open {
+                            log::info!("Opening URL: {url}");
+                            if let Err(e) = crate::url::open_url(&url) {
+                                log::warn!("Failed to open URL '{url}': {e}");
+                            }
+                            return;
+                        }
+                    }
                     self.mouse_down_pos = Some(pt);
                     self.selection = None;
                     win.request_redraw();
@@ -2803,6 +2876,13 @@ impl ApplicationHandler<AppEvent> for App {
                         self.selection = None;
                         win.request_redraw();
                     }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.hovered_url.is_some() {
+                    self.hovered_url = None;
+                    win.set_cursor(winit::window::CursorIcon::Default);
+                    win.request_redraw();
                 }
             }
             WindowEvent::Focused(focused) => {
