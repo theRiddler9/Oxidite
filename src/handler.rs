@@ -156,4 +156,7 @@ pub trait Handler {
 
     /// Marks the completion of a command with an optional exit status code (`OSC 133 ; D [; exit_code]`).
     fn shell_command_finished(&mut self, _exit_code: Option<i32>) {}
+
+    /// Sets or clears the active OSC 8 hyperlink URL.
+    fn set_hyperlink(&mut self, _url: Option<String>) {}
 }
