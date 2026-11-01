@@ -1,6 +1,7 @@
 //! Hyperlink and file path detection, hover matching, and system launching.
 
 use crate::grid::{Grid, Row};
+use crate::renderer::draw::{QuadVertex, build_quad_vertices};
 
 /// A detected URL or file path span within a terminal grid row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +147,29 @@ pub fn open_url(url: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Builds quad vertices for rendering an underline under a hovered URL.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+#[must_use]
+pub fn build_url_hover_underline_vertices(
+    row: usize,
+    start_col: usize,
+    end_col: usize,
+    cell_width: f32,
+    cell_height: f32,
+    x_offset: f32,
+    y_offset: f32,
+    color: [f32; 4],
+) -> Option<[QuadVertex; 6]> {
+    if start_col >= end_col {
+        return None;
+    }
+    let x = x_offset + start_col as f32 * cell_width;
+    let w = (end_col - start_col) as f32 * cell_width;
+    let underline_thickness = 1.5;
+    let y = y_offset + (row as f32 + 1.0) * cell_height - underline_thickness;
+    Some(build_quad_vertices(x, y, w, underline_thickness, color))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +231,33 @@ mod tests {
         let found = find_url_at_coord(&grid, 0, 10);
         assert!(found.is_some());
         assert_eq!(found.unwrap().url, "https://rust-lang.org");
+    }
+
+    #[test]
+    fn test_build_url_hover_underline_vertices() {
+        let quads = build_url_hover_underline_vertices(
+            1,
+            5,
+            15,
+            10.0,
+            20.0,
+            0.0,
+            0.0,
+            [0.3, 0.6, 1.0, 1.0],
+        );
+        // build_quad_vertices produces 6 vertices (2 triangles) per quad
+        assert!(quads.is_some());
+        assert_eq!(quads.unwrap().len(), 6);
+        let empty_quads = build_url_hover_underline_vertices(
+            1,
+            15,
+            5,
+            10.0,
+            20.0,
+            0.0,
+            0.0,
+            [0.3, 0.6, 1.0, 1.0],
+        );
+        assert!(empty_quads.is_none());
     }
 }
