@@ -240,6 +240,16 @@ pub enum InputAction {
     PrevPrompt,
     /// Jump to the next shell prompt boundary (OSC 133).
     NextPrompt,
+    /// Split the active pane vertically.
+    SplitVertical,
+    /// Split the active pane horizontally.
+    SplitHorizontal,
+    /// Close the active pane.
+    ClosePane,
+    /// Cycle to the next split pane.
+    NextPane,
+    /// Cycle to the previous split pane.
+    PrevPane,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
@@ -282,6 +292,34 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch.eq_ignore_ascii_case("f") {
             return Some(InputAction::ToggleSearch);
+        }
+        if ch == "\\" || ch.eq_ignore_ascii_case("d") {
+            return Some(InputAction::SplitVertical);
+        }
+        if ch == "-" || ch == "_" {
+            return Some(InputAction::SplitHorizontal);
+        }
+        if ch.eq_ignore_ascii_case("w") {
+            return Some(InputAction::ClosePane);
+        }
+        if ch == "]" || ch == "}" {
+            return Some(InputAction::NextPane);
+        }
+        if ch == "[" || ch == "{" {
+            return Some(InputAction::PrevPane);
+        }
+    }
+
+    let is_ctrl_alt = ctrl && alt && !shift;
+    if is_ctrl_alt {
+        match event.logical_key {
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                return Some(InputAction::NextPane);
+            }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                return Some(InputAction::PrevPane);
+            }
+            _ => {}
         }
     }
 
@@ -1123,6 +1161,69 @@ mod tests {
         assert_eq!(
             check_input_action(&ctrl_shift_down),
             Some(InputAction::NextPrompt)
+        );
+    }
+
+    #[test]
+    fn check_split_pane_keybindings() {
+        // Ctrl+Shift+\ -> SplitVertical
+        let ctrl_shift_backslash = KeyEvent::new(
+            Key::Character(SmolStr::new("\\")),
+            Some("\\".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_backslash),
+            Some(InputAction::SplitVertical)
+        );
+
+        // Ctrl+Shift+- -> SplitHorizontal
+        let ctrl_shift_dash = KeyEvent::new(
+            Key::Character(SmolStr::new("-")),
+            Some("-".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_dash),
+            Some(InputAction::SplitHorizontal)
+        );
+
+        // Ctrl+Shift+W -> ClosePane
+        let ctrl_shift_w = KeyEvent::new(
+            Key::Character(SmolStr::new("w")),
+            Some("w".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_w),
+            Some(InputAction::ClosePane)
+        );
+
+        // Ctrl+Alt+Right -> NextPane
+        let ctrl_alt_right = KeyEvent::new(
+            Key::Named(NamedKey::ArrowRight),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_alt_right),
+            Some(InputAction::NextPane)
+        );
+
+        // Ctrl+Alt+Left -> PrevPane
+        let ctrl_alt_left = KeyEvent::new(
+            Key::Named(NamedKey::ArrowLeft),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_alt_left),
+            Some(InputAction::PrevPane)
         );
     }
 
