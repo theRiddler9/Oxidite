@@ -93,6 +93,18 @@ pub enum ReviewTag {
 }
 
 impl ReviewTag {
+    /// Cycles to the next review tag.
+    #[must_use]
+    pub fn cycle(self) -> Self {
+        match self {
+            ReviewTag::Nit => ReviewTag::Suggestion,
+            ReviewTag::Suggestion => ReviewTag::Issue,
+            ReviewTag::Issue => ReviewTag::Approval,
+            ReviewTag::Approval => ReviewTag::Note,
+            ReviewTag::Note => ReviewTag::Nit,
+        }
+    }
+
     /// Short display tag label.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -116,6 +128,372 @@ impl ReviewTag {
             ReviewTag::Note => [0.95, 0.75, 0.35, 1.0],
         }
     }
+}
+
+/// An interactive in-progress review comment draft attached to a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentDraft {
+    /// File line number being reviewed.
+    pub line_number: usize,
+    /// Column side (original or modified).
+    pub side: DiffSide,
+    /// Tag categorization.
+    pub tag: ReviewTag,
+    /// Editable draft content string.
+    pub content: String,
+}
+
+impl CommentDraft {
+    /// Creates a new `CommentDraft` on `line_number` and `side`.
+    #[must_use]
+    pub fn new(line_number: usize, side: DiffSide) -> Self {
+        Self {
+            line_number,
+            side,
+            tag: ReviewTag::Suggestion,
+            content: String::new(),
+        }
+    }
+}
+
+/// A span of syntax highlighted text within a diff code line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyntaxSpan {
+    /// Token text string.
+    pub text: String,
+    /// Color for this token in glyphon RGBA.
+    pub color: GlyphonColor,
+    /// Whether the token is bold (e.g. keywords).
+    pub bold: bool,
+}
+
+/// Tokenizes a single line of source code into syntax spans based on file extension.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn tokenize_syntax_line(
+    content: &str,
+    file_name: &str,
+    line_type: DiffLineType,
+) -> Vec<SyntaxSpan> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let is_rust = ext == "rs";
+    let is_js = matches!(ext.as_str(), "js" | "jsx" | "ts" | "tsx" | "mjs");
+    let is_python = ext == "py";
+    let is_c = matches!(ext.as_str(), "c" | "cpp" | "h" | "hpp" | "cc");
+    let is_config = matches!(ext.as_str(), "toml" | "json" | "yaml" | "yml");
+
+    let default_color = match line_type {
+        DiffLineType::Deletion => GlyphonColor::rgb(255, 175, 180),
+        DiffLineType::Addition => GlyphonColor::rgb(165, 235, 185),
+        _ => GlyphonColor::rgb(215, 220, 235),
+    };
+
+    let keyword_color = GlyphonColor::rgb(195, 140, 245);
+    let type_color = GlyphonColor::rgb(235, 195, 115);
+    let string_color = GlyphonColor::rgb(140, 220, 165);
+    let number_color = GlyphonColor::rgb(235, 165, 105);
+    let comment_color = GlyphonColor::rgb(115, 125, 145);
+
+    let mut spans = Vec::new();
+    let mut chars = content.char_indices().peekable();
+
+    while let Some((i, ch)) = chars.next() {
+        // 1. Whitespace
+        if ch.is_whitespace() {
+            let mut ws = String::from(ch);
+            while let Some(&(_, next_ch)) = chars.peek() {
+                if next_ch.is_whitespace() {
+                    ws.push(next_ch);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            spans.push(SyntaxSpan {
+                text: ws,
+                color: default_color,
+                bold: false,
+            });
+            continue;
+        }
+
+        // 2. Comments
+        if (ch == '/' && chars.peek().map(|&(_, c)| c) == Some('/'))
+            || (ch == '#' && (is_python || is_config || ext == "sh" || ext == "bash"))
+        {
+            let comment_text = &content[i..];
+            spans.push(SyntaxSpan {
+                text: comment_text.to_string(),
+                color: comment_color,
+                bold: false,
+            });
+            break;
+        }
+
+        // 3. String literals
+        if ch == '"' || ch == '\'' || (ch == '`' && is_js) {
+            let quote = ch;
+            let mut s = String::from(quote);
+            let mut escaped = false;
+            for (_, next_ch) in chars.by_ref() {
+                s.push(next_ch);
+                if escaped {
+                    escaped = false;
+                } else if next_ch == '\\' {
+                    escaped = true;
+                } else if next_ch == quote {
+                    break;
+                }
+            }
+            spans.push(SyntaxSpan {
+                text: s,
+                color: string_color,
+                bold: false,
+            });
+            continue;
+        }
+
+        // 4. Numbers
+        if ch.is_ascii_digit() {
+            let mut num = String::from(ch);
+            while let Some(&(_, next_ch)) = chars.peek() {
+                if next_ch.is_ascii_alphanumeric() || next_ch == '.' || next_ch == '_' {
+                    num.push(next_ch);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            spans.push(SyntaxSpan {
+                text: num,
+                color: number_color,
+                bold: false,
+            });
+            continue;
+        }
+
+        // 5. Identifiers / Keywords / Types
+        if ch.is_alphabetic() || ch == '_' {
+            let mut word = String::from(ch);
+            while let Some(&(_, next_ch)) = chars.peek() {
+                if next_ch.is_alphanumeric() || next_ch == '_' {
+                    word.push(next_ch);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            let is_kw = if is_rust {
+                matches!(
+                    word.as_str(),
+                    "fn" | "let"
+                        | "mut"
+                        | "pub"
+                        | "struct"
+                        | "enum"
+                        | "impl"
+                        | "trait"
+                        | "use"
+                        | "mod"
+                        | "match"
+                        | "if"
+                        | "else"
+                        | "return"
+                        | "while"
+                        | "for"
+                        | "in"
+                        | "loop"
+                        | "async"
+                        | "await"
+                        | "true"
+                        | "false"
+                        | "self"
+                        | "super"
+                        | "crate"
+                )
+            } else if is_js {
+                matches!(
+                    word.as_str(),
+                    "function"
+                        | "const"
+                        | "let"
+                        | "var"
+                        | "if"
+                        | "else"
+                        | "return"
+                        | "import"
+                        | "export"
+                        | "from"
+                        | "default"
+                        | "class"
+                        | "async"
+                        | "await"
+                        | "true"
+                        | "false"
+                        | "null"
+                        | "undefined"
+                )
+            } else if is_python {
+                matches!(
+                    word.as_str(),
+                    "def"
+                        | "class"
+                        | "if"
+                        | "elif"
+                        | "else"
+                        | "return"
+                        | "import"
+                        | "from"
+                        | "as"
+                        | "while"
+                        | "for"
+                        | "in"
+                        | "try"
+                        | "except"
+                        | "with"
+                        | "lambda"
+                        | "True"
+                        | "False"
+                        | "None"
+                )
+            } else if is_c {
+                matches!(
+                    word.as_str(),
+                    "int"
+                        | "char"
+                        | "void"
+                        | "return"
+                        | "if"
+                        | "else"
+                        | "struct"
+                        | "class"
+                        | "public"
+                        | "private"
+                        | "include"
+                        | "const"
+                        | "static"
+                        | "auto"
+                        | "template"
+                        | "namespace"
+                )
+            } else {
+                matches!(
+                    word.as_str(),
+                    "fn" | "let"
+                        | "const"
+                        | "def"
+                        | "function"
+                        | "return"
+                        | "if"
+                        | "else"
+                        | "true"
+                        | "false"
+                )
+            };
+
+            let is_ty = if is_rust {
+                matches!(
+                    word.as_str(),
+                    "String"
+                        | "str"
+                        | "usize"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "f32"
+                        | "f64"
+                        | "bool"
+                        | "char"
+                        | "Option"
+                        | "Result"
+                        | "Some"
+                        | "None"
+                        | "Ok"
+                        | "Err"
+                        | "Vec"
+                        | "Arc"
+                        | "Mutex"
+                        | "Box"
+                        | "Self"
+                )
+            } else if is_js {
+                matches!(
+                    word.as_str(),
+                    "string"
+                        | "number"
+                        | "boolean"
+                        | "any"
+                        | "void"
+                        | "Promise"
+                        | "true"
+                        | "false"
+                        | "null"
+                        | "undefined"
+                )
+            } else if is_python {
+                matches!(
+                    word.as_str(),
+                    "int"
+                        | "str"
+                        | "float"
+                        | "bool"
+                        | "list"
+                        | "dict"
+                        | "set"
+                        | "True"
+                        | "False"
+                        | "None"
+                )
+            } else {
+                word.starts_with(|c: char| c.is_uppercase())
+            };
+
+            if is_kw {
+                spans.push(SyntaxSpan {
+                    text: word,
+                    color: keyword_color,
+                    bold: true,
+                });
+            } else if is_ty {
+                spans.push(SyntaxSpan {
+                    text: word,
+                    color: type_color,
+                    bold: false,
+                });
+            } else {
+                spans.push(SyntaxSpan {
+                    text: word,
+                    color: default_color,
+                    bold: false,
+                });
+            }
+            continue;
+        }
+
+        // 6. Operators and Punctuation
+        spans.push(SyntaxSpan {
+            text: ch.to_string(),
+            color: default_color,
+            bold: false,
+        });
+    }
+
+    spans
 }
 
 /// An inline code review comment attached to a specific line in the diff.
@@ -182,6 +560,12 @@ pub struct DiffViewState {
     pub next_comment_id: usize,
     /// Currently focused or selected line (`line_number`, side).
     pub selected_line: Option<(usize, DiffSide)>,
+    /// Current file index in the multi-file review list (0-based).
+    pub file_index: usize,
+    /// Total number of changed files in review list.
+    pub total_files: usize,
+    /// In-progress inline comment draft if editing.
+    pub comment_draft: Option<CommentDraft>,
 }
 
 impl DiffViewState {
@@ -415,6 +799,9 @@ impl Default for DiffViewState {
             ],
             next_comment_id: 3,
             selected_line: None,
+            file_index: 0,
+            total_files: 1,
+            comment_draft: None,
         }
     }
 }
@@ -446,6 +833,16 @@ pub enum DiffAction {
     CopyReviewSummary,
     /// Click on a diff line to select or review it.
     SelectLine(usize, DiffSide),
+    /// Switch to previous changed file in review queue.
+    PrevFile,
+    /// Switch to next changed file in review queue.
+    NextFile,
+    /// Set tag for active comment draft.
+    SetDraftTag(ReviewTag),
+    /// Submit active comment draft.
+    SubmitDraft,
+    /// Cancel active comment draft.
+    CancelDraft,
 }
 
 /// Precomputed button and tab geometries for the diff header bar.
@@ -453,6 +850,9 @@ pub enum DiffAction {
 pub struct DiffHeaderLayout {
     pub is_compact: bool,
     pub file_title_rect: (f32, f32, f32, f32),
+    pub prev_file_rect: Option<(f32, f32, f32, f32)>,
+    pub file_counter_rect: Option<(f32, f32, f32, f32)>,
+    pub next_file_rect: Option<(f32, f32, f32, f32)>,
     pub diff_tab_rect: (f32, f32, f32, f32),
     pub review_tab_rect: (f32, f32, f32, f32),
     pub verdict_badge_rect: Option<(f32, f32, f32, f32)>,
@@ -502,7 +902,7 @@ impl DiffHeaderLayout {
             (None, None, None)
         };
 
-        // 4. Left side tabs
+        // 4. Left side tabs and optional multi-file switcher
         let title_max_w = if diff_width > 800.0 {
             120.0
         } else if diff_width > 500.0 {
@@ -512,11 +912,22 @@ impl DiffHeaderLayout {
         };
         let file_title_rect = (diff_x + 8.0, diff_y + 8.0, title_max_w, 20.0);
 
-        let diff_tab_x = diff_x + 8.0 + title_max_w + 6.0;
-        let diff_tab_w = if is_compact { 40.0 } else { 54.0 };
-        let diff_tab_rect = (diff_tab_x, btn_y, diff_tab_w, btn_h);
+        let mut next_x = diff_x + 8.0 + title_max_w + 6.0;
 
-        let review_tab_x = diff_tab_x + diff_tab_w + 4.0;
+        let (prev_file_rect, file_counter_rect, next_file_rect) = if state.total_files > 1 {
+            let p_rect = (next_x, btn_y, 22.0, btn_h);
+            let c_rect = (next_x + 24.0, btn_y, 36.0, btn_h);
+            let n_rect = (next_x + 62.0, btn_y, 22.0, btn_h);
+            next_x += 88.0;
+            (Some(p_rect), Some(c_rect), Some(n_rect))
+        } else {
+            (None, None, None)
+        };
+
+        let diff_tab_w = if is_compact { 40.0 } else { 54.0 };
+        let diff_tab_rect = (next_x, btn_y, diff_tab_w, btn_h);
+
+        let review_tab_x = next_x + diff_tab_w + 4.0;
         let review_tab_w = if is_compact { 52.0 } else { 88.0 };
         let review_tab_rect = (review_tab_x, btn_y, review_tab_w, btn_h);
 
@@ -531,6 +942,9 @@ impl DiffHeaderLayout {
         Self {
             is_compact,
             file_title_rect,
+            prev_file_rect,
+            file_counter_rect,
+            next_file_rect,
             diff_tab_rect,
             review_tab_rect,
             verdict_badge_rect,
@@ -553,6 +967,16 @@ impl DiffHeaderLayout {
 
         if in_box(self.close_btn_rect) {
             return DiffAction::Close;
+        }
+        if let Some(r) = self.prev_file_rect
+            && in_box(r)
+        {
+            return DiffAction::PrevFile;
+        }
+        if let Some(r) = self.next_file_rect
+            && in_box(r)
+        {
+            return DiffAction::NextFile;
         }
         if let Some(r) = self.approve_btn_rect
             && in_box(r)
@@ -671,6 +1095,33 @@ pub fn assemble_diff_view_quads(
     ));
 
     let layout = DiffHeaderLayout::compute(diff_x, diff_y, diff_width, state);
+
+    // Multi-file switcher buttons (< 1/3 >)
+    if let (Some(p), Some(c), Some(n)) = (
+        layout.prev_file_rect,
+        layout.file_counter_rect,
+        layout.next_file_rect,
+    ) {
+        push_button_quads(
+            &mut quads,
+            p,
+            [0.07, 0.09, 0.13, 0.95],
+            [0.22, 0.28, 0.38, 0.9],
+        );
+        quads.extend_from_slice(&build_quad_vertices(
+            c.0,
+            c.1,
+            c.2,
+            c.3,
+            [0.03, 0.04, 0.06, 0.8],
+        ));
+        push_button_quads(
+            &mut quads,
+            n,
+            [0.07, 0.09, 0.13, 0.95],
+            [0.22, 0.28, 0.38, 0.9],
+        );
+    }
 
     // Active mode tab underline indicator
     let (underline_x, underline_w) = if state.review_mode {
@@ -1014,6 +1465,99 @@ pub fn assemble_diff_view_quads(
 
                     current_y += DIFF_COMMENT_HEIGHT;
                 }
+
+                // Render in-progress draft comment card if attached to this line
+                let has_left_draft = left_line.and_then(|l| l.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Original && d.line_number == ln)
+                });
+
+                let has_right_draft = right_line.and_then(|r| r.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Modified && d.line_number == ln)
+                });
+
+                if (has_left_draft || has_right_draft)
+                    && current_y + DIFF_COMMENT_HEIGHT <= diff_y + diff_height
+                {
+                    if has_left_draft && let Some(draft) = &state.comment_draft {
+                        let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                        let card_x = diff_x + DIFF_GUTTER_WIDTH + 3.0;
+                        push_button_quads(
+                            &mut quads,
+                            (card_x, current_y + 1.0, card_w, DIFF_COMMENT_HEIGHT - 2.0),
+                            [0.08, 0.10, 0.15, 0.98],
+                            accent_color,
+                        );
+                        quads.extend_from_slice(&build_quad_vertices(
+                            card_x,
+                            current_y + 1.0,
+                            3.0,
+                            DIFF_COMMENT_HEIGHT - 2.0,
+                            draft.tag.color(),
+                        ));
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + 6.0, current_y + 3.0, 56.0, 16.0),
+                            [0.12, 0.15, 0.22, 0.9],
+                            draft.tag.color(),
+                        );
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + card_w - 64.0, current_y + 3.0, 38.0, 16.0),
+                            [0.10, 0.24, 0.15, 0.95],
+                            [0.25, 0.70, 0.40, 0.9],
+                        );
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + card_w - 22.0, current_y + 3.0, 18.0, 16.0),
+                            [0.20, 0.08, 0.10, 0.95],
+                            [0.60, 0.20, 0.22, 0.9],
+                        );
+                    }
+
+                    if has_right_draft && let Some(draft) = &state.comment_draft {
+                        let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                        let card_x = diff_x + half_w + DIFF_GUTTER_WIDTH + 3.0;
+                        push_button_quads(
+                            &mut quads,
+                            (card_x, current_y + 1.0, card_w, DIFF_COMMENT_HEIGHT - 2.0),
+                            [0.08, 0.10, 0.15, 0.98],
+                            accent_color,
+                        );
+                        quads.extend_from_slice(&build_quad_vertices(
+                            card_x,
+                            current_y + 1.0,
+                            3.0,
+                            DIFF_COMMENT_HEIGHT - 2.0,
+                            draft.tag.color(),
+                        ));
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + 6.0, current_y + 3.0, 56.0, 16.0),
+                            [0.12, 0.15, 0.22, 0.9],
+                            draft.tag.color(),
+                        );
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + card_w - 64.0, current_y + 3.0, 38.0, 16.0),
+                            [0.10, 0.24, 0.15, 0.95],
+                            [0.25, 0.70, 0.40, 0.9],
+                        );
+                        push_button_quads(
+                            &mut quads,
+                            (card_x + card_w - 22.0, current_y + 3.0, 18.0, 16.0),
+                            [0.20, 0.08, 0.10, 0.95],
+                            [0.60, 0.20, 0.22, 0.9],
+                        );
+                    }
+
+                    current_y += DIFF_COMMENT_HEIGHT;
+                }
             }
         }
     }
@@ -1185,6 +1729,46 @@ pub fn build_diff_view_labels(
         max_width: (layout.close_btn_rect.2 - 4.0).max(10.0),
     });
 
+    // Multi-file switcher labels (< 1/3 >)
+    if let (Some(p), Some(c), Some(n)) = (
+        layout.prev_file_rect,
+        layout.file_counter_rect,
+        layout.next_file_rect,
+    ) {
+        labels.push(TabLabel {
+            text: "<".to_string(),
+            x: p.0 + 7.0,
+            y: btn_text_y,
+            color: if state.file_index > 0 {
+                GlyphonColor::rgb(220, 225, 240)
+            } else {
+                GlyphonColor::rgb(90, 95, 110)
+            },
+            bold: true,
+            max_width: (p.2 - 4.0).max(10.0),
+        });
+        labels.push(TabLabel {
+            text: format!("{}/{}", state.file_index + 1, state.total_files),
+            x: c.0 + 6.0,
+            y: btn_text_y,
+            color: GlyphonColor::rgb(180, 185, 200),
+            bold: false,
+            max_width: (c.2 - 4.0).max(10.0),
+        });
+        labels.push(TabLabel {
+            text: ">".to_string(),
+            x: n.0 + 7.0,
+            y: btn_text_y,
+            color: if state.file_index + 1 < state.total_files {
+                GlyphonColor::rgb(220, 225, 240)
+            } else {
+                GlyphonColor::rgb(90, 95, 110)
+            },
+            bold: true,
+            max_width: (n.2 - 4.0).max(10.0),
+        });
+    }
+
     // 2. Diff Lines and Review Comments Rendering
     let content_y = diff_y + DIFF_HEADER_HEIGHT;
     let half_w = (diff_width / 2.0).floor();
@@ -1236,18 +1820,29 @@ pub fn build_diff_view_labels(
                 }
 
                 if !left.content.is_empty() {
-                    let code_color = match left.line_type {
-                        DiffLineType::Deletion => GlyphonColor::rgb(255, 154, 161),
-                        _ => GlyphonColor::rgb(190, 195, 210),
-                    };
-                    labels.push(TabLabel {
-                        text: left.content.clone(),
-                        x: diff_x + DIFF_GUTTER_WIDTH + 8.0,
-                        y: current_y + 3.0,
-                        color: code_color,
-                        bold: false,
-                        max_width: half_w - DIFF_GUTTER_WIDTH - 16.0,
-                    });
+                    let char_w = 7.22f32;
+                    let mut col_offset = 0;
+                    for span in
+                        tokenize_syntax_line(&left.content, &state.file_name, left.line_type)
+                    {
+                        let span_len = span.text.chars().count();
+                        let span_x =
+                            diff_x + DIFF_GUTTER_WIDTH + 8.0 + (col_offset as f32 * char_w);
+                        let max_w =
+                            (half_w - DIFF_GUTTER_WIDTH - 16.0 - (col_offset as f32 * char_w))
+                                .max(0.0);
+                        if max_w > 0.0 {
+                            labels.push(TabLabel {
+                                text: span.text,
+                                x: span_x,
+                                y: current_y + 3.0,
+                                color: span.color,
+                                bold: span.bold,
+                                max_width: max_w,
+                            });
+                        }
+                        col_offset += span_len;
+                    }
                 }
             }
 
@@ -1265,18 +1860,32 @@ pub fn build_diff_view_labels(
                 }
 
                 if !right.content.is_empty() {
-                    let code_color = match right.line_type {
-                        DiffLineType::Addition => GlyphonColor::rgb(141, 229, 169),
-                        _ => GlyphonColor::rgb(190, 195, 210),
-                    };
-                    labels.push(TabLabel {
-                        text: right.content.clone(),
-                        x: diff_x + half_w + DIFF_GUTTER_WIDTH + 8.0,
-                        y: current_y + 3.0,
-                        color: code_color,
-                        bold: false,
-                        max_width: half_w - DIFF_GUTTER_WIDTH - 16.0,
-                    });
+                    let char_w = 7.22f32;
+                    let mut col_offset = 0;
+                    for span in
+                        tokenize_syntax_line(&right.content, &state.file_name, right.line_type)
+                    {
+                        let span_len = span.text.chars().count();
+                        let span_x = diff_x
+                            + half_w
+                            + DIFF_GUTTER_WIDTH
+                            + 8.0
+                            + (col_offset as f32 * char_w);
+                        let max_w =
+                            (half_w - DIFF_GUTTER_WIDTH - 16.0 - (col_offset as f32 * char_w))
+                                .max(0.0);
+                        if max_w > 0.0 {
+                            labels.push(TabLabel {
+                                text: span.text,
+                                x: span_x,
+                                y: current_y + 3.0,
+                                color: span.color,
+                                bold: span.bold,
+                                max_width: max_w,
+                            });
+                        }
+                        col_offset += span_len;
+                    }
                 }
             }
 
@@ -1436,6 +2045,131 @@ pub fn build_diff_view_labels(
 
                     current_y += DIFF_COMMENT_HEIGHT;
                 }
+
+                // Render in-progress draft comment labels if attached to this line
+                let has_left_draft = left_line.and_then(|l| l.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Original && d.line_number == ln)
+                });
+
+                let has_right_draft = right_line.and_then(|r| r.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Modified && d.line_number == ln)
+                });
+
+                if (has_left_draft || has_right_draft)
+                    && current_y + DIFF_COMMENT_HEIGHT <= diff_y + diff_height
+                {
+                    if has_left_draft && let Some(draft) = &state.comment_draft {
+                        let card_x = diff_x + DIFF_GUTTER_WIDTH + 3.0;
+                        let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                        let tc = draft.tag.color();
+                        let tag_color = GlyphonColor::rgb(
+                            (tc[0] * 255.0).round() as u8,
+                            (tc[1] * 255.0).round() as u8,
+                            (tc[2] * 255.0).round() as u8,
+                        );
+                        labels.push(TabLabel {
+                            text: format!("[{}]", draft.tag.label()),
+                            x: card_x + 9.0,
+                            y: current_y + 3.0,
+                            color: tag_color,
+                            bold: true,
+                            max_width: 50.0,
+                        });
+                        let input_text = if draft.content.is_empty() {
+                            "Type review comment (Enter to submit, Esc to cancel)..."
+                        } else {
+                            &draft.content
+                        };
+                        labels.push(TabLabel {
+                            text: input_text.to_string(),
+                            x: card_x + 66.0,
+                            y: current_y + 3.0,
+                            color: if draft.content.is_empty() {
+                                GlyphonColor::rgb(130, 135, 150)
+                            } else {
+                                GlyphonColor::rgb(240, 245, 255)
+                            },
+                            bold: false,
+                            max_width: (card_w - 136.0).max(10.0),
+                        });
+                        labels.push(TabLabel {
+                            text: "Post".to_string(),
+                            x: card_x + card_w - 58.0,
+                            y: current_y + 3.0,
+                            color: GlyphonColor::rgb(140, 235, 170),
+                            bold: true,
+                            max_width: 32.0,
+                        });
+                        labels.push(TabLabel {
+                            text: "x".to_string(),
+                            x: card_x + card_w - 18.0,
+                            y: current_y + 3.0,
+                            color: GlyphonColor::rgb(220, 140, 150),
+                            bold: true,
+                            max_width: 14.0,
+                        });
+                    }
+
+                    if has_right_draft && let Some(draft) = &state.comment_draft {
+                        let card_x = diff_x + half_w + DIFF_GUTTER_WIDTH + 3.0;
+                        let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                        let tc = draft.tag.color();
+                        let tag_color = GlyphonColor::rgb(
+                            (tc[0] * 255.0).round() as u8,
+                            (tc[1] * 255.0).round() as u8,
+                            (tc[2] * 255.0).round() as u8,
+                        );
+                        labels.push(TabLabel {
+                            text: format!("[{}]", draft.tag.label()),
+                            x: card_x + 9.0,
+                            y: current_y + 3.0,
+                            color: tag_color,
+                            bold: true,
+                            max_width: 50.0,
+                        });
+                        let input_text = if draft.content.is_empty() {
+                            "Type review comment (Enter to submit, Esc to cancel)..."
+                        } else {
+                            &draft.content
+                        };
+                        labels.push(TabLabel {
+                            text: input_text.to_string(),
+                            x: card_x + 66.0,
+                            y: current_y + 3.0,
+                            color: if draft.content.is_empty() {
+                                GlyphonColor::rgb(130, 135, 150)
+                            } else {
+                                GlyphonColor::rgb(240, 245, 255)
+                            },
+                            bold: false,
+                            max_width: (card_w - 136.0).max(10.0),
+                        });
+                        labels.push(TabLabel {
+                            text: "Post".to_string(),
+                            x: card_x + card_w - 58.0,
+                            y: current_y + 3.0,
+                            color: GlyphonColor::rgb(140, 235, 170),
+                            bold: true,
+                            max_width: 32.0,
+                        });
+                        labels.push(TabLabel {
+                            text: "x".to_string(),
+                            x: card_x + card_w - 18.0,
+                            y: current_y + 3.0,
+                            color: GlyphonColor::rgb(220, 140, 150),
+                            bold: true,
+                            max_width: 14.0,
+                        });
+                    }
+
+                    current_y += DIFF_COMMENT_HEIGHT;
+                }
             }
         }
     }
@@ -1558,6 +2292,62 @@ pub fn hit_test_diff_view(
                             }
                             if x >= card_x + card_w - 20.0 && x <= card_x + card_w - 4.0 {
                                 return DiffAction::DeleteComment(c.id);
+                            }
+                        }
+                    }
+
+                    current_y += DIFF_COMMENT_HEIGHT;
+                }
+
+                // Check clicks on in-progress draft comment card
+                let has_left_draft = left_line.and_then(|l| l.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Original && d.line_number == ln)
+                });
+
+                let has_right_draft = right_line.and_then(|r| r.line_number).is_some_and(|ln| {
+                    state
+                        .comment_draft
+                        .as_ref()
+                        .is_some_and(|d| d.side == DiffSide::Modified && d.line_number == ln)
+                });
+
+                if (has_left_draft || has_right_draft)
+                    && current_y + DIFF_COMMENT_HEIGHT <= diff_y + diff_height
+                {
+                    if y >= current_y && y < current_y + DIFF_COMMENT_HEIGHT {
+                        if has_left_draft
+                            && x < diff_x + half_w
+                            && let Some(draft) = &state.comment_draft
+                        {
+                            let card_x = diff_x + DIFF_GUTTER_WIDTH + 3.0;
+                            let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                            if x >= card_x + 6.0 && x <= card_x + 62.0 {
+                                return DiffAction::SetDraftTag(draft.tag.cycle());
+                            }
+                            if x >= card_x + card_w - 64.0 && x <= card_x + card_w - 26.0 {
+                                return DiffAction::SubmitDraft;
+                            }
+                            if x >= card_x + card_w - 24.0 && x <= card_x + card_w - 4.0 {
+                                return DiffAction::CancelDraft;
+                            }
+                        }
+                        if has_right_draft
+                            && x >= diff_x + half_w
+                            && let Some(draft) = &state.comment_draft
+                        {
+                            let card_x = diff_x + half_w + DIFF_GUTTER_WIDTH + 3.0;
+                            let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+                            if x >= card_x + 6.0 && x <= card_x + 62.0 {
+                                return DiffAction::SetDraftTag(draft.tag.cycle());
+                            }
+                            if x >= card_x + card_w - 64.0 && x <= card_x + card_w - 26.0 {
+                                return DiffAction::SubmitDraft;
+                            }
+                            if x >= card_x + card_w - 24.0 && x <= card_x + card_w - 4.0 {
+                                return DiffAction::CancelDraft;
                             }
                         }
                     }
@@ -1692,5 +2482,108 @@ mod tests {
             hit_test_diff_view(layout.close_btn_rect.0 + 10.0, y + 10.0, x, y, w, h, &state),
             DiffAction::Close
         );
+    }
+
+    #[test]
+    fn test_review_tag_cycle() {
+        let tag = ReviewTag::Nit;
+        assert_eq!(tag.cycle(), ReviewTag::Suggestion);
+        assert_eq!(ReviewTag::Suggestion.cycle(), ReviewTag::Issue);
+        assert_eq!(ReviewTag::Issue.cycle(), ReviewTag::Approval);
+        assert_eq!(ReviewTag::Approval.cycle(), ReviewTag::Note);
+        assert_eq!(ReviewTag::Note.cycle(), ReviewTag::Nit);
+    }
+
+    #[test]
+    fn test_tokenize_syntax_line_languages() {
+        // Rust
+        let rust_spans = tokenize_syntax_line(
+            "pub fn test() { let x = 42; }",
+            "lib.rs",
+            DiffLineType::Context,
+        );
+        assert!(rust_spans.iter().any(|s| s.text == "pub" && s.bold));
+        assert!(rust_spans.iter().any(|s| s.text == "fn" && s.bold));
+        assert!(rust_spans.iter().any(|s| s.text == "42"));
+
+        // JavaScript
+        let js_spans =
+            tokenize_syntax_line("const name = 'oxidite';", "app.js", DiffLineType::Addition);
+        assert!(js_spans.iter().any(|s| s.text == "const" && s.bold));
+        assert!(js_spans.iter().any(|s| s.text == "'oxidite'"));
+
+        // Python
+        let py_spans =
+            tokenize_syntax_line("def run(): # comment\n", "main.py", DiffLineType::Context);
+        assert!(py_spans.iter().any(|s| s.text == "def" && s.bold));
+        assert!(py_spans.iter().any(|s| s.text.contains("# comment")));
+    }
+
+    #[test]
+    fn test_multi_file_navigation_layout_and_hit_test() {
+        let mut state = DiffViewState::default();
+        state.file_index = 1;
+        state.total_files = 3;
+
+        let x = 100.0;
+        let y = 30.0;
+        let w = 700.0;
+        let h = 400.0;
+        let layout = DiffHeaderLayout::compute(x, y, w, &state);
+
+        assert!(layout.prev_file_rect.is_some());
+        assert!(layout.file_counter_rect.is_some());
+        assert!(layout.next_file_rect.is_some());
+
+        let prev = layout.prev_file_rect.unwrap();
+        let next = layout.next_file_rect.unwrap();
+
+        assert_eq!(
+            hit_test_diff_view(prev.0 + 5.0, prev.1 + 5.0, x, y, w, h, &state),
+            DiffAction::PrevFile
+        );
+        assert_eq!(
+            hit_test_diff_view(next.0 + 5.0, next.1 + 5.0, x, y, w, h, &state),
+            DiffAction::NextFile
+        );
+    }
+
+    #[test]
+    fn test_comment_draft_lifecycle_and_hit_test() {
+        let mut state = DiffViewState::default();
+        state.comments.clear();
+        state.comment_draft = Some(CommentDraft::new(1, DiffSide::Modified));
+
+        let x = 0.0;
+        let y = 0.0;
+        let w = 800.0;
+        let h = 600.0;
+
+        let quads = assemble_diff_view_quads(x, y, w, h, [0.0, 1.0, 0.5, 1.0], &state);
+        assert!(!quads.is_empty());
+
+        let labels = build_diff_view_labels(x, y, w, h, &state);
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.text.contains("Type review comment"))
+        );
+
+        // Tag button is at card_x + 6.0
+        let half_w = (w / 2.0).floor();
+        let card_x = x + half_w + DIFF_GUTTER_WIDTH + 3.0;
+        let card_w = half_w - DIFF_GUTTER_WIDTH - 6.0;
+        let draft_y = y + DIFF_HEADER_HEIGHT + DIFF_LINE_HEIGHT * 2.0;
+
+        let tag_click = hit_test_diff_view(card_x + 10.0, draft_y + 10.0, x, y, w, h, &state);
+        assert_eq!(tag_click, DiffAction::SetDraftTag(ReviewTag::Issue));
+
+        let post_click =
+            hit_test_diff_view(card_x + card_w - 40.0, draft_y + 10.0, x, y, w, h, &state);
+        assert_eq!(post_click, DiffAction::SubmitDraft);
+
+        let cancel_click =
+            hit_test_diff_view(card_x + card_w - 10.0, draft_y + 10.0, x, y, w, h, &state);
+        assert_eq!(cancel_click, DiffAction::CancelDraft);
     }
 }
