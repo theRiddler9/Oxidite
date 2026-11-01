@@ -1,6 +1,7 @@
 //! Multi-tab terminal management and tab-bar geometry.
 
 use crate::input::{GridPoint, Selection};
+use crate::pane::{Pane, PaneTree, SplitDirection};
 use crate::parser::Parser;
 use crate::pty::{PtySize, PtyWriter};
 use crate::renderer::draw::{QuadVertex, build_quad_vertices};
@@ -197,6 +198,12 @@ pub struct Tab {
     pub mouse_down_pos: Option<GridPoint>,
     /// Current working directory of this tab (from OSC 7 or detected from prompt).
     pub cwd: Option<std::path::PathBuf>,
+    /// Panes currently hosted within this tab.
+    pub panes: Vec<Pane>,
+    /// Active pane ID currently receiving user keyboard focus.
+    pub active_pane_id: usize,
+    /// Binary split tree for calculating pane bounds and dividers.
+    pub pane_tree: PaneTree,
 }
 
 impl Tab {
@@ -208,6 +215,9 @@ impl Tab {
         terminal: Terminal,
         pty_writer: Option<Arc<Mutex<PtyWriter>>>,
     ) -> Self {
+        let initial_pane = Pane::new(id, title.clone(), terminal.clone(), pty_writer.clone());
+        let panes = vec![initial_pane];
+        let pane_tree = PaneTree::new(id);
         Self {
             id,
             title,
@@ -219,7 +229,138 @@ impl Tab {
             selection: None,
             mouse_down_pos: None,
             cwd: None,
+            panes,
+            active_pane_id: id,
+            pane_tree,
         }
+    }
+
+    /// Returns a reference to the currently active pane.
+    #[must_use]
+    pub fn active_pane(&self) -> Option<&Pane> {
+        self.panes.iter().find(|p| p.id == self.active_pane_id)
+    }
+
+    /// Returns a mutable reference to the currently active pane.
+    pub fn active_pane_mut(&mut self) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|p| p.id == self.active_pane_id)
+    }
+
+    /// Returns a reference to a pane by its ID.
+    #[must_use]
+    pub fn pane(&self, pane_id: usize) -> Option<&Pane> {
+        self.panes.iter().find(|p| p.id == pane_id)
+    }
+
+    /// Returns a mutable reference to a pane by its ID.
+    pub fn pane_mut(&mut self, pane_id: usize) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|p| p.id == pane_id)
+    }
+
+    /// Syncs state from the active pane back to tab-level fields.
+    pub fn sync_from_active_pane(&mut self) {
+        let active_id = self.active_pane_id;
+        if let Some(pane) = self.panes.iter().find(|p| p.id == active_id) {
+            let terminal = pane.terminal.clone();
+            let pty_writer = pane.pty_writer.clone();
+            let pty_exited = pane.pty_exited;
+            let pty_exit_code = pane.pty_exit_code;
+            let selection = pane.selection;
+            let mouse_down_pos = pane.mouse_down_pos;
+            let cwd = pane.cwd.clone();
+            let title = pane.title.clone();
+
+            self.terminal = terminal;
+            self.pty_writer = pty_writer;
+            self.pty_exited = pty_exited;
+            self.pty_exit_code = pty_exit_code;
+            self.selection = selection;
+            self.mouse_down_pos = mouse_down_pos;
+            self.cwd = cwd;
+            self.title = title;
+        }
+    }
+
+    /// Syncs state from tab-level fields into the active pane.
+    pub fn sync_to_active_pane(&mut self) {
+        let terminal = self.terminal.clone();
+        let selection = self.selection;
+        let mouse_down_pos = self.mouse_down_pos;
+        let cwd = self.cwd.clone();
+        let title = self.title.clone();
+        let pty_exited = self.pty_exited;
+        let pty_exit_code = self.pty_exit_code;
+        let active_id = self.active_pane_id;
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == active_id) {
+            pane.terminal = terminal;
+            pane.selection = selection;
+            pane.mouse_down_pos = mouse_down_pos;
+            pane.cwd = cwd;
+            pane.title = title;
+            pane.pty_exited = pty_exited;
+            pane.pty_exit_code = pty_exit_code;
+        }
+    }
+
+    /// Switches focus to the pane with `pane_id`.
+    pub fn select_pane(&mut self, pane_id: usize) {
+        if pane_id == self.active_pane_id || !self.panes.iter().any(|p| p.id == pane_id) {
+            return;
+        }
+        self.sync_to_active_pane();
+        self.active_pane_id = pane_id;
+        self.sync_from_active_pane();
+    }
+
+    /// Splits the currently active pane with `new_pane` in `direction`.
+    pub fn split_active_pane(&mut self, new_pane: Pane, direction: SplitDirection) -> bool {
+        let new_id = new_pane.id;
+        if self.pane_tree.split(self.active_pane_id, new_id, direction) {
+            self.panes.push(new_pane);
+            self.select_pane(new_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Closes the active pane. Returns `false` if only 1 pane remained.
+    pub fn close_active_pane(&mut self) -> bool {
+        if self.panes.len() <= 1 {
+            return false;
+        }
+        let closing_id = self.active_pane_id;
+        let next_id = self.pane_tree.next_pane(closing_id);
+        self.pane_tree.close_pane(closing_id);
+        self.panes.retain(|p| p.id != closing_id);
+        self.active_pane_id = next_id;
+        self.sync_from_active_pane();
+        true
+    }
+
+    /// Closes a pane with `pane_id`. Returns `false` if only 1 pane remained.
+    pub fn close_pane(&mut self, pane_id: usize) -> bool {
+        if self.panes.len() <= 1 {
+            return false;
+        }
+        if pane_id == self.active_pane_id {
+            return self.close_active_pane();
+        }
+        self.pane_tree.close_pane(pane_id);
+        self.panes.retain(|p| p.id != pane_id);
+        true
+    }
+
+    /// Cycles active pane focus forward.
+    pub fn cycle_pane_forward(&mut self) {
+        let next = self.pane_tree.next_pane(self.active_pane_id);
+        self.select_pane(next);
+    }
+
+    /// Cycles active pane focus backward.
+    pub fn cycle_pane_backward(&mut self) {
+        let prev = self.pane_tree.prev_pane(self.active_pane_id);
+        self.select_pane(prev);
     }
 
     /// Feeds incoming PTY bytes into this tab's VT parser and updates terminal state.
@@ -230,6 +371,32 @@ impl Tab {
         }
         if let Some(ref cwd) = self.terminal.cwd {
             self.cwd = Some(cwd.clone());
+        }
+        let term = self.terminal.clone();
+        let title = self.title.clone();
+        let cwd = self.cwd.clone();
+        let active_id = self.active_pane_id;
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == active_id) {
+            pane.terminal = term;
+            pane.title = title;
+            pane.cwd = cwd;
+        }
+    }
+
+    /// Feeds incoming PTY bytes into a specific pane's VT parser.
+    pub fn advance_pane_parser(&mut self, pane_id: usize, bytes: &[u8]) {
+        let is_active = pane_id == self.active_pane_id;
+        let mut term_update = None;
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == pane_id) {
+            pane.advance_parser(bytes);
+            if is_active {
+                term_update = Some((pane.terminal.clone(), pane.title.clone(), pane.cwd.clone()));
+            }
+        }
+        if let Some((term, title, cwd)) = term_update {
+            self.terminal = term;
+            self.title = title;
+            self.cwd = cwd;
         }
     }
 
@@ -803,5 +970,34 @@ mod tests {
         // Non-existent directory returns None
         let invalid = "PS C:\\non_existent_folder_xyz_123> ";
         assert!(extract_path_from_prompt_line(invalid).is_none());
+    }
+
+    #[test]
+    fn test_tab_split_pane_operations() {
+        let term1 = Terminal::new(80, 24);
+        let mut tab = Tab::new(1, "Tab 1".to_string(), term1, None);
+        assert_eq!(tab.panes.len(), 1);
+        assert_eq!(tab.active_pane_id, 1);
+
+        // Split active pane
+        let term2 = Terminal::new(40, 24);
+        let pane2 = Pane::new(2, "Pane 2".to_string(), term2, None);
+        assert!(tab.split_active_pane(pane2, SplitDirection::Vertical));
+        assert_eq!(tab.panes.len(), 2);
+        assert_eq!(tab.active_pane_id, 2);
+
+        // Cycle panes
+        tab.cycle_pane_forward();
+        assert_eq!(tab.active_pane_id, 1);
+        tab.cycle_pane_backward();
+        assert_eq!(tab.active_pane_id, 2);
+
+        // Close pane 2
+        assert!(tab.close_active_pane());
+        assert_eq!(tab.panes.len(), 1);
+        assert_eq!(tab.active_pane_id, 1);
+
+        // Closing the last pane returns false
+        assert!(!tab.close_active_pane());
     }
 }

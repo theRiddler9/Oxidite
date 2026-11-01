@@ -687,6 +687,8 @@ pub struct GlyphPipeline {
     pub glyph_cache: GlyphCache,
     /// Reusable text buffers for tab bar labels.
     pub tab_buffers: Vec<FontBuffer>,
+    /// Reusable text buffers for multi-pane terminal rows.
+    pub pane_buffers: Vec<FontBuffer>,
 }
 
 impl GlyphPipeline {
@@ -709,6 +711,7 @@ impl GlyphPipeline {
             text_renderer,
             glyph_cache,
             tab_buffers: Vec::new(),
+            pane_buffers: Vec::new(),
         }
     }
 }
@@ -991,6 +994,169 @@ impl GlyphPipeline {
                     custom_glyphs: &[],
                 });
             }
+        }
+
+        self.viewport.update(
+            ctx.queue,
+            Resolution {
+                width: ctx.screen_size[0],
+                height: ctx.screen_size[1],
+            },
+        );
+
+        let _ = self.text_renderer.prepare(
+            ctx.device,
+            ctx.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        );
+
+        self.text_renderer
+            .render(&self.atlas, &self.viewport, rpass)?;
+
+        Ok(())
+    }
+
+    /// Renders tab labels and multiple terminal pane grids with distinct scissor bounds.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines
+    )]
+    pub fn draw_panes<'pass>(
+        &'pass mut self,
+        ctx: &DrawContext<'_>,
+        rpass: &mut wgpu::RenderPass<'pass>,
+        panes: &[(&Grid, f32, f32, f32, f32)],
+    ) -> Result<(), glyphon::RenderError> {
+        while self.tab_buffers.len() < ctx.tab_labels.len() {
+            self.tab_buffers.push(FontBuffer::new(
+                &mut self.font_system,
+                Metrics::new(12.0, 16.0),
+            ));
+        }
+
+        for (label_idx, label) in ctx.tab_labels.iter().enumerate() {
+            let buf = &mut self.tab_buffers[label_idx];
+            buf.set_metrics(Metrics::new(12.0, 16.0));
+            let mut attrs = FontAttrs::new()
+                .family(Family::Monospace)
+                .color(label.color);
+            if label.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            buf.set_text(&label.text, &attrs, Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut self.font_system, false);
+        }
+
+        let max_w = i32::try_from(ctx.screen_size[0]).unwrap_or(i32::MAX);
+        let max_h = i32::try_from(ctx.screen_size[1]).unwrap_or(i32::MAX);
+
+        let mut text_areas: Vec<TextArea> = Vec::new();
+
+        for (label_idx, label) in ctx.tab_labels.iter().enumerate() {
+            let buf = &self.tab_buffers[label_idx];
+            let left = (label.x.max(0.0) as i32).min(max_w);
+            let top = (label.y.max(0.0) as i32).min(max_h);
+            let right = ((label.x + label.max_width) as i32).clamp(left, max_w);
+            let bottom = ((label.y + 34.0) as i32).clamp(top, max_h);
+
+            if right > left && bottom > top {
+                text_areas.push(TextArea {
+                    buffer: buf,
+                    left: label.x,
+                    top: label.y,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    },
+                    default_color: label.color,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
+        let mut total_rows = 0;
+        for (grid, _, _, _, _) in panes {
+            total_rows += grid.rows;
+        }
+
+        while self.pane_buffers.len() < total_rows {
+            self.pane_buffers.push(FontBuffer::new(
+                &mut self.font_system,
+                Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height),
+            ));
+        }
+
+        let mut buffer_idx = 0;
+        let mut row_placements = Vec::new();
+
+        for &(grid, pane_x, pane_y, pane_w, pane_h) in panes {
+            let pane_right = ((pane_x + pane_w) as i32).clamp(0, max_w);
+            let pane_bottom = ((pane_y + pane_h) as i32).clamp(0, max_h);
+            let pane_left = (pane_x as i32).clamp(0, max_w);
+            let pane_top = (pane_y as i32).clamp(0, max_h);
+
+            for row_idx in 0..grid.rows {
+                let Some(row_cells) = grid.display_row(row_idx) else {
+                    continue;
+                };
+                if !row_cells.iter().any(|c| c.ch != ' ') {
+                    continue;
+                }
+
+                let spans = collect_single_row_spans(row_cells, ctx.palette);
+                let buffer = &mut self.pane_buffers[buffer_idx];
+
+                buffer.set_metrics(Metrics::new(ctx.metrics.font_size, ctx.metrics.line_height));
+                let rich_spans: Vec<(&str, FontAttrs)> = spans
+                    .iter()
+                    .map(|(text, attrs)| (text.as_str(), attrs.clone()))
+                    .collect();
+                buffer.set_rich_text(
+                    rich_spans,
+                    &FontAttrs::new().family(Family::Monospace),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.font_system, false);
+
+                let row_top = pane_y + row_idx as f32 * ctx.metrics.cell_height;
+                row_placements.push((
+                    buffer_idx,
+                    pane_x,
+                    row_top,
+                    pane_left,
+                    pane_top,
+                    pane_right,
+                    pane_bottom,
+                ));
+                buffer_idx += 1;
+            }
+        }
+
+        for (buf_idx, left, top, b_left, b_top, b_right, b_bottom) in row_placements {
+            let buffer = &self.pane_buffers[buf_idx];
+            text_areas.push(TextArea {
+                buffer,
+                left,
+                top,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: b_left,
+                    top: b_top,
+                    right: b_right,
+                    bottom: b_bottom,
+                },
+                default_color: GlyphonColor::rgb(255, 255, 255),
+                custom_glyphs: &[],
+            });
         }
 
         self.viewport.update(

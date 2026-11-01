@@ -10,6 +10,7 @@ pub mod git;
 pub mod grid;
 pub mod handler;
 pub mod input;
+pub mod pane;
 pub mod parser;
 pub mod pty;
 pub mod renderer;

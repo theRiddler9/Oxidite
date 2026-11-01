@@ -102,6 +102,16 @@ pub struct KeybindingsConfig {
     pub toggle_status_bar: String,
     /// Toggle visibility of the in-terminal search bar.
     pub search: String,
+    /// Split active pane vertically.
+    pub split_vertical: String,
+    /// Split active pane horizontally.
+    pub split_horizontal: String,
+    /// Close the active pane.
+    pub close_pane: String,
+    /// Focus the next split pane.
+    pub next_pane: String,
+    /// Focus the previous split pane.
+    pub prev_pane: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -119,6 +129,11 @@ impl Default for KeybindingsConfig {
             cycle_theme: "Ctrl+Shift+T".to_string(),
             toggle_status_bar: "Ctrl+Shift+B".to_string(),
             search: "Ctrl+Shift+F".to_string(),
+            split_vertical: "Ctrl+Shift+\\".to_string(),
+            split_horizontal: "Ctrl+Shift+-".to_string(),
+            close_pane: "Ctrl+Shift+W".to_string(),
+            next_pane: "Ctrl+Shift+]".to_string(),
+            prev_pane: "Ctrl+Shift+[".to_string(),
         }
     }
 }
@@ -236,6 +251,21 @@ impl KeybindingsConfig {
         }
         if matches_keybinding(&self.search, event) {
             return Some(crate::input::InputAction::ToggleSearch);
+        }
+        if matches_keybinding(&self.split_vertical, event) {
+            return Some(crate::input::InputAction::SplitVertical);
+        }
+        if matches_keybinding(&self.split_horizontal, event) {
+            return Some(crate::input::InputAction::SplitHorizontal);
+        }
+        if matches_keybinding(&self.close_pane, event) {
+            return Some(crate::input::InputAction::ClosePane);
+        }
+        if matches_keybinding(&self.next_pane, event) {
+            return Some(crate::input::InputAction::NextPane);
+        }
+        if matches_keybinding(&self.prev_pane, event) {
+            return Some(crate::input::InputAction::PrevPane);
         }
         None
     }
