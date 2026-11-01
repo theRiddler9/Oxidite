@@ -112,6 +112,8 @@ pub struct KeybindingsConfig {
     pub next_pane: String,
     /// Focus the previous split pane.
     pub prev_pane: String,
+    /// Rename the active tab.
+    pub rename_tab: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -134,6 +136,7 @@ impl Default for KeybindingsConfig {
             close_pane: "Ctrl+Shift+W".to_string(),
             next_pane: "Ctrl+Shift+]".to_string(),
             prev_pane: "Ctrl+Shift+[".to_string(),
+            rename_tab: "Ctrl+Shift+R".to_string(),
         }
     }
 }
@@ -267,6 +270,9 @@ impl KeybindingsConfig {
         if matches_keybinding(&self.prev_pane, event) {
             return Some(crate::input::InputAction::PrevPane);
         }
+        if matches_keybinding(&self.rename_tab, event) {
+            return Some(crate::input::InputAction::RenameTab);
+        }
         None
     }
 }
@@ -293,6 +299,8 @@ pub struct ConfigFile {
     pub scrollback_lines: usize,
     /// Whether to display the bottom status bar.
     pub status_bar: bool,
+    /// Whether to prompt for confirmation when closing a tab with an active running process.
+    pub confirm_close_active_tab: bool,
     /// Configurable keybindings.
     pub keybindings: KeybindingsConfig,
 }
@@ -309,6 +317,7 @@ impl Default for ConfigFile {
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
             status_bar: true,
+            confirm_close_active_tab: true,
             keybindings: KeybindingsConfig::default(),
         }
     }
@@ -335,6 +344,8 @@ pub struct Config {
     pub scrollback_lines: usize,
     /// Whether to display the bottom status bar.
     pub status_bar: bool,
+    /// Whether to prompt for confirmation when closing a tab with an active running process.
+    pub confirm_close_active_tab: bool,
     /// Configurable keybindings.
     pub keybindings: KeybindingsConfig,
 }
@@ -352,6 +363,7 @@ impl Default for Config {
             shell_args: Vec::new(),
             scrollback_lines: 10_000,
             status_bar: true,
+            confirm_close_active_tab: true,
             keybindings: KeybindingsConfig::default(),
         }
     }
@@ -456,6 +468,7 @@ impl Config {
             shell_args: file.shell_args,
             scrollback_lines: file.scrollback_lines,
             status_bar: file.status_bar,
+            confirm_close_active_tab: file.confirm_close_active_tab,
             keybindings: file.keybindings,
         })
     }

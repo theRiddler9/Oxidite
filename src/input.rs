@@ -250,6 +250,8 @@ pub enum InputAction {
     NextPane,
     /// Cycle to the previous split pane.
     PrevPane,
+    /// Prompt to rename the active tab.
+    RenameTab,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
@@ -307,6 +309,9 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch == "[" || ch == "{" {
             return Some(InputAction::PrevPane);
+        }
+        if ch.eq_ignore_ascii_case("r") {
+            return Some(InputAction::RenameTab);
         }
     }
 
@@ -1200,6 +1205,18 @@ mod tests {
         assert_eq!(
             check_input_action(&ctrl_shift_w),
             Some(InputAction::ClosePane)
+        );
+
+        // Ctrl+Shift+R -> RenameTab
+        let ctrl_shift_r = KeyEvent::new(
+            Key::Character(SmolStr::new("r")),
+            Some("r".to_string()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_r),
+            Some(InputAction::RenameTab)
         );
 
         // Ctrl+Alt+Right -> NextPane
