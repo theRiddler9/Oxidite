@@ -1779,6 +1779,7 @@ dependencies = [
  "notify",
  "pollster",
  "portable-pty",
+ "regex",
  "serde",
  "thiserror 2.0.21",
  "toml",

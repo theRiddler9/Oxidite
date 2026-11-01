@@ -558,6 +558,67 @@ pub fn build_search_bar_labels(
     labels
 }
 
+/// Actions triggered by interacting with controls in the floating search bar overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchBarAction {
+    /// No interactive control was clicked.
+    None,
+    /// Toggle case sensitivity mode.
+    ToggleCase,
+    /// Toggle regular expression search mode.
+    ToggleRegex,
+    /// Advance to the next search match.
+    NextMatch,
+    /// Retreat to the previous search match.
+    PrevMatch,
+    /// Close the search bar.
+    Close,
+}
+
+/// Tests whether a click event at `(click_x, click_y)` hits an interactive control in the search bar.
+#[must_use]
+pub fn hit_test_search_bar(
+    click_x: f32,
+    click_y: f32,
+    pane_x: f32,
+    pane_y: f32,
+    pane_w: f32,
+    search: &SearchState,
+) -> SearchBarAction {
+    if !search.is_open {
+        return SearchBarAction::None;
+    }
+
+    let bar_w = SEARCH_BAR_WIDTH.min(pane_w - 20.0);
+    let bar_h = SEARCH_BAR_HEIGHT;
+    let bar_x = pane_x + pane_w - bar_w - 16.0;
+    let bar_y = pane_y + 8.0;
+
+    if click_x < bar_x || click_x > bar_x + bar_w || click_y < bar_y || click_y > bar_y + bar_h {
+        return SearchBarAction::None;
+    }
+
+    // Check Case sensitivity toggle (Aa)
+    let case_x = bar_x + bar_w - 52.0;
+    if click_x >= case_x && click_x < case_x + 22.0 {
+        return SearchBarAction::ToggleCase;
+    }
+
+    // Check Regex toggle (.*)
+    let regex_x = bar_x + bar_w - 28.0;
+    if click_x >= regex_x && click_x < regex_x + 24.0 {
+        return SearchBarAction::ToggleRegex;
+    }
+
+    // Check match count pill (click to go to next match)
+    let badge_x = bar_x + bar_w - 104.0;
+    if click_x >= badge_x && click_x < badge_x + 46.0 {
+        return SearchBarAction::NextMatch;
+    }
+
+    SearchBarAction::None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,5 +762,43 @@ mod tests {
         state.scroll_to_current_match(&mut grid);
         assert!(grid.display_offset > 0);
         assert!(grid.display_offset <= sb_len);
+    }
+
+    #[test]
+    fn search_bar_hit_test_and_ui_generation() {
+        let mut state = SearchState::new();
+        state.open();
+        state.query = "test".to_string();
+
+        let pane_x = 100.0;
+        let pane_y = 50.0;
+        let pane_w = 600.0;
+
+        let bar_w = SEARCH_BAR_WIDTH.min(pane_w - 20.0);
+        let bar_x = pane_x + pane_w - bar_w - 16.0;
+        let bar_y = pane_y + 8.0;
+
+        // Case toggle hit
+        let case_x = bar_x + bar_w - 52.0 + 5.0;
+        let case_y = bar_y + 10.0;
+        assert_eq!(
+            hit_test_search_bar(case_x, case_y, pane_x, pane_y, pane_w, &state),
+            SearchBarAction::ToggleCase
+        );
+
+        // Regex toggle hit
+        let regex_x = bar_x + bar_w - 28.0 + 5.0;
+        assert_eq!(
+            hit_test_search_bar(regex_x, case_y, pane_x, pane_y, pane_w, &state),
+            SearchBarAction::ToggleRegex
+        );
+
+        // Quad vertices generated
+        let quads = assemble_search_bar_quads(pane_x, pane_y, pane_w, [0.0, 0.8, 1.0, 1.0], &state);
+        assert!(!quads.is_empty());
+
+        // Labels generated
+        let labels = build_search_bar_labels(pane_x, pane_y, pane_w, &state);
+        assert!(labels.iter().any(|l| l.text.contains("test")));
     }
 }
