@@ -236,6 +236,10 @@ pub enum InputAction {
     SearchNext,
     /// Jump to the previous search match.
     SearchPrev,
+    /// Jump to the previous shell prompt boundary (OSC 133).
+    PrevPrompt,
+    /// Jump to the next shell prompt boundary (OSC 133).
+    NextPrompt,
 }
 
 /// Checks if a key event corresponds to a terminal internal action (e.g. scrollback or zoom).
@@ -278,6 +282,14 @@ pub fn check_input_action(event: &KeyEvent) -> Option<InputAction> {
         }
         if ch.eq_ignore_ascii_case("f") {
             return Some(InputAction::ToggleSearch);
+        }
+    }
+
+    if is_ctrl_shift {
+        match event.logical_key {
+            Key::Named(NamedKey::ArrowUp) => return Some(InputAction::PrevPrompt),
+            Key::Named(NamedKey::ArrowDown) => return Some(InputAction::NextPrompt),
+            _ => {}
         }
     }
 
@@ -1088,6 +1100,30 @@ mod tests {
             ElementState::Pressed,
         );
         assert_eq!(check_input_action(&shift_f3), Some(InputAction::SearchPrev));
+
+        // Ctrl+Shift+Up -> PrevPrompt
+        let ctrl_shift_up = KeyEvent::new(
+            Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_up),
+            Some(InputAction::PrevPrompt)
+        );
+
+        // Ctrl+Shift+Down -> NextPrompt
+        let ctrl_shift_down = KeyEvent::new(
+            Key::Named(NamedKey::ArrowDown),
+            None,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            check_input_action(&ctrl_shift_down),
+            Some(InputAction::NextPrompt)
+        );
     }
 
     #[test]

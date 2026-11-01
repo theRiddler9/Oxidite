@@ -87,6 +87,41 @@ pub struct Terminal {
     pub dirty_rows: Vec<bool>,
     /// Whether the cursor is currently configured to blink.
     pub cursor_blinking: bool,
+    /// Active shell integration command lifecycle state (OSC 133).
+    pub command_state: CommandState,
+    /// Recorded history of command boundaries for prompt jumping and output extraction.
+    pub command_markers: Vec<CommandMarker>,
+    /// Active command currently being tracked.
+    pub active_command: Option<CommandMarker>,
+}
+
+/// Current execution state of the shell command cycle (`OSC 133`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommandState {
+    /// Inactive or default state.
+    #[default]
+    None,
+    /// Inside command prompt (`OSC 133 ; A`).
+    Prompt,
+    /// User command input active before execution (`OSC 133 ; B`).
+    Input,
+    /// Command is executing and producing output (`OSC 133 ; C`).
+    Executing,
+}
+
+/// A semantic record of a shell command execution boundary and exit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandMarker {
+    /// Absolute line where the command prompt started.
+    pub prompt_line: usize,
+    /// Absolute line where the user command input began (`OSC 133 ; B`).
+    pub input_line: Option<usize>,
+    /// Absolute line where command execution / output started (`OSC 133 ; C`).
+    pub command_line: Option<usize>,
+    /// Absolute line where command execution completed (`OSC 133 ; D`).
+    pub end_line: Option<usize>,
+    /// Process exit code if reported.
+    pub exit_code: Option<i32>,
 }
 
 impl Default for Terminal {
@@ -111,6 +146,69 @@ impl Terminal {
             bell_count: 0,
             dirty_rows: vec![true; rows],
             cursor_blinking: true,
+            command_state: CommandState::default(),
+            command_markers: Vec::new(),
+            active_command: None,
+        }
+    }
+
+    /// Returns the current absolute row index across scrollback and visible grid.
+    #[must_use]
+    pub fn current_abs_line(&self) -> usize {
+        self.grid.scrollback_len() + self.grid.cursor.row
+    }
+
+    /// Scrolls viewport to jump to the previous recorded prompt boundary.
+    pub fn jump_to_prev_prompt(&mut self) -> bool {
+        let sb_len = self.grid.scrollback_len();
+        let current_top = sb_len.saturating_sub(self.grid.display_offset);
+
+        // Find the latest prompt line strictly before current_top
+        let prev = self
+            .command_markers
+            .iter()
+            .map(|m| m.prompt_line)
+            .chain(self.active_command.as_ref().map(|m| m.prompt_line))
+            .filter(|&line| line < current_top)
+            .max();
+
+        if let Some(target) = prev {
+            if target >= sb_len {
+                self.grid.display_offset = 0;
+            } else {
+                self.grid.display_offset = sb_len.saturating_sub(target).clamp(1, sb_len);
+            }
+            self.mark_all_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Scrolls viewport to jump to the next recorded prompt boundary.
+    pub fn jump_to_next_prompt(&mut self) -> bool {
+        let sb_len = self.grid.scrollback_len();
+        let current_top = sb_len.saturating_sub(self.grid.display_offset);
+
+        // Find the earliest prompt line strictly after current_top
+        let next = self
+            .command_markers
+            .iter()
+            .map(|m| m.prompt_line)
+            .chain(self.active_command.as_ref().map(|m| m.prompt_line))
+            .filter(|&line| line > current_top)
+            .min();
+
+        if let Some(target) = next {
+            if target >= sb_len {
+                self.grid.display_offset = 0;
+            } else {
+                self.grid.display_offset = sb_len.saturating_sub(target).clamp(1, sb_len);
+            }
+            self.mark_all_dirty();
+            true
+        } else {
+            false
         }
     }
 
@@ -375,6 +473,54 @@ impl Handler for Terminal {
         self.grid.erase_chars(count);
         self.mark_row_dirty(self.grid.cursor.row);
     }
+
+    /// Marks the start of a command prompt (`OSC 133 ; A`).
+    fn shell_prompt_start(&mut self) {
+        if let Some(mut prev) = self.active_command.take() {
+            if prev.end_line.is_none() {
+                prev.end_line = Some(self.current_abs_line());
+            }
+            self.command_markers.push(prev);
+        }
+        self.command_state = CommandState::Prompt;
+        let line = self.current_abs_line();
+        self.active_command = Some(CommandMarker {
+            prompt_line: line,
+            input_line: None,
+            command_line: None,
+            end_line: None,
+            exit_code: None,
+        });
+    }
+
+    /// Marks the end of a command prompt and start of command input (`OSC 133 ; B`).
+    fn shell_prompt_end(&mut self) {
+        self.command_state = CommandState::Input;
+        let line = self.current_abs_line();
+        if let Some(ref mut cmd) = self.active_command {
+            cmd.input_line = Some(line);
+        }
+    }
+
+    /// Marks the start of command execution and output (`OSC 133 ; C`).
+    fn shell_command_start(&mut self) {
+        self.command_state = CommandState::Executing;
+        let line = self.current_abs_line();
+        if let Some(ref mut cmd) = self.active_command {
+            cmd.command_line = Some(line);
+        }
+    }
+
+    /// Marks the completion of a command with an optional exit code (`OSC 133 ; D`).
+    fn shell_command_finished(&mut self, exit_code: Option<i32>) {
+        self.command_state = CommandState::None;
+        let line = self.current_abs_line();
+        if let Some(mut cmd) = self.active_command.take() {
+            cmd.end_line = Some(line);
+            cmd.exit_code = exit_code;
+            self.command_markers.push(cmd);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -603,5 +749,69 @@ mod tests {
         let uri = format!("file://localhost/{}", cwd.display());
         term.set_working_directory(&uri);
         assert!(term.cwd.is_some());
+    }
+
+    #[test]
+    fn terminal_shell_integration_osc133() {
+        let mut term = Terminal::new(20, 5);
+        let mut parser = crate::parser::Parser::new();
+
+        // 1. Prompt start: OSC 133 ; A ST
+        parser.advance(&mut term, b"\x1b]133;A\x1b\\");
+        assert_eq!(term.command_state, CommandState::Prompt);
+        assert!(term.active_command.is_some());
+        assert_eq!(term.active_command.as_ref().unwrap().prompt_line, 0);
+
+        // Print prompt text
+        parser.advance(&mut term, b"$ ");
+
+        // 2. Prompt end / Command start: OSC 133 ; B ST
+        parser.advance(&mut term, b"\x1b]133;B\x1b\\");
+        assert_eq!(term.command_state, CommandState::Input);
+        assert_eq!(term.active_command.as_ref().unwrap().input_line, Some(0));
+
+        // Print command
+        parser.advance(&mut term, b"echo hello\r\n");
+
+        // 3. Command execution / output: OSC 133 ; C ST
+        parser.advance(&mut term, b"\x1b]133;C\x1b\\");
+        assert_eq!(term.command_state, CommandState::Executing);
+        assert_eq!(term.active_command.as_ref().unwrap().command_line, Some(1));
+        parser.advance(&mut term, b"hello\r\n");
+
+        // 4. Command finished: OSC 133 ; D ; 0 ST
+        parser.advance(&mut term, b"\x1b]133;D;0\x1b\\");
+        assert_eq!(term.command_state, CommandState::None);
+        assert!(term.active_command.is_none());
+        assert_eq!(term.command_markers.len(), 1);
+        let cmd = &term.command_markers[0];
+        assert_eq!(cmd.prompt_line, 0);
+        assert_eq!(cmd.exit_code, Some(0));
+    }
+
+    #[test]
+    fn terminal_prompt_jumping_navigation() {
+        let mut term = Terminal::new(20, 4);
+        let mut parser = crate::parser::Parser::new();
+
+        // Run command 1
+        parser.advance(
+            &mut term,
+            b"\x1b]133;A\x1b\\$ echo 1\r\n\x1b]133;B\x1b\\\x1b]133;C\x1b\\1\r\n\x1b]133;D;0\x1b\\",
+        );
+        // Push lines into scrollback
+        for _ in 0..10 {
+            parser.advance(&mut term, b"scroll\r\n");
+        }
+        // Run command 2
+        parser.advance(
+            &mut term,
+            b"\x1b]133;A\x1b\\$ echo 2\r\n\x1b]133;B\x1b\\\x1b]133;C\x1b\\2\r\n\x1b]133;D;0\x1b\\",
+        );
+
+        assert!(term.command_markers.len() >= 1);
+        // Jump back to previous prompt
+        assert!(term.jump_to_prev_prompt());
+        assert!(term.grid.display_offset > 0);
     }
 }

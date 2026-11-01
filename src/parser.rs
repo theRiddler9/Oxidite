@@ -84,6 +84,22 @@ impl vte::Perform for Dispatcher<'_> {
             let uri_bytes = params[1..].join(&b';');
             let uri = String::from_utf8_lossy(&uri_bytes);
             self.handler.set_working_directory(&uri);
+        } else if matches!(params.first().copied(), Some(b"133")) && params.len() > 1 {
+            match params[1] {
+                b"A" => self.handler.shell_prompt_start(),
+                b"B" => self.handler.shell_prompt_end(),
+                b"C" => self.handler.shell_command_start(),
+                b"D" => {
+                    let exit_code = if params.len() > 2 {
+                        let code_str = String::from_utf8_lossy(params[2]);
+                        code_str.trim().parse::<i32>().ok()
+                    } else {
+                        None
+                    };
+                    self.handler.shell_command_finished(exit_code);
+                }
+                _ => {}
+            }
         }
     }
 
