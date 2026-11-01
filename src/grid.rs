@@ -66,6 +66,8 @@ pub struct Cell {
     pub attrs: Attrs,
     /// Display columns occupied (1 for most chars, 2 for wide / CJK).
     pub width: u8,
+    /// Hyperlink identifier in the grid's pool (0 = no hyperlink).
+    pub hyperlink_id: u16,
 }
 
 impl Cell {
@@ -78,6 +80,27 @@ impl Cell {
             bg,
             attrs,
             width,
+            hyperlink_id: 0,
+        }
+    }
+
+    /// Creates a cell with custom character, styling, and hyperlink identifier.
+    #[must_use]
+    pub const fn with_hyperlink(
+        ch: char,
+        fg: Color,
+        bg: Color,
+        attrs: Attrs,
+        width: u8,
+        hyperlink_id: u16,
+    ) -> Self {
+        Self {
+            ch,
+            fg,
+            bg,
+            attrs,
+            width,
+            hyperlink_id,
         }
     }
 
@@ -90,6 +113,7 @@ impl Cell {
             bg: Color::Default,
             attrs: Attrs::empty(),
             width: 1,
+            hyperlink_id: 0,
         }
     }
 
@@ -105,6 +129,7 @@ impl Cell {
             && self.fg == Color::Default
             && self.bg == Color::Default
             && self.attrs.is_empty()
+            && self.hyperlink_id == 0
     }
 
     /// Returns whether this cell is the leading half of a 2-cell wide character.
@@ -237,6 +262,8 @@ pub struct Grid {
     pub max_scrollback: usize,
     /// Number of lines the viewport is scrolled back into scrollback history (0 = bottom active screen).
     pub display_offset: usize,
+    /// Pool of registered OSC 8 hyperlink URLs. Indices are 1-based (`hyperlink_id - 1`).
+    pub hyperlink_pool: Vec<String>,
 }
 
 impl Default for Grid {
@@ -269,6 +296,29 @@ impl Grid {
             scrollback: VecDeque::new(),
             max_scrollback,
             display_offset: 0,
+            hyperlink_pool: Vec::new(),
+        }
+    }
+
+    /// Registers a hyperlink in the pool, returning its 1-based identifier.
+    pub fn register_hyperlink(&mut self, url: String) -> u16 {
+        if let Some(pos) = self.hyperlink_pool.iter().position(|u| u == &url) {
+            u16::try_from(pos + 1).unwrap_or(u16::MAX)
+        } else {
+            self.hyperlink_pool.push(url);
+            u16::try_from(self.hyperlink_pool.len()).unwrap_or(u16::MAX)
+        }
+    }
+
+    /// Looks up a hyperlink URL by its 1-based identifier.
+    #[must_use]
+    pub fn lookup_hyperlink(&self, id: u16) -> Option<&str> {
+        if id == 0 {
+            None
+        } else {
+            self.hyperlink_pool
+                .get(usize::from(id - 1))
+                .map(String::as_str)
         }
     }
 
@@ -615,6 +665,19 @@ impl Grid {
     /// Writes a character at the cursor position with the specified styling,
     /// respecting autowrap mode, deferred wrap state, and wide character widths (CJK / emoji).
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, attrs: Attrs, autowrap: bool) {
+        self.put_char_with_link(c, fg, bg, attrs, autowrap, 0);
+    }
+
+    /// Writes a character at the cursor position with styling and an active hyperlink ID.
+    pub fn put_char_with_link(
+        &mut self,
+        c: char,
+        fg: Color,
+        bg: Color,
+        attrs: Attrs,
+        autowrap: bool,
+        hyperlink_id: u16,
+    ) {
         let char_width = if UnicodeWidthChar::width(c).unwrap_or(1) >= 2 {
             2u8
         } else {
@@ -630,7 +693,7 @@ impl Grid {
             let row = self.cursor.row.min(self.rows.saturating_sub(1));
             let col = self.cursor.col.min(self.cols.saturating_sub(1));
             if let Some(cell) = self.get_mut(row, col) {
-                *cell = Cell::new(' ', fg, bg, attrs, 1);
+                *cell = Cell::with_hyperlink(' ', fg, bg, attrs, 1, hyperlink_id);
             }
             self.cursor.col = 0;
             self.linefeed();
@@ -655,12 +718,12 @@ impl Grid {
 
         // Write the character
         if let Some(cell) = self.get_mut(row, col) {
-            *cell = Cell::new(c, fg, bg, attrs, char_width);
+            *cell = Cell::with_hyperlink(c, fg, bg, attrs, char_width, hyperlink_id);
         }
 
         if char_width == 2 {
             if let Some(next) = self.get_mut(row, col + 1) {
-                *next = Cell::new(' ', fg, bg, attrs, 0);
+                *next = Cell::with_hyperlink(' ', fg, bg, attrs, 0, hyperlink_id);
             }
             if self.cursor.col + 2 < self.cols {
                 self.cursor.col += 2;

@@ -93,6 +93,10 @@ pub struct Terminal {
     pub command_markers: Vec<CommandMarker>,
     /// Active command currently being tracked.
     pub active_command: Option<CommandMarker>,
+    /// Active OSC 8 hyperlink URL currently being emitted.
+    pub current_hyperlink: Option<String>,
+    /// Active OSC 8 hyperlink ID registered in the active grid.
+    pub current_hyperlink_id: u16,
 }
 
 /// Current execution state of the shell command cycle (`OSC 133`).
@@ -149,6 +153,8 @@ impl Terminal {
             command_state: CommandState::default(),
             command_markers: Vec::new(),
             active_command: None,
+            current_hyperlink: None,
+            current_hyperlink_id: 0,
         }
     }
 
@@ -268,8 +274,14 @@ impl Handler for Terminal {
     /// Writes a printable character at the cursor using active colors and styles.
     fn print(&mut self, c: char) {
         let prev_row = self.grid.cursor.row;
-        self.grid
-            .put_char(c, self.fg, self.bg, self.attrs, self.modes.autowrap);
+        self.grid.put_char_with_link(
+            c,
+            self.fg,
+            self.bg,
+            self.attrs,
+            self.modes.autowrap,
+            self.current_hyperlink_id,
+        );
         self.mark_row_dirty(prev_row);
         self.mark_row_dirty(self.grid.cursor.row);
     }
@@ -519,6 +531,19 @@ impl Handler for Terminal {
             cmd.end_line = Some(line);
             cmd.exit_code = exit_code;
             self.command_markers.push(cmd);
+        }
+    }
+
+    /// Sets or clears the active OSC 8 hyperlink URL.
+    fn set_hyperlink(&mut self, url: Option<String>) {
+        if let Some(u) = url {
+            let id = self.grid.register_hyperlink(u.clone());
+            self.alternate_grid.register_hyperlink(u.clone());
+            self.current_hyperlink = Some(u);
+            self.current_hyperlink_id = id;
+        } else {
+            self.current_hyperlink = None;
+            self.current_hyperlink_id = 0;
         }
     }
 }
@@ -813,5 +838,31 @@ mod tests {
         // Jump back to previous prompt
         assert!(term.jump_to_prev_prompt());
         assert!(term.grid.display_offset > 0);
+    }
+
+    #[test]
+    fn terminal_osc8_hyperlinks() {
+        let mut term = Terminal::new(20, 5);
+        let mut parser = crate::parser::Parser::new();
+
+        // OSC 8 ; ; https://oxidite.dev ST
+        parser.advance(
+            &mut term,
+            b"\x1b]8;;https://oxidite.dev\x1b\\Oxidite\x1b]8;;\x1b\\ Terminal",
+        );
+
+        let row = term.grid.row(0).unwrap();
+        // "Oxidite" (indices 0..7) should have hyperlink_id > 0
+        for i in 0..7 {
+            assert!(row[i].hyperlink_id > 0);
+            assert_eq!(
+                term.grid.lookup_hyperlink(row[i].hyperlink_id),
+                Some("https://oxidite.dev")
+            );
+        }
+        // " Terminal" (indices 7..16) should have hyperlink_id == 0
+        for i in 7..16 {
+            assert_eq!(row[i].hyperlink_id, 0);
+        }
     }
 }
