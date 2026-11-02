@@ -760,6 +760,106 @@ pub fn restore_file(cwd: &Path, file_path: &str) -> std::io::Result<()> {
     }
 }
 
+/// Lists local branch names via `git branch --list`.
+#[must_use]
+pub fn list_branches(cwd: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .args(["branch", "--list", "--format=%(refname:short)"])
+        .current_dir(cwd)
+        .output();
+
+    if let Ok(out) = output
+        && out.status.success()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        return text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+    }
+
+    Vec::new()
+}
+
+/// Switches to `branch_name` via `git checkout <branch>`.
+pub fn checkout_branch(cwd: &Path, branch_name: &str) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .args(["checkout", branch_name])
+        .current_dir(cwd)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "git checkout {branch_name} failed"
+        )))
+    }
+}
+
+/// Remote tracking status: commits ahead and behind the upstream branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RemoteStatus {
+    /// Number of local commits not yet pushed.
+    pub ahead: usize,
+    /// Number of remote commits not yet pulled.
+    pub behind: usize,
+}
+
+/// Queries how many commits the current branch is ahead/behind its upstream.
+/// Returns `None` if there is no upstream tracking branch configured.
+#[must_use]
+pub fn query_remote_status(cwd: &Path) -> Option<RemoteStatus> {
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let ahead = parts[0].parse::<usize>().unwrap_or(0);
+        let behind = parts[1].parse::<usize>().unwrap_or(0);
+        Some(RemoteStatus { ahead, behind })
+    } else {
+        None
+    }
+}
+
+/// Runs `git fetch` for the current remote.
+pub fn fetch_remote(cwd: &Path) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .args(["fetch"])
+        .current_dir(cwd)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("git fetch failed"))
+    }
+}
+
+/// Runs `git pull` for the current branch.
+pub fn pull_remote(cwd: &Path) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .args(["pull"])
+        .current_dir(cwd)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("git pull failed"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
