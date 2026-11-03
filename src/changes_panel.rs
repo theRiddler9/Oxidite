@@ -57,6 +57,12 @@ pub struct ChangesPanelState {
     pub commit_input_focused: bool,
     /// Current git branch name.
     pub git_branch: String,
+    /// Whether the branch picker dropdown is open.
+    pub branch_picker_open: bool,
+    /// Available local branches for the branch picker.
+    pub branch_list: Vec<String>,
+    /// Remote tracking status (ahead/behind upstream).
+    pub remote_status: Option<crate::git::RemoteStatus>,
 }
 
 impl Default for ChangesPanelState {
@@ -98,12 +104,15 @@ impl Default for ChangesPanelState {
             commit_message: String::new(),
             commit_input_focused: false,
             git_branch: "--".to_string(),
+            branch_picker_open: false,
+            branch_list: Vec::new(),
+            remote_status: None,
         }
     }
 }
 
 /// Interactive actions dispatched by clicking inside the changes panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangesAction {
     /// No interactive control was clicked.
     None,
@@ -117,10 +126,38 @@ pub enum ChangesAction {
     ToggleStage(usize),
     /// Stage all modified files.
     StageAll,
+    /// Unstage all staged files.
+    UnstageAll,
     /// Commit staged changes.
     Commit,
     /// Focus the commit message input field.
     FocusCommitInput,
+    /// Toggle the branch picker dropdown.
+    ToggleBranchPicker,
+    /// Switch to a specific branch by name.
+    SwitchBranch(String),
+    /// Fetch from the remote.
+    FetchRemote,
+    /// Pull from the remote.
+    PullRemote,
+}
+
+/// Helper to assemble a filled rectangle with a 1px border.
+#[inline]
+fn push_bordered_rect(
+    quads: &mut Vec<QuadVertex>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    bg: [f32; 4],
+    border: [f32; 4],
+) {
+    quads.extend_from_slice(&build_quad_vertices(x, y, w, h, bg));
+    quads.extend_from_slice(&build_quad_vertices(x, y, w, 1.0, border));
+    quads.extend_from_slice(&build_quad_vertices(x, y + h - 1.0, w, 1.0, border));
+    quads.extend_from_slice(&build_quad_vertices(x, y, 1.0, h, border));
+    quads.extend_from_slice(&build_quad_vertices(x + w - 1.0, y, 1.0, h, border));
 }
 
 /// Builds quads for rendering the changes panel: pure pitch-black background, 1px left divider,
@@ -182,44 +219,31 @@ pub fn assemble_changes_panel_quads(
     // 5. Render depending on active tab: Changes vs History
     match state.active_tab {
         ChangesTab::Changes => {
-            // Stage All button background and crisp 1px border (#101217)
-            let stage_all_btn_x = panel_x + panel_width - 80.0;
-            let stage_all_btn_y = panel_y + CHANGES_HEADER_HEIGHT + 6.0;
-            quads.extend_from_slice(&build_quad_vertices(
+            // Stage All & Unstage All buttons
+            let stage_all_btn_x = panel_x + panel_width - 146.0;
+            let unstage_btn_x = panel_x + panel_width - 74.0;
+            let sub_btn_y = panel_y + CHANGES_HEADER_HEIGHT + 6.0;
+            let btn_border = [0.22, 0.28, 0.38, 0.9];
+            let btn_bg = [0.08, 0.10, 0.14, 0.95];
+
+            push_bordered_rect(
+                &mut quads,
                 stage_all_btn_x,
-                stage_all_btn_y,
-                70.0,
+                sub_btn_y,
+                68.0,
                 20.0,
-                [0.08, 0.10, 0.14, 0.95],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                stage_all_btn_x,
-                stage_all_btn_y,
-                70.0,
-                1.0,
-                [0.22, 0.28, 0.38, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                stage_all_btn_x,
-                stage_all_btn_y + 19.0,
-                70.0,
-                1.0,
-                [0.22, 0.28, 0.38, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                stage_all_btn_x,
-                stage_all_btn_y,
-                1.0,
+                btn_bg,
+                btn_border,
+            );
+            push_bordered_rect(
+                &mut quads,
+                unstage_btn_x,
+                sub_btn_y,
+                66.0,
                 20.0,
-                [0.22, 0.28, 0.38, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                stage_all_btn_x + 69.0,
-                stage_all_btn_y,
-                1.0,
-                20.0,
-                [0.22, 0.28, 0.38, 0.9],
-            ));
+                btn_bg,
+                btn_border,
+            );
 
             // Changed files rows and checkboxes
             let list_start_y = panel_y + CHANGES_HEADER_HEIGHT + 56.0;
@@ -270,6 +294,45 @@ pub fn assemble_changes_panel_quads(
                 [0.095, 0.105, 0.13, 1.0],
             ));
 
+            // Branch selector button
+            let branch_btn_x = panel_x + 8.0;
+            let branch_btn_y = commit_y + 4.0;
+            let branch_btn_w = 126.0;
+            let branch_btn_h = 22.0;
+            push_bordered_rect(
+                &mut quads,
+                branch_btn_x,
+                branch_btn_y,
+                branch_btn_w,
+                branch_btn_h,
+                [0.06, 0.08, 0.12, 0.95],
+                [0.18, 0.24, 0.36, 0.8],
+            );
+
+            // Fetch & Pull action buttons
+            let fetch_btn_x = panel_x + panel_width - 86.0;
+            let pull_btn_x = panel_x + panel_width - 44.0;
+            let git_act_y = commit_y + 4.0;
+            let git_act_h = 22.0;
+            push_bordered_rect(
+                &mut quads,
+                fetch_btn_x,
+                git_act_y,
+                38.0,
+                git_act_h,
+                [0.07, 0.09, 0.13, 0.95],
+                [0.20, 0.26, 0.38, 0.8],
+            );
+            push_bordered_rect(
+                &mut quads,
+                pull_btn_x,
+                git_act_y,
+                38.0,
+                git_act_h,
+                [0.07, 0.09, 0.13, 0.95],
+                [0.20, 0.26, 0.38, 0.8],
+            );
+
             // Commit message input field quad (#08090C) with 1px border
             let input_x = panel_x + 10.0;
             let input_y = commit_y + 32.0;
@@ -287,37 +350,15 @@ pub fn assemble_changes_panel_quads(
                 [0.18, 0.20, 0.26, 0.8]
             };
 
-            quads.extend_from_slice(&build_quad_vertices(
-                input_x, input_y, input_w, input_h, input_bg,
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
+            push_bordered_rect(
+                &mut quads,
                 input_x,
                 input_y,
                 input_w,
-                1.0,
-                input_border,
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                input_x,
-                input_y + input_h - 1.0,
-                input_w,
-                1.0,
-                input_border,
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                input_x,
-                input_y,
-                1.0,
                 input_h,
+                input_bg,
                 input_border,
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                input_x + input_w - 1.0,
-                input_y,
-                1.0,
-                input_h,
-                input_border,
-            ));
+            );
 
             // If focused, render a vertical beam cursor (|) after typed text or at start
             if state.commit_input_focused {
@@ -336,41 +377,15 @@ pub fn assemble_changes_panel_quads(
             // Commit button quad (#14161F) with border
             let commit_btn_x = panel_x + panel_width - 120.0;
             let commit_btn_y = commit_y + 66.0;
-            quads.extend_from_slice(&build_quad_vertices(
+            push_bordered_rect(
+                &mut quads,
                 commit_btn_x,
                 commit_btn_y,
                 110.0,
                 24.0,
                 [0.08, 0.12, 0.18, 0.95],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                commit_btn_x,
-                commit_btn_y,
-                110.0,
-                1.0,
                 [0.24, 0.35, 0.50, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                commit_btn_x,
-                commit_btn_y + 23.0,
-                110.0,
-                1.0,
-                [0.24, 0.35, 0.50, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                commit_btn_x,
-                commit_btn_y,
-                1.0,
-                24.0,
-                [0.24, 0.35, 0.50, 0.9],
-            ));
-            quads.extend_from_slice(&build_quad_vertices(
-                commit_btn_x + 109.0,
-                commit_btn_y,
-                1.0,
-                24.0,
-                [0.24, 0.35, 0.50, 0.9],
-            ));
+            );
         }
         ChangesTab::History => {
             // Commit history rows
@@ -408,6 +423,48 @@ pub fn assemble_changes_panel_quads(
                     panel_width - 20.0,
                     1.0,
                     [0.06, 0.07, 0.09, 0.6],
+                ));
+            }
+        }
+    }
+
+    // Branch picker dropdown overlay (floats above commit controls)
+    if state.branch_picker_open && !state.branch_list.is_empty() {
+        let count = state.branch_list.len().min(8);
+        let item_h = 22.0;
+        let pop_h = (count as f32 * item_h) + 6.0;
+        let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
+        let pop_y = (commit_y - pop_h - 2.0).max(panel_y + CHANGES_HEADER_HEIGHT);
+        let pop_x = panel_x + 8.0;
+        let pop_w = panel_width - 16.0;
+
+        push_bordered_rect(
+            &mut quads,
+            pop_x,
+            pop_y,
+            pop_w,
+            pop_h,
+            [0.05, 0.06, 0.09, 0.98],
+            [0.25, 0.32, 0.45, 0.95],
+        );
+
+        for (i, branch) in state.branch_list.iter().take(count).enumerate() {
+            let row_y = pop_y + 3.0 + (i as f32 * item_h);
+            let is_current = branch == &state.git_branch;
+            if is_current {
+                quads.extend_from_slice(&build_quad_vertices(
+                    pop_x + 2.0,
+                    row_y,
+                    pop_w - 4.0,
+                    item_h - 1.0,
+                    [0.10, 0.15, 0.24, 0.9],
+                ));
+                quads.extend_from_slice(&build_quad_vertices(
+                    pop_x + 2.0,
+                    row_y,
+                    2.0,
+                    item_h - 1.0,
+                    accent_color,
                 ));
             }
         }
@@ -464,7 +521,7 @@ pub fn build_changes_panel_labels(
     // 2. Render depending on active tab
     match state.active_tab {
         ChangesTab::Changes => {
-            // Summary & Stage All header
+            // Summary, Stage All & Unstage All header
             let subheader_y = panel_y + CHANGES_HEADER_HEIGHT + 8.0;
             let total_add: usize = state.changed_files.iter().map(|f| f.additions).sum();
             let total_del: usize = state.changed_files.iter().map(|f| f.deletions).sum();
@@ -476,16 +533,25 @@ pub fn build_changes_panel_labels(
                 y: subheader_y,
                 color: GlyphonColor::rgb(140, 145, 160),
                 bold: false,
-                max_width: 170.0,
+                max_width: 120.0,
             });
 
             labels.push(TabLabel {
                 text: "Stage All".to_string(),
-                x: panel_x + panel_width - 74.0,
+                x: panel_x + panel_width - 142.0,
                 y: subheader_y,
                 color: GlyphonColor::rgb(220, 225, 240),
                 bold: true,
                 max_width: 60.0,
+            });
+
+            labels.push(TabLabel {
+                text: "Unstage".to_string(),
+                x: panel_x + panel_width - 68.0,
+                y: subheader_y,
+                color: GlyphonColor::rgb(220, 225, 240),
+                bold: true,
+                max_width: 56.0,
             });
 
             // Section title
@@ -551,14 +617,49 @@ pub fn build_changes_panel_labels(
 
             // Commit Area controls
             let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
-            let branch_text = format!("Branch: {}", state.git_branch);
+            let branch_btn_x = panel_x + 8.0;
+            let branch_btn_w = 126.0;
+            let branch_text = format!("⎇ {} ▾", state.git_branch);
             labels.push(TabLabel {
                 text: branch_text,
-                x: panel_x + 10.0,
+                x: branch_btn_x + 6.0,
                 y: commit_y + 8.0,
                 color: GlyphonColor::rgb(0, 240, 255), // Retro electric cyan
                 bold: true,
-                max_width: panel_width - 20.0,
+                max_width: branch_btn_w - 12.0,
+            });
+
+            // Remote status indicator
+            if let Some(status) = state.remote_status {
+                let remote_text = format!("↑{} ↓{}", status.ahead, status.behind);
+                labels.push(TabLabel {
+                    text: remote_text,
+                    x: branch_btn_x + branch_btn_w + 6.0,
+                    y: commit_y + 8.0,
+                    color: GlyphonColor::rgb(240, 190, 80), // Amber status
+                    bold: true,
+                    max_width: 50.0,
+                });
+            }
+
+            // Fetch & Pull button labels
+            let fetch_btn_x = panel_x + panel_width - 86.0;
+            let pull_btn_x = panel_x + panel_width - 44.0;
+            labels.push(TabLabel {
+                text: "Fetch".to_string(),
+                x: fetch_btn_x + 4.0,
+                y: commit_y + 8.0,
+                color: GlyphonColor::rgb(200, 210, 230),
+                bold: false,
+                max_width: 32.0,
+            });
+            labels.push(TabLabel {
+                text: "Pull".to_string(),
+                x: pull_btn_x + 7.0,
+                y: commit_y + 8.0,
+                color: GlyphonColor::rgb(200, 210, 230),
+                bold: false,
+                max_width: 30.0,
             });
 
             // Commit message or placeholder
@@ -645,6 +746,34 @@ pub fn build_changes_panel_labels(
         }
     }
 
+    // Branch picker dropdown labels
+    if state.branch_picker_open && !state.branch_list.is_empty() {
+        let count = state.branch_list.len().min(8);
+        let item_h = 22.0;
+        let pop_h = (count as f32 * item_h) + 6.0;
+        let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
+        let pop_y = (commit_y - pop_h - 2.0).max(panel_y + CHANGES_HEADER_HEIGHT);
+        let pop_x = panel_x + 8.0;
+        let pop_w = panel_width - 16.0;
+
+        for (i, branch) in state.branch_list.iter().take(count).enumerate() {
+            let row_y = pop_y + 4.0 + (i as f32 * item_h);
+            let is_current = branch == &state.git_branch;
+            labels.push(TabLabel {
+                text: branch.clone(),
+                x: pop_x + 8.0,
+                y: row_y,
+                color: if is_current {
+                    GlyphonColor::rgb(0, 240, 255)
+                } else {
+                    GlyphonColor::rgb(220, 225, 240)
+                },
+                bold: is_current,
+                max_width: pop_w - 16.0,
+            });
+        }
+    }
+
     labels
 }
 
@@ -668,6 +797,28 @@ pub fn hit_test_changes_panel(
         return ChangesAction::None;
     }
 
+    // 0. Branch picker dropdown hit-test (highest priority when open)
+    if state.branch_picker_open && !state.branch_list.is_empty() {
+        let count = state.branch_list.len().min(8);
+        let item_h = 22.0;
+        let pop_h = (count as f32 * item_h) + 6.0;
+        let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
+        let pop_y = (commit_y - pop_h - 2.0).max(panel_y + CHANGES_HEADER_HEIGHT);
+        let pop_x = panel_x + 8.0;
+        let pop_w = panel_width - 16.0;
+
+        if x >= pop_x && x <= pop_x + pop_w && y >= pop_y && y <= pop_y + pop_h {
+            let rel_y = y - pop_y - 3.0;
+            if rel_y >= 0.0 {
+                let idx = (rel_y / item_h) as usize;
+                if idx < count && idx < state.branch_list.len() {
+                    return ChangesAction::SwitchBranch(state.branch_list[idx].clone());
+                }
+            }
+            return ChangesAction::ToggleBranchPicker;
+        }
+    }
+
     // 1. Tab switching
     if y <= panel_y + CHANGES_HEADER_HEIGHT {
         let tab_w = panel_width / 2.0;
@@ -680,10 +831,15 @@ pub fn hit_test_changes_panel(
     // 2. Tab content clicks
     match state.active_tab {
         ChangesTab::Changes => {
-            // Stage All button
+            // Stage All & Unstage All buttons
             let subheader_y = panel_y + CHANGES_HEADER_HEIGHT + 6.0;
-            if y >= subheader_y && y <= subheader_y + 24.0 && x >= panel_x + panel_width - 80.0 {
-                return ChangesAction::StageAll;
+            if y >= subheader_y && y <= subheader_y + 24.0 {
+                if x >= panel_x + panel_width - 146.0 && x <= panel_x + panel_width - 76.0 {
+                    return ChangesAction::StageAll;
+                }
+                if x >= panel_x + panel_width - 74.0 && x <= panel_x + panel_width - 6.0 {
+                    return ChangesAction::UnstageAll;
+                }
             }
 
             // Changed file rows & checkboxes
@@ -698,6 +854,19 @@ pub fn hit_test_changes_panel(
                         return ChangesAction::ToggleStage(index);
                     }
                     return ChangesAction::SelectFile(index);
+                }
+            }
+
+            // Branch selector, Fetch, Pull buttons
+            if y >= commit_y + 2.0 && y <= commit_y + 28.0 {
+                if x >= panel_x + 8.0 && x <= panel_x + 134.0 {
+                    return ChangesAction::ToggleBranchPicker;
+                }
+                if x >= panel_x + panel_width - 86.0 && x <= panel_x + panel_width - 48.0 {
+                    return ChangesAction::FetchRemote;
+                }
+                if x >= panel_x + panel_width - 44.0 && x <= panel_x + panel_width - 6.0 {
+                    return ChangesAction::PullRemote;
                 }
             }
 
@@ -838,5 +1007,104 @@ mod tests {
             &state,
         );
         assert_eq!(commit_action, ChangesAction::Commit);
+    }
+
+    #[test]
+    fn hit_test_changes_panel_stage_branch_remote() {
+        let state = ChangesPanelState {
+            git_branch: "feat/git-panel".to_string(),
+            branch_list: vec!["main".to_string(), "feat/git-panel".to_string()],
+            remote_status: Some(crate::git::RemoteStatus {
+                ahead: 2,
+                behind: 1,
+            }),
+            ..ChangesPanelState::default()
+        };
+        let panel_x = 500.0;
+        let panel_y = 36.0;
+        let w = CHANGES_PANEL_WIDTH;
+        let h = 600.0;
+
+        // Stage All button click
+        let subheader_y = panel_y + CHANGES_HEADER_HEIGHT + 10.0;
+        let stage_action = hit_test_changes_panel(
+            panel_x + w - 100.0,
+            subheader_y,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(stage_action, ChangesAction::StageAll);
+
+        // Unstage All button click
+        let unstage_action = hit_test_changes_panel(
+            panel_x + w - 40.0,
+            subheader_y,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(unstage_action, ChangesAction::UnstageAll);
+
+        // Branch button click
+        let commit_y = panel_y + h - COMMIT_AREA_HEIGHT;
+        let branch_action = hit_test_changes_panel(
+            panel_x + 20.0,
+            commit_y + 10.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(branch_action, ChangesAction::ToggleBranchPicker);
+
+        // Fetch button click
+        let fetch_action = hit_test_changes_panel(
+            panel_x + w - 60.0,
+            commit_y + 10.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(fetch_action, ChangesAction::FetchRemote);
+
+        // Pull button click
+        let pull_action = hit_test_changes_panel(
+            panel_x + w - 20.0,
+            commit_y + 10.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &state,
+        );
+        assert_eq!(pull_action, ChangesAction::PullRemote);
+
+        // Open branch picker and select branch item 0 ("main")
+        let picker_state = ChangesPanelState {
+            branch_picker_open: true,
+            ..state
+        };
+        let count = picker_state.branch_list.len().min(8);
+        let item_h = 22.0;
+        let pop_h = (count as f32 * item_h) + 6.0;
+        let pop_y = (commit_y - pop_h - 2.0).max(panel_y + CHANGES_HEADER_HEIGHT);
+        let item_action = hit_test_changes_panel(
+            panel_x + 20.0,
+            pop_y + 10.0,
+            panel_x,
+            panel_y,
+            w,
+            h,
+            &picker_state,
+        );
+        assert_eq!(item_action, ChangesAction::SwitchBranch("main".to_string()));
     }
 }
