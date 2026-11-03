@@ -220,6 +220,9 @@ impl Terminal {
 
     /// Resizes both the active grid and alternate screen grid.
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        if self.grid.cols == cols && self.grid.rows == rows {
+            return;
+        }
         self.grid.resize(cols, rows);
         self.alternate_grid.resize(cols, rows);
         self.dirty_rows = vec![true; self.grid.rows];
