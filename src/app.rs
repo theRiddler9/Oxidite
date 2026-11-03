@@ -357,6 +357,9 @@ impl App {
             commit_message: String::new(),
             commit_input_focused: false,
             git_branch: git_branch.clone().unwrap_or_else(|| "--".to_string()),
+            branch_picker_open: false,
+            branch_list: Vec::new(),
+            remote_status: None,
         };
 
         let diff_view_state = if let Some(first_file) = changed_files.first() {
@@ -1667,6 +1670,7 @@ impl App {
         self.changes_panel_state.history = crate::git::query_git_history(&cwd, 30);
         self.changes_panel_state.git_branch =
             self.git_branch.clone().unwrap_or_else(|| "--".to_string());
+        self.changes_panel_state.remote_status = crate::git::query_remote_status(&cwd);
 
         if let Some(ws) = self.sidebar_state.workspaces.first_mut() {
             ws.name = format!("{} ({})", proj_info.name, proj_info.kind);
@@ -3551,8 +3555,50 @@ impl ApplicationHandler<AppEvent> for App {
                                 }
                                 win.request_redraw();
                             }
+                            crate::changes_panel::ChangesAction::UnstageAll => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                let cwd = std::env::current_dir().unwrap_or_default();
+                                let _ = crate::git::unstage_all(&cwd);
+                                self.refresh_git_status();
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::ToggleBranchPicker => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                if !self.changes_panel_state.branch_picker_open {
+                                    let cwd = std::env::current_dir().unwrap_or_default();
+                                    self.changes_panel_state.branch_list =
+                                        crate::git::list_branches(&cwd);
+                                }
+                                self.changes_panel_state.branch_picker_open =
+                                    !self.changes_panel_state.branch_picker_open;
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::SwitchBranch(ref name) => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                self.changes_panel_state.branch_picker_open = false;
+                                let cwd = std::env::current_dir().unwrap_or_default();
+                                let _ = crate::git::checkout_branch(&cwd, name);
+                                self.refresh_git_status();
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::FetchRemote => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                let cwd = std::env::current_dir().unwrap_or_default();
+                                let _ = crate::git::fetch_remote(&cwd);
+                                self.changes_panel_state.remote_status =
+                                    crate::git::query_remote_status(&cwd);
+                                win.request_redraw();
+                            }
+                            crate::changes_panel::ChangesAction::PullRemote => {
+                                self.changes_panel_state.commit_input_focused = false;
+                                let cwd = std::env::current_dir().unwrap_or_default();
+                                let _ = crate::git::pull_remote(&cwd);
+                                self.refresh_git_status();
+                                win.request_redraw();
+                            }
                             crate::changes_panel::ChangesAction::None => {
                                 self.changes_panel_state.commit_input_focused = false;
+                                self.changes_panel_state.branch_picker_open = false;
                                 win.request_redraw();
                             }
                         }
