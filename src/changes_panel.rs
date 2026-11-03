@@ -122,11 +122,10 @@ impl ChangesPanelState {
             return;
         }
         let max_offset = self.history.len().saturating_sub(visible_capacity.max(1));
+        let d = delta.unsigned_abs();
         if delta < 0 {
-            let d = (-delta) as usize;
             self.history_scroll_offset = (self.history_scroll_offset + d).min(max_offset);
         } else {
-            let d = delta as usize;
             self.history_scroll_offset = self.history_scroll_offset.saturating_sub(d);
         }
     }
@@ -184,7 +183,12 @@ fn push_bordered_rect(
 /// Builds quads for rendering the changes panel: pure pitch-black background, 1px left divider,
 /// tabs, checkboxes, file highlights, and commit area.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
+)]
 pub fn assemble_changes_panel_quads(
     panel_x: f32,
     panel_y: f32,
@@ -1210,14 +1214,8 @@ mod tests {
         state.scroll_history(2, 10);
         assert_eq!(state.history_scroll_offset, 3);
 
-        let quads = assemble_changes_panel_quads(
-            500.0,
-            36.0,
-            300.0,
-            500.0,
-            [0.0, 1.0, 0.5, 1.0],
-            &state,
-        );
+        let quads =
+            assemble_changes_panel_quads(500.0, 36.0, 300.0, 500.0, [0.0, 1.0, 0.5, 1.0], &state);
         assert!(!quads.is_empty());
 
         let labels = build_changes_panel_labels(500.0, 36.0, 300.0, 500.0, &state);

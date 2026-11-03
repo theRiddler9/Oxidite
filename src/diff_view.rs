@@ -620,7 +620,9 @@ impl DiffViewState {
 
         for hunk in &self.hunks {
             for line in &hunk.right_lines {
-                if line.line_type == DiffLineType::Addition && let Some(ln) = line.line_number {
+                if line.line_type == DiffLineType::Addition
+                    && let Some(ln) = line.line_number
+                {
                     let content = line.content.trim();
 
                     // 1. Check for unhandled unwrap / expect
@@ -644,7 +646,10 @@ impl DiffViewState {
                     }
 
                     // 2. Check for leftover TODO / FIXME / HACK
-                    if content.contains("TODO") || content.contains("FIXME") || content.contains("HACK") {
+                    if content.contains("TODO")
+                        || content.contains("FIXME")
+                        || content.contains("HACK")
+                    {
                         new_comments.push((
                             ln,
                             DiffSide::Modified,
@@ -655,7 +660,10 @@ impl DiffViewState {
                     }
 
                     // 3. Check for debug prints
-                    if content.contains("println!") || content.contains("console.log(") || content.contains("dbg!") {
+                    if content.contains("println!")
+                        || content.contains("console.log(")
+                        || content.contains("dbg!")
+                    {
                         new_comments.push((
                             ln,
                             DiffSide::Modified,
@@ -667,7 +675,9 @@ impl DiffViewState {
 
                     // 4. Check for potential hardcoded secret or token
                     let lower = content.to_lowercase();
-                    if (lower.contains("secret") || lower.contains("api_key") || lower.contains("password"))
+                    if (lower.contains("secret")
+                        || lower.contains("api_key")
+                        || lower.contains("password"))
                         && (lower.contains('=') || lower.contains(':'))
                         && !lower.contains("env::")
                         && !lower.contains("getenv")
@@ -1028,20 +1038,50 @@ impl DiffHeaderLayout {
         let close_w = 22.0;
         let close_x = (diff_x + diff_width - close_w - 6.0).max(left_boundary);
 
-        let open_w = if is_tight { 24.0 } else if is_compact { 48.0 } else { 76.0 };
+        let open_w = if is_tight {
+            24.0
+        } else if is_compact {
+            48.0
+        } else {
+            76.0
+        };
         let open_x = (close_x - open_w - 4.0).max(left_boundary);
 
-        let stage_w = if is_tight { 24.0 } else if is_compact { 48.0 } else { 72.0 };
+        let stage_w = if is_tight {
+            24.0
+        } else if is_compact {
+            48.0
+        } else {
+            72.0
+        };
         let stage_x = (open_x - stage_w - 4.0).max(left_boundary);
 
         let (export_btn_rect, changes_btn_rect, approve_btn_rect) = if state.review_mode {
-            let exp_w = if is_tight { 24.0 } else if is_compact { 46.0 } else { 68.0 };
+            let exp_w = if is_tight {
+                24.0
+            } else if is_compact {
+                46.0
+            } else {
+                68.0
+            };
             let exp_x = (stage_x - exp_w - 4.0).max(left_boundary);
 
-            let chg_w = if is_tight { 24.0 } else if is_compact { 52.0 } else { 76.0 };
+            let chg_w = if is_tight {
+                24.0
+            } else if is_compact {
+                52.0
+            } else {
+                76.0
+            };
             let chg_x = (exp_x - chg_w - 4.0).max(left_boundary);
 
-            let app_w = if is_tight { 24.0 } else if is_compact { 52.0 } else { 76.0 };
+            let app_w = if is_tight {
+                24.0
+            } else if is_compact {
+                52.0
+            } else {
+                76.0
+            };
             let app_x = (chg_x - app_w - 4.0).max(left_boundary);
 
             (
@@ -1784,7 +1824,11 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(ai) = layout.ai_review_btn_rect {
-        let ai_text = if layout.is_compact { "⚡ AI" } else { "⚡ AI Review" };
+        let ai_text = if layout.is_compact {
+            "⚡ AI"
+        } else {
+            "⚡ AI Review"
+        };
         labels.push(TabLabel {
             text: ai_text.to_string(),
             x: ai.0 + 6.0,
@@ -1834,9 +1878,7 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(exp) = layout.export_btn_rect {
-        let exp_text = if layout.is_tight {
-            "Exp"
-        } else if layout.is_compact {
+        let exp_text = if layout.is_tight || layout.is_compact {
             "Exp"
         } else {
             "Export"

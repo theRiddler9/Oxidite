@@ -186,10 +186,7 @@ impl SettingsLayout {
         let fam_start_x = modal_x + 276.0;
         for (i, (fam_id, _)) in FONT_CHOICES.iter().enumerate() {
             let fx = fam_start_x + (i as f32) * (fam_chip_w + 4.0);
-            font_family_chips.push((
-                (*fam_id).to_string(),
-                (fx, font_y, fam_chip_w, font_btn_h),
-            ));
+            font_family_chips.push(((*fam_id).to_string(), (fx, font_y, fam_chip_w, font_btn_h)));
         }
 
         // Section 3: Cursor Shape & Blink (Title at modal_y + 244.0, chips at modal_y + 264.0)
@@ -667,10 +664,7 @@ pub fn build_settings_modal_labels(
 
     let font_y = layout.font_dec_rect.1;
     labels.push(TabLabel {
-        text: format!(
-            "SIZE: {:.1} pt  ({}%)",
-            state.font_size, state.zoom_pct
-        ),
+        text: format!("SIZE: {:.1} pt  ({}%)", state.font_size, state.zoom_pct),
         x: mx + 18.0,
         y: font_y + 5.0,
         color: GlyphonColor::rgb(220, 225, 240),
