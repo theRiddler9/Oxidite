@@ -49,6 +49,7 @@ pub struct SettingsModalState {
     pub is_open: bool,
     pub active_theme: String,
     pub font_size: f32,
+    pub font_family: String,
     pub zoom_pct: usize,
     pub cursor_shape: CursorShapeChoice,
     pub cursor_blink: bool,
@@ -62,6 +63,7 @@ impl Default for SettingsModalState {
             is_open: false,
             active_theme: "pitch-black".to_string(),
             font_size: 14.0,
+            font_family: "monospace".to_string(),
             zoom_pct: 100,
             cursor_shape: CursorShapeChoice::Beam,
             cursor_blink: true,
@@ -76,6 +78,7 @@ impl Default for SettingsModalState {
 pub enum SettingsAction {
     None,
     SelectTheme(String),
+    SelectFontFamily(String),
     DecreaseFontSize,
     IncreaseFontSize,
     ResetFontSize,
@@ -101,9 +104,17 @@ pub const PRESET_THEMES: &[(&str, &str)] = &[
     ("gruvbox-dark", "Gruvbox Dark"),
 ];
 
+/// Available font family options with their identifiers and UI labels.
+pub const FONT_CHOICES: &[(&str, &str)] = &[
+    ("monospace", "System Mono"),
+    ("JetBrains Mono", "JetBrains"),
+    ("Cascadia Code", "Cascadia"),
+    ("Fira Code", "Fira Code"),
+];
+
 /// Modal dimensions in logical pixels.
 pub const MODAL_WIDTH: f32 = 560.0;
-pub const MODAL_HEIGHT: f32 = 470.0;
+pub const MODAL_HEIGHT: f32 = 490.0;
 
 /// Precomputed layout bounding boxes for settings modal buttons and chips.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +125,7 @@ pub struct SettingsLayout {
     pub font_dec_rect: (f32, f32, f32, f32),
     pub font_inc_rect: (f32, f32, f32, f32),
     pub font_reset_rect: (f32, f32, f32, f32),
+    pub font_family_chips: Vec<(String, (f32, f32, f32, f32))>,
     pub cursor_shape_block: (f32, f32, f32, f32),
     pub cursor_shape_under: (f32, f32, f32, f32),
     pub cursor_shape_beam: (f32, f32, f32, f32),
@@ -122,11 +134,16 @@ pub struct SettingsLayout {
     pub pad_normal_rect: (f32, f32, f32, f32),
     pub pad_roomy_rect: (f32, f32, f32, f32),
     pub status_bar_toggle_rect: (f32, f32, f32, f32),
+    pub preview_rect: (f32, f32, f32, f32),
 }
 
 impl SettingsLayout {
     #[must_use]
-    #[allow(clippy::similar_names, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::similar_names,
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
+    )]
     pub fn compute(screen_w: f32, screen_h: f32) -> Self {
         let modal_w = MODAL_WIDTH.min(screen_w - 20.0);
         let modal_h = MODAL_HEIGHT.min(screen_h - 20.0);
@@ -144,52 +161,63 @@ impl SettingsLayout {
 
         // Themes section: 3 columns of chips
         let mut theme_chips = Vec::with_capacity(PRESET_THEMES.len());
-        let theme_start_y = modal_y + 70.0;
+        let theme_start_y = modal_y + 48.0;
         let chip_w = (modal_w - 48.0) / 3.0;
-        let chip_h = 26.0;
+        let chip_h = 22.0;
         for (i, (id, _label)) in PRESET_THEMES.iter().enumerate() {
             let col = (i % 3) as f32;
             let row = (i / 3) as f32;
             let cx = modal_x + 18.0 + col * (chip_w + 6.0);
-            let cy = theme_start_y + row * (chip_h + 6.0);
+            let cy = theme_start_y + row * (chip_h + 3.0);
             theme_chips.push(((*id).to_string(), (cx, cy, chip_w, chip_h)));
         }
 
-        // Typography section
-        let font_y = theme_start_y + 4.0 * (chip_h + 6.0) + 38.0;
-        let font_btn_w = 34.0;
-        let font_btn_h = 24.0;
-        let font_dec_rect = (modal_x + 240.0, font_y - 4.0, font_btn_w, font_btn_h);
-        let font_inc_rect = (modal_x + 280.0, font_y - 4.0, font_btn_w, font_btn_h);
-        let font_reset_rect = (modal_x + 322.0, font_y - 4.0, 54.0, font_btn_h);
+        // Typography & Font Family section
+        let font_y = theme_start_y + 4.0 * (chip_h + 3.0) + 14.0;
+        let font_btn_w = 26.0;
+        let font_btn_h = 22.0;
+        let font_dec_rect = (modal_x + 155.0, font_y - 2.0, font_btn_w, font_btn_h);
+        let font_inc_rect = (modal_x + 185.0, font_y - 2.0, font_btn_w, font_btn_h);
+        let font_reset_rect = (modal_x + 215.0, font_y - 2.0, 42.0, font_btn_h);
+
+        let mut font_family_chips = Vec::with_capacity(FONT_CHOICES.len());
+        let fam_chip_w = 64.0;
+        let fam_start_x = modal_x + 270.0;
+        for (i, (fam_id, _)) in FONT_CHOICES.iter().enumerate() {
+            let fx = fam_start_x + (i as f32) * (fam_chip_w + 4.0);
+            font_family_chips.push((
+                (*fam_id).to_string(),
+                (fx, font_y - 2.0, fam_chip_w, font_btn_h),
+            ));
+        }
 
         // Cursor & Layout section
-        let cursor_y = font_y + 54.0;
-        let c_chip_w = 82.0;
-        let c_chip_h = 25.0;
+        let cursor_y = font_y + 34.0;
+        let c_chip_w = 76.0;
+        let c_chip_h = 22.0;
         let cursor_shape_block = (modal_x + 18.0, cursor_y, c_chip_w, c_chip_h);
         let cursor_shape_under = (
             modal_x + 18.0 + c_chip_w + 6.0,
             cursor_y,
-            c_chip_w + 14.0,
+            c_chip_w + 12.0,
             c_chip_h,
         );
         let cursor_shape_beam = (
-            modal_x + 18.0 + (c_chip_w * 2.0) + 26.0,
+            modal_x + 18.0 + (c_chip_w * 2.0) + 24.0,
             cursor_y,
             c_chip_w,
             c_chip_h,
         );
         let cursor_blink_rect = (
-            modal_x + 18.0 + (c_chip_w * 3.0) + 38.0,
+            modal_x + 18.0 + (c_chip_w * 3.0) + 36.0,
             cursor_y,
-            110.0,
+            96.0,
             c_chip_h,
         );
 
         // Padding & Status Bar section
-        let layout_y = cursor_y + 54.0;
-        let p_chip_w = 100.0;
+        let layout_y = cursor_y + 34.0;
+        let p_chip_w = 96.0;
         let pad_compact_rect = (modal_x + 18.0, layout_y, p_chip_w, c_chip_h);
         let pad_normal_rect = (
             modal_x + 18.0 + p_chip_w + 6.0,
@@ -206,9 +234,13 @@ impl SettingsLayout {
         let status_bar_toggle_rect = (
             modal_x + 18.0 + (p_chip_w * 3.0) + 18.0,
             layout_y,
-            115.0,
+            110.0,
             c_chip_h,
         );
+
+        // Live Preview card
+        let preview_y = layout_y + 36.0;
+        let preview_rect = (modal_x + 18.0, preview_y, modal_w - 36.0, 134.0);
 
         Self {
             modal_rect: (modal_x, modal_y, modal_w, modal_h),
@@ -217,6 +249,7 @@ impl SettingsLayout {
             font_dec_rect,
             font_inc_rect,
             font_reset_rect,
+            font_family_chips,
             cursor_shape_block,
             cursor_shape_under,
             cursor_shape_beam,
@@ -225,6 +258,7 @@ impl SettingsLayout {
             pad_normal_rect,
             pad_roomy_rect,
             status_bar_toggle_rect,
+            preview_rect,
         }
     }
 }
@@ -388,6 +422,12 @@ pub fn assemble_settings_modal_quads(
         }
     };
 
+    // Font Family chips
+    for (id, (cx, cy, cw, ch)) in &layout.font_family_chips {
+        let is_active = state.font_family.eq_ignore_ascii_case(id);
+        render_chip((*cx, *cy, *cw, *ch), is_active, &mut quads);
+    }
+
     render_chip(
         layout.cursor_shape_block,
         state.cursor_shape == CursorShapeChoice::Block,
@@ -426,6 +466,115 @@ pub fn assemble_settings_modal_quads(
         state.status_bar_visible,
         &mut quads,
     );
+
+    // 7. Live Terminal Preview Card
+    let (px, py, pw, ph) = layout.preview_rect;
+    let preview_theme = crate::theme::Theme::preset_by_name(&state.active_theme)
+        .unwrap_or_else(crate::theme::Theme::pitch_black);
+    let theme_bg = preview_theme.background.to_rgba_array(1.0);
+    let theme_cursor = preview_theme.cursor.to_rgba_array(1.0);
+
+    // Card background with theme's real background color
+    quads.extend_from_slice(&build_quad_vertices(px, py, pw, ph, theme_bg));
+
+    // Outer card border (1px)
+    quads.extend_from_slice(&build_quad_vertices(
+        px,
+        py,
+        pw,
+        1.0,
+        [0.18, 0.22, 0.30, 0.9],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px,
+        py + ph - 1.0,
+        pw,
+        1.0,
+        [0.18, 0.22, 0.30, 0.9],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px,
+        py,
+        1.0,
+        ph,
+        [0.18, 0.22, 0.30, 0.9],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px + pw - 1.0,
+        py,
+        1.0,
+        ph,
+        [0.18, 0.22, 0.30, 0.9],
+    ));
+
+    // Chrome top bar (height 20px)
+    quads.extend_from_slice(&build_quad_vertices(
+        px,
+        py,
+        pw,
+        20.0,
+        [0.08, 0.09, 0.13, 0.95],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px,
+        py + 19.0,
+        pw,
+        1.0,
+        [0.18, 0.22, 0.30, 0.8],
+    ));
+
+    // Chrome window control dots
+    quads.extend_from_slice(&build_quad_vertices(
+        px + 8.0,
+        py + 6.0,
+        8.0,
+        8.0,
+        [0.92, 0.32, 0.32, 1.0],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px + 20.0,
+        py + 6.0,
+        8.0,
+        8.0,
+        [0.92, 0.75, 0.25, 1.0],
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        px + 32.0,
+        py + 6.0,
+        8.0,
+        8.0,
+        [0.32, 0.82, 0.45, 1.0],
+    ));
+
+    // Live Cursor in preview
+    let cur_x = px + 276.0;
+    let cur_y = py + 68.0;
+    match state.cursor_shape {
+        CursorShapeChoice::Block => {
+            quads.extend_from_slice(&build_quad_vertices(cur_x, cur_y, 8.0, 14.0, theme_cursor));
+        }
+        CursorShapeChoice::Underline => {
+            quads.extend_from_slice(&build_quad_vertices(
+                cur_x,
+                cur_y + 12.0,
+                8.0,
+                2.0,
+                theme_cursor,
+            ));
+        }
+        CursorShapeChoice::Beam => {
+            quads.extend_from_slice(&build_quad_vertices(cur_x, cur_y, 2.0, 14.0, theme_cursor));
+        }
+    }
+
+    // 16-color ANSI Palette Swatch Strip
+    let swatch_y = py + ph - 16.0;
+    let swatch_start_x = px + 62.0;
+    for (i, col) in preview_theme.ansi.iter().enumerate() {
+        let sx = swatch_start_x + (i as f32) * 17.0;
+        let c_arr = col.to_rgba_array(1.0);
+        quads.extend_from_slice(&build_quad_vertices(sx, swatch_y, 14.0, 10.0, c_arr));
+    }
 
     quads
 }
@@ -536,12 +685,32 @@ pub fn build_settings_modal_labels(
     });
     labels.push(TabLabel {
         text: "Reset".to_string(),
-        x: layout.font_reset_rect.0 + 8.0,
+        x: layout.font_reset_rect.0 + 6.0,
         y: font_y + 4.0,
         color: GlyphonColor::rgb(180, 190, 210),
         bold: false,
-        max_width: 44.0,
+        max_width: 36.0,
     });
+
+    for (id, (cx, cy, cw, _)) in &layout.font_family_chips {
+        let is_active = state.font_family.eq_ignore_ascii_case(id);
+        let label = FONT_CHOICES
+            .iter()
+            .find(|(fid, _)| fid == id)
+            .map_or(id.as_str(), |(_, name)| *name);
+        labels.push(TabLabel {
+            text: label.to_string(),
+            x: cx + 4.0,
+            y: cy + 4.0,
+            color: if is_active {
+                GlyphonColor::rgb(255, 255, 255)
+            } else {
+                GlyphonColor::rgb(170, 180, 200)
+            },
+            bold: is_active,
+            max_width: cw - 6.0,
+        });
+    }
 
     // Section 3: Cursor Shape
     let cursor_y = layout.cursor_shape_block.1 - 18.0;
@@ -639,6 +808,98 @@ pub fn build_settings_modal_labels(
         &mut labels,
     );
 
+    // Section 5: Live Terminal Preview
+    let (px, py, pw, ph) = layout.preview_rect;
+    labels.push(TabLabel {
+        text: "LIVE TERMINAL PREVIEW".to_string(),
+        x: mx + 18.0,
+        y: py - 16.0,
+        color: GlyphonColor::rgb(120, 140, 180),
+        bold: true,
+        max_width: mw - 36.0,
+    });
+
+    // Preview Chrome Title
+    let preview_title = format!(
+        "oxidite-term — {} ({}, {:.0}pt)",
+        state.active_theme, state.font_family, state.font_size
+    );
+    labels.push(TabLabel {
+        text: preview_title,
+        x: px + 48.0,
+        y: py + 4.0,
+        color: GlyphonColor::rgb(175, 185, 205),
+        bold: true,
+        max_width: pw - 56.0,
+    });
+
+    // Sample terminal text in preview
+    let preview_theme = crate::theme::Theme::preset_by_name(&state.active_theme)
+        .unwrap_or_else(crate::theme::Theme::pitch_black);
+    let fg_col = GlyphonColor::rgb(
+        preview_theme.foreground.r,
+        preview_theme.foreground.g,
+        preview_theme.foreground.b,
+    );
+    let green_col = GlyphonColor::rgb(
+        preview_theme.ansi[2].r,
+        preview_theme.ansi[2].g,
+        preview_theme.ansi[2].b,
+    );
+    let cyan_col = GlyphonColor::rgb(
+        preview_theme.ansi[6].r,
+        preview_theme.ansi[6].g,
+        preview_theme.ansi[6].b,
+    );
+
+    // Line 1: prompt & command
+    labels.push(TabLabel {
+        text: "user@oxidite:~/workspace$".to_string(),
+        x: px + 10.0,
+        y: py + 26.0,
+        color: green_col,
+        bold: true,
+        max_width: 170.0,
+    });
+    labels.push(TabLabel {
+        text: "cargo build --release".to_string(),
+        x: px + 184.0,
+        y: py + 26.0,
+        color: fg_col,
+        bold: false,
+        max_width: pw - 192.0,
+    });
+
+    // Line 2: compiler output & status
+    labels.push(TabLabel {
+        text: "   Compiling oxidite v0.1.0 (GPU Metal/Vulkan/DX12)".to_string(),
+        x: px + 10.0,
+        y: py + 48.0,
+        color: cyan_col,
+        bold: false,
+        max_width: pw - 20.0,
+    });
+
+    // Line 3: echo & live cursor
+    labels.push(TabLabel {
+        text: "user@oxidite:~/workspace$ echo \"日本語 🦀\"".to_string(),
+        x: px + 10.0,
+        y: py + 70.0,
+        color: fg_col,
+        bold: false,
+        max_width: pw - 20.0,
+    });
+
+    // Palette strip label
+    labels.push(TabLabel {
+        text: "Palette:".to_string(),
+        x: px + 10.0,
+        y: py + ph - 18.0,
+        color: GlyphonColor::rgb(140, 150, 170),
+        bold: false,
+        max_width: 50.0,
+    });
+
     labels
 }
 
@@ -684,6 +945,12 @@ pub fn hit_test_settings_modal(
     }
     if in_rect(layout.font_reset_rect) {
         return SettingsAction::ResetFontSize;
+    }
+
+    for (id, rect) in &layout.font_family_chips {
+        if in_rect(*rect) {
+            return SettingsAction::SelectFontFamily(id.clone());
+        }
     }
 
     if in_rect(layout.cursor_shape_block) {
@@ -742,7 +1009,7 @@ mod tests {
         assert_eq!(close_action, SettingsAction::Close);
 
         let (first_id, first_rect) = &layout.theme_chips[0];
-        let theme_action = hit_test_settings_modal(
+        let theme_action = hit_test_changes_or_settings(
             first_rect.0 + 5.0,
             first_rect.1 + 5.0,
             1000.0,
@@ -750,5 +1017,48 @@ mod tests {
             &state,
         );
         assert_eq!(theme_action, SettingsAction::SelectTheme(first_id.clone()));
+
+        // Font family chip hit test
+        let (first_fam_id, first_fam_rect) = &layout.font_family_chips[0];
+        let fam_action = hit_test_settings_modal(
+            first_fam_rect.0 + 5.0,
+            first_fam_rect.1 + 5.0,
+            1000.0,
+            800.0,
+            &state,
+        );
+        assert_eq!(
+            fam_action,
+            SettingsAction::SelectFontFamily(first_fam_id.clone())
+        );
+
+        // Preview rect exists and is within modal bounds
+        let (px, py, pw, ph) = layout.preview_rect;
+        assert!(pw > 0.0 && ph > 0.0);
+        assert!(px >= layout.modal_rect.0);
+        assert!(py >= layout.modal_rect.1);
+
+        // Quads and labels include preview elements
+        let quads = assemble_settings_modal_quads(1000.0, 800.0, &state, [0.0, 1.0, 0.5, 1.0]);
+        assert_ne!(quads.len(), 0);
+
+        let labels = build_settings_modal_labels(1000.0, 800.0, &state);
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.text.contains("LIVE TERMINAL PREVIEW"))
+        );
+        assert!(labels.iter().any(|l| l.text.contains("oxidite-term")));
+        assert!(labels.iter().any(|l| l.text.contains("Palette:")));
+    }
+
+    fn hit_test_changes_or_settings(
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        s: &SettingsModalState,
+    ) -> SettingsAction {
+        hit_test_settings_modal(x, y, w, h, s)
     }
 }
