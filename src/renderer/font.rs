@@ -27,26 +27,24 @@ impl CellMetrics {
 
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_text(
-            "M",
+            "0123456789",
             &Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
             None,
         );
         buffer.shape_until_scroll(font_system, false);
 
-        // Find advance width of 'M' from layout runs
+        // Find average glyph advance from 10 monospace digits
         let mut measured_width = font_size * 0.6; // fallback approximate monospace ratio
         for run in buffer.layout_runs() {
-            for glyph in run.glyphs {
-                if glyph.w > 0.0 {
-                    measured_width = glyph.w;
-                    break;
-                }
+            if run.line_w > 0.0 {
+                measured_width = run.line_w / 10.0;
+                break;
             }
         }
 
         Self {
-            cell_width: measured_width.ceil().max(1.0),
+            cell_width: measured_width.max(1.0),
             cell_height: line_height,
             font_size,
             line_height,

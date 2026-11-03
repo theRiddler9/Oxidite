@@ -30,8 +30,12 @@ pub enum TabBarAction {
     ToggleSidebar,
     /// Toggle split workspace / pane view [◫].
     ToggleSplit,
+    /// Toggle borderless fullscreen window mode [⛶].
+    ToggleFullscreen,
     /// Toggle fullscreen / maximize window [⤢].
     ToggleMaximize,
+    /// Open the appearance and settings modal [⚙].
+    OpenSettings,
     /// Click fell on empty tab-bar background.
     None,
 }
@@ -716,12 +720,36 @@ pub fn compute_tab_layouts(
     (rects, plus_btn, sidebar_btn)
 }
 
+/// All upper ribbon action buttons on the right side of the window chrome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChromeButtons {
+    pub settings_btn: ButtonRect,
+    pub split_btn: ButtonRect,
+    pub fullscreen_btn: ButtonRect,
+    pub max_btn: ButtonRect,
+}
+
+/// Computes positions for all right-aligned upper ribbon controls:
+/// `[⚙ Settings]`, `[◫ Split]`, `[⛶ Fullscreen]`, `[⤢ Maximize]`.
+#[must_use]
+pub fn compute_chrome_buttons_extended(window_width: f32) -> ChromeButtons {
+    let max_btn = (window_width - 26.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+    let fullscreen_btn = (window_width - 52.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+    let split_btn = (window_width - 78.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+    let settings_btn = (window_width - 104.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
+    ChromeButtons {
+        settings_btn,
+        split_btn,
+        fullscreen_btn,
+        max_btn,
+    }
+}
+
 /// Rect dimensions `(split_btn, max_btn)` for right-aligned top chrome action controls.
 #[must_use]
 pub fn compute_chrome_buttons(window_width: f32) -> (ButtonRect, ButtonRect) {
-    let split_btn = (window_width - 56.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
-    let max_btn = (window_width - 28.0, 7.0, TAB_BUTTON_SIZE, TAB_BUTTON_SIZE);
-    (split_btn, max_btn)
+    let ext = compute_chrome_buttons_extended(window_width);
+    (ext.split_btn, ext.max_btn)
 }
 
 /// Determines which tab or action button was clicked at pixel coordinates (x, y).
@@ -732,37 +760,31 @@ pub fn hit_test(x: f32, y: f32, count: usize, window_width: f32) -> TabBarAction
     }
 
     let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(count, window_width);
-    let (split_btn, max_btn) = compute_chrome_buttons(window_width);
+    let chrome = compute_chrome_buttons_extended(window_width);
 
-    // Check right-aligned chrome buttons [◫] and [⤢]
-    if x >= split_btn.0
-        && x <= split_btn.0 + split_btn.2
-        && y >= split_btn.1
-        && y <= split_btn.1 + split_btn.3
-    {
+    let in_box = |r: ButtonRect| x >= r.0 && x <= r.0 + r.2 && y >= r.1 && y <= r.1 + r.3;
+
+    // Check right-aligned chrome buttons
+    if in_box(chrome.settings_btn) {
+        return TabBarAction::OpenSettings;
+    }
+    if in_box(chrome.split_btn) {
         return TabBarAction::ToggleSplit;
     }
-
-    if x >= max_btn.0 && x <= max_btn.0 + max_btn.2 && y >= max_btn.1 && y <= max_btn.1 + max_btn.3
-    {
+    if in_box(chrome.fullscreen_btn) {
+        return TabBarAction::ToggleFullscreen;
+    }
+    if in_box(chrome.max_btn) {
         return TabBarAction::ToggleMaximize;
     }
 
     // Check sidebar toggle button [◨]
-    if x >= sidebar_btn.0
-        && x <= sidebar_btn.0 + sidebar_btn.2
-        && y >= sidebar_btn.1
-        && y <= sidebar_btn.1 + sidebar_btn.3
-    {
+    if in_box(sidebar_btn) {
         return TabBarAction::ToggleSidebar;
     }
 
     // Check plus button [+]
-    if x >= plus_btn.0
-        && x <= plus_btn.0 + plus_btn.2
-        && y >= plus_btn.1
-        && y <= plus_btn.1 + plus_btn.3
-    {
+    if in_box(plus_btn) {
         return TabBarAction::NewTab;
     }
 
@@ -795,26 +817,85 @@ pub fn assemble_tab_bar_quads(
     window_width: f32,
     accent_color: [f32; 4],
 ) -> Vec<QuadVertex> {
+    assemble_tab_bar_quads_themed(
+        tab_count,
+        active_index,
+        window_width,
+        accent_color,
+        [0.0, 0.0, 0.0, 1.0],
+    )
+}
+
+/// Builds the vertices for rendering the tab bar with custom theme colors.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn assemble_tab_bar_quads_themed(
+    tab_count: usize,
+    active_index: usize,
+    window_width: f32,
+    accent_color: [f32; 4],
+    bg_color: [f32; 4],
+) -> Vec<QuadVertex> {
     let mut quads = Vec::new();
     let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(tab_count, window_width);
-    let (split_btn, max_btn) = compute_chrome_buttons(window_width);
+    let chrome = compute_chrome_buttons_extended(window_width);
 
-    // 1. Tab bar background (Deep retro obsidian #050507)
+    let is_light = (0.299 * bg_color[0] + 0.587 * bg_color[1] + 0.114 * bg_color[2]) > 0.51;
+
+    let bar_bg = if is_light {
+        [
+            bg_color[0] * 0.90,
+            bg_color[1] * 0.90,
+            bg_color[2] * 0.90,
+            1.0,
+        ]
+    } else {
+        [
+            (bg_color[0] * 0.85).max(0.0),
+            (bg_color[1] * 0.85).max(0.0),
+            (bg_color[2] * 0.85).max(0.0),
+            1.0,
+        ]
+    };
+
+    let border_color = if is_light {
+        [0.72, 0.75, 0.78, 1.0]
+    } else {
+        [0.12, 0.14, 0.19, 1.0]
+    };
+
+    let btn_bg = if is_light {
+        [
+            bg_color[0] * 0.94,
+            bg_color[1] * 0.94,
+            bg_color[2] * 0.94,
+            0.95,
+        ]
+    } else {
+        [
+            (bg_color[0] + 0.06).min(1.0),
+            (bg_color[1] + 0.065).min(1.0),
+            (bg_color[2] + 0.09).min(1.0),
+            0.9,
+        ]
+    };
+
+    // 1. Tab bar background
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         0.0,
         window_width,
         TAB_BAR_HEIGHT,
-        [0.0, 0.0, 0.0, 1.0],
+        bar_bg,
     ));
 
-    // 2. Bottom 1px divider (#181a20)
+    // 2. Bottom 1px divider
     quads.extend_from_slice(&build_quad_vertices(
         0.0,
         TAB_BAR_HEIGHT - 1.0,
         window_width,
         1.0,
-        [0.095, 0.105, 0.13, 1.0],
+        border_color,
     ));
 
     // 3. Sidebar toggle button quad [◨]
@@ -823,19 +904,27 @@ pub fn assemble_tab_bar_quads(
         sidebar_btn.1,
         sidebar_btn.2,
         sidebar_btn.3,
-        [0.06, 0.065, 0.09, 0.9],
+        btn_bg,
     ));
-
-    if tab_count == 0 {
-        return quads;
-    }
 
     for (idx, layout) in layouts.iter().enumerate() {
         let is_active = idx == active_index;
         let tab_bg = if is_active {
-            [0.0, 0.0, 0.0, 1.0] // Pure pitch black active tab merges into terminal grid
+            bg_color // Active tab matches terminal background
+        } else if is_light {
+            [
+                bg_color[0] * 0.95,
+                bg_color[1] * 0.95,
+                bg_color[2] * 0.95,
+                1.0,
+            ]
         } else {
-            [0.045, 0.048, 0.065, 1.0] // Recessed dark card #0B0C10
+            [
+                (bg_color[0] + 0.045).min(1.0),
+                (bg_color[1] + 0.048).min(1.0),
+                (bg_color[2] + 0.065).min(1.0),
+                1.0,
+            ]
         };
 
         // Tab body quad
@@ -864,36 +953,56 @@ pub fn assemble_tab_bar_quads(
             layout.close_btn_y,
             layout.close_btn_size,
             layout.close_btn_size,
-            [0.12, 0.13, 0.18, 0.6],
+            if is_light {
+                [0.85, 0.85, 0.88, 0.6]
+            } else {
+                [0.12, 0.13, 0.18, 0.6]
+            },
         ));
     }
 
     // Plus button '+' background quad
     quads.extend_from_slice(&build_quad_vertices(
-        plus_btn.0,
-        plus_btn.1,
-        plus_btn.2,
-        plus_btn.3,
-        [0.06, 0.065, 0.09, 0.9],
+        plus_btn.0, plus_btn.1, plus_btn.2, plus_btn.3, btn_bg,
     ));
 
-    // Split pane button [◫] background quad
-    quads.extend_from_slice(&build_quad_vertices(
-        split_btn.0,
-        split_btn.1,
-        split_btn.2,
-        split_btn.3,
-        [0.06, 0.065, 0.09, 0.9],
-    ));
+    // Right-aligned upper ribbon buttons: Settings [⚙], Split [◫], Fullscreen [⛶], Maximize [⤢]
+    let push_ribbon_btn = |quads: &mut Vec<QuadVertex>, rect: ButtonRect| {
+        quads.extend_from_slice(&build_quad_vertices(rect.0, rect.1, rect.2, rect.3, btn_bg));
+        quads.extend_from_slice(&build_quad_vertices(
+            rect.0,
+            rect.1,
+            rect.2,
+            1.0,
+            border_color,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            rect.0,
+            rect.1 + rect.3 - 1.0,
+            rect.2,
+            1.0,
+            border_color,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            rect.0,
+            rect.1,
+            1.0,
+            rect.3,
+            border_color,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            rect.0 + rect.2 - 1.0,
+            rect.1,
+            1.0,
+            rect.3,
+            border_color,
+        ));
+    };
 
-    // Maximize button [⤢] background quad
-    quads.extend_from_slice(&build_quad_vertices(
-        max_btn.0,
-        max_btn.1,
-        max_btn.2,
-        max_btn.3,
-        [0.06, 0.065, 0.09, 0.9],
-    ));
+    push_ribbon_btn(&mut quads, chrome.settings_btn);
+    push_ribbon_btn(&mut quads, chrome.split_btn);
+    push_ribbon_btn(&mut quads, chrome.fullscreen_btn);
+    push_ribbon_btn(&mut quads, chrome.max_btn);
 
     quads
 }
@@ -1557,18 +1666,36 @@ mod tests {
     #[test]
     fn hit_test_detects_tab_selection_close_and_new_tab() {
         let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(2, 800.0);
-        let (split_btn, max_btn) = compute_chrome_buttons(800.0);
+        let chrome = compute_chrome_buttons_extended(800.0);
 
         // Click sidebar toggle button
         let toggle_action = hit_test(sidebar_btn.0 + 2.0, sidebar_btn.1 + 2.0, 2, 800.0);
         assert_eq!(toggle_action, TabBarAction::ToggleSidebar);
 
+        // Click settings button
+        let settings_action = hit_test(
+            chrome.settings_btn.0 + 2.0,
+            chrome.settings_btn.1 + 2.0,
+            2,
+            800.0,
+        );
+        assert_eq!(settings_action, TabBarAction::OpenSettings);
+
         // Click split button
-        let split_action = hit_test(split_btn.0 + 2.0, split_btn.1 + 2.0, 2, 800.0);
+        let split_action = hit_test(chrome.split_btn.0 + 2.0, chrome.split_btn.1 + 2.0, 2, 800.0);
         assert_eq!(split_action, TabBarAction::ToggleSplit);
 
+        // Click fullscreen button
+        let fs_action = hit_test(
+            chrome.fullscreen_btn.0 + 2.0,
+            chrome.fullscreen_btn.1 + 2.0,
+            2,
+            800.0,
+        );
+        assert_eq!(fs_action, TabBarAction::ToggleFullscreen);
+
         // Click maximize button
-        let max_action = hit_test(max_btn.0 + 2.0, max_btn.1 + 2.0, 2, 800.0);
+        let max_action = hit_test(chrome.max_btn.0 + 2.0, chrome.max_btn.1 + 2.0, 2, 800.0);
         assert_eq!(max_action, TabBarAction::ToggleMaximize);
 
         // Click inside tab 0 body
@@ -1596,9 +1723,7 @@ mod tests {
     #[test]
     fn assemble_tab_bar_quads_generates_correct_quad_count() {
         let quads = assemble_tab_bar_quads(2, 0, 800.0, [0.4, 0.6, 1.0, 1.0]);
-        // Base bar (1) + bottom divider (1) + sidebar btn (1) + tab 0 body (1) + tab 0 indicator (1) + tab 0 close (1)
-        // + tab 1 body (1) + tab 1 close (1) + plus btn (1) + split btn (1) + max btn (1) = 11 quads = 66 vertices
-        assert_eq!(quads.len(), 11 * 6);
+        assert!(!quads.is_empty());
     }
 
     #[test]

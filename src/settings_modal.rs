@@ -113,8 +113,8 @@ pub const FONT_CHOICES: &[(&str, &str)] = &[
 ];
 
 /// Modal dimensions in logical pixels.
-pub const MODAL_WIDTH: f32 = 560.0;
-pub const MODAL_HEIGHT: f32 = 490.0;
+pub const MODAL_WIDTH: f32 = 580.0;
+pub const MODAL_HEIGHT: f32 = 560.0;
 
 /// Precomputed layout bounding boxes for settings modal buttons and chips.
 #[derive(Debug, Clone, PartialEq)]
@@ -159,64 +159,62 @@ impl SettingsLayout {
             close_h,
         );
 
-        // Themes section: 3 columns of chips
+        // Section 1: Themes (Title at modal_y + 48.0, chips start at modal_y + 68.0)
         let mut theme_chips = Vec::with_capacity(PRESET_THEMES.len());
-        let theme_start_y = modal_y + 48.0;
+        let theme_start_y = modal_y + 68.0;
         let chip_w = (modal_w - 48.0) / 3.0;
-        let chip_h = 22.0;
+        let chip_h = 24.0;
+        let chip_gap_y = 4.0;
         for (i, (id, _label)) in PRESET_THEMES.iter().enumerate() {
             let col = (i % 3) as f32;
             let row = (i / 3) as f32;
             let cx = modal_x + 18.0 + col * (chip_w + 6.0);
-            let cy = theme_start_y + row * (chip_h + 3.0);
+            let cy = theme_start_y + row * (chip_h + chip_gap_y);
             theme_chips.push(((*id).to_string(), (cx, cy, chip_w, chip_h)));
         }
 
-        // Typography & Font Family section
-        let font_y = theme_start_y + 4.0 * (chip_h + 3.0) + 14.0;
+        // Section 2: Typography & Font Family (Title at modal_y + 188.0, controls at modal_y + 208.0)
+        let font_y = modal_y + 208.0;
         let font_btn_w = 26.0;
-        let font_btn_h = 22.0;
-        let font_dec_rect = (modal_x + 155.0, font_y - 2.0, font_btn_w, font_btn_h);
-        let font_inc_rect = (modal_x + 185.0, font_y - 2.0, font_btn_w, font_btn_h);
-        let font_reset_rect = (modal_x + 215.0, font_y - 2.0, 42.0, font_btn_h);
+        let font_btn_h = 24.0;
+        let font_dec_rect = (modal_x + 160.0, font_y, font_btn_w, font_btn_h);
+        let font_inc_rect = (modal_x + 190.0, font_y, font_btn_w, font_btn_h);
+        let font_reset_rect = (modal_x + 220.0, font_y, 44.0, font_btn_h);
 
         let mut font_family_chips = Vec::with_capacity(FONT_CHOICES.len());
-        let fam_chip_w = 64.0;
-        let fam_start_x = modal_x + 270.0;
+        let fam_chip_w = 68.0;
+        let fam_start_x = modal_x + 276.0;
         for (i, (fam_id, _)) in FONT_CHOICES.iter().enumerate() {
             let fx = fam_start_x + (i as f32) * (fam_chip_w + 4.0);
-            font_family_chips.push((
-                (*fam_id).to_string(),
-                (fx, font_y - 2.0, fam_chip_w, font_btn_h),
-            ));
+            font_family_chips.push(((*fam_id).to_string(), (fx, font_y, fam_chip_w, font_btn_h)));
         }
 
-        // Cursor & Layout section
-        let cursor_y = font_y + 34.0;
-        let c_chip_w = 76.0;
-        let c_chip_h = 22.0;
+        // Section 3: Cursor Shape & Blink (Title at modal_y + 244.0, chips at modal_y + 264.0)
+        let cursor_y = modal_y + 264.0;
+        let c_chip_w = 80.0;
+        let c_chip_h = 24.0;
         let cursor_shape_block = (modal_x + 18.0, cursor_y, c_chip_w, c_chip_h);
         let cursor_shape_under = (
             modal_x + 18.0 + c_chip_w + 6.0,
             cursor_y,
-            c_chip_w + 12.0,
+            c_chip_w + 10.0,
             c_chip_h,
         );
         let cursor_shape_beam = (
-            modal_x + 18.0 + (c_chip_w * 2.0) + 24.0,
+            modal_x + 18.0 + (c_chip_w * 2.0) + 22.0,
             cursor_y,
-            c_chip_w,
+            c_chip_w + 10.0,
             c_chip_h,
         );
         let cursor_blink_rect = (
-            modal_x + 18.0 + (c_chip_w * 3.0) + 36.0,
+            modal_x + 18.0 + (c_chip_w * 3.0) + 38.0,
             cursor_y,
             96.0,
             c_chip_h,
         );
 
-        // Padding & Status Bar section
-        let layout_y = cursor_y + 34.0;
+        // Section 4: Padding & Status Bar (Title at modal_y + 300.0, chips at modal_y + 320.0)
+        let layout_y = modal_y + 320.0;
         let p_chip_w = 96.0;
         let pad_compact_rect = (modal_x + 18.0, layout_y, p_chip_w, c_chip_h);
         let pad_normal_rect = (
@@ -238,9 +236,9 @@ impl SettingsLayout {
             c_chip_h,
         );
 
-        // Live Preview card
-        let preview_y = layout_y + 36.0;
-        let preview_rect = (modal_x + 18.0, preview_y, modal_w - 36.0, 134.0);
+        // Section 5: Live Terminal Preview (Title at modal_y + 356.0, card at modal_y + 376.0)
+        let preview_y = modal_y + 376.0;
+        let preview_rect = (modal_x + 18.0, preview_y, modal_w - 36.0, 160.0);
 
         Self {
             modal_rect: (modal_x, modal_y, modal_w, modal_h),
@@ -619,7 +617,7 @@ pub fn build_settings_modal_labels(
     labels.push(TabLabel {
         text: "COLOR THEMES (CLICK TO SWITCH)".to_string(),
         x: mx + 18.0,
-        y: my + 52.0,
+        y: my + 48.0,
         color: GlyphonColor::rgb(120, 140, 180),
         bold: true,
         max_width: mw - 36.0,
@@ -655,30 +653,36 @@ pub fn build_settings_modal_labels(
     }
 
     // Section 2: Typography & Zoom
+    labels.push(TabLabel {
+        text: "FONT SIZE & FAMILY".to_string(),
+        x: mx + 18.0,
+        y: my + 188.0,
+        color: GlyphonColor::rgb(120, 140, 180),
+        bold: true,
+        max_width: mw - 36.0,
+    });
+
     let font_y = layout.font_dec_rect.1;
     labels.push(TabLabel {
-        text: format!(
-            "FONT SIZE: {:.1} pt  ({}%)",
-            state.font_size, state.zoom_pct
-        ),
+        text: format!("SIZE: {:.1} pt  ({}%)", state.font_size, state.zoom_pct),
         x: mx + 18.0,
-        y: font_y + 4.0,
+        y: font_y + 5.0,
         color: GlyphonColor::rgb(220, 225, 240),
         bold: true,
-        max_width: 210.0,
+        max_width: 140.0,
     });
     labels.push(TabLabel {
         text: "-".to_string(),
-        x: layout.font_dec_rect.0 + 12.0,
-        y: font_y + 4.0,
+        x: layout.font_dec_rect.0 + 10.0,
+        y: font_y + 5.0,
         color: GlyphonColor::rgb(240, 245, 255),
         bold: true,
         max_width: 20.0,
     });
     labels.push(TabLabel {
         text: "+".to_string(),
-        x: layout.font_inc_rect.0 + 11.0,
-        y: font_y + 4.0,
+        x: layout.font_inc_rect.0 + 9.0,
+        y: font_y + 5.0,
         color: GlyphonColor::rgb(240, 245, 255),
         bold: true,
         max_width: 20.0,
@@ -686,7 +690,7 @@ pub fn build_settings_modal_labels(
     labels.push(TabLabel {
         text: "Reset".to_string(),
         x: layout.font_reset_rect.0 + 6.0,
-        y: font_y + 4.0,
+        y: font_y + 5.0,
         color: GlyphonColor::rgb(180, 190, 210),
         bold: false,
         max_width: 36.0,
@@ -701,7 +705,7 @@ pub fn build_settings_modal_labels(
         labels.push(TabLabel {
             text: label.to_string(),
             x: cx + 4.0,
-            y: cy + 4.0,
+            y: cy + 5.0,
             color: if is_active {
                 GlyphonColor::rgb(255, 255, 255)
             } else {
@@ -713,11 +717,10 @@ pub fn build_settings_modal_labels(
     }
 
     // Section 3: Cursor Shape
-    let cursor_y = layout.cursor_shape_block.1 - 18.0;
     labels.push(TabLabel {
         text: "CURSOR SHAPE & BLINK".to_string(),
         x: mx + 18.0,
-        y: cursor_y,
+        y: my + 244.0,
         color: GlyphonColor::rgb(120, 140, 180),
         bold: true,
         max_width: mw - 36.0,
@@ -769,11 +772,10 @@ pub fn build_settings_modal_labels(
     );
 
     // Section 4: Window Layout & Padding
-    let layout_y = layout.pad_compact_rect.1 - 18.0;
     labels.push(TabLabel {
         text: "PADDING & STATUS BAR".to_string(),
         x: mx + 18.0,
-        y: layout_y,
+        y: my + 300.0,
         color: GlyphonColor::rgb(120, 140, 180),
         bold: true,
         max_width: mw - 36.0,
@@ -813,7 +815,7 @@ pub fn build_settings_modal_labels(
     labels.push(TabLabel {
         text: "LIVE TERMINAL PREVIEW".to_string(),
         x: mx + 18.0,
-        y: py - 16.0,
+        y: my + 356.0,
         color: GlyphonColor::rgb(120, 140, 180),
         bold: true,
         max_width: mw - 36.0,

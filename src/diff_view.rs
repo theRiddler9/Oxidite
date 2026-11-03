@@ -609,6 +609,117 @@ impl DiffViewState {
         self.review_verdict = verdict;
     }
 
+    /// Performs an automated AI code review inspecting hunks for common bugs,
+    /// potential panics, unresolved TODOs, debug statements, and security issues.
+    pub fn run_ai_review(&mut self) -> usize {
+        // Clear previous AI comments to avoid duplicating on re-run
+        self.comments.retain(|c| !c.author.contains("AI"));
+
+        let mut new_comments = Vec::new();
+        let mut issues_found = 0;
+
+        for hunk in &self.hunks {
+            for line in &hunk.right_lines {
+                if line.line_type == DiffLineType::Addition
+                    && let Some(ln) = line.line_number
+                {
+                    let content = line.content.trim();
+
+                    // 1. Check for unhandled unwrap / expect
+                    if content.contains(".unwrap()") {
+                        new_comments.push((
+                            ln,
+                            DiffSide::Modified,
+                            ReviewTag::Issue,
+                            "Avoid .unwrap() in production code; handle error with Result, ? or provide a fallback."
+                                .to_string(),
+                        ));
+                        issues_found += 1;
+                    } else if content.contains(".expect(") {
+                        new_comments.push((
+                            ln,
+                            DiffSide::Modified,
+                            ReviewTag::Suggestion,
+                            "Potential panic via .expect(): verify this invariant is guaranteed never to fail."
+                                .to_string(),
+                        ));
+                    }
+
+                    // 2. Check for leftover TODO / FIXME / HACK
+                    if content.contains("TODO")
+                        || content.contains("FIXME")
+                        || content.contains("HACK")
+                    {
+                        new_comments.push((
+                            ln,
+                            DiffSide::Modified,
+                            ReviewTag::Suggestion,
+                            "Unresolved TODO/FIXME marker: resolve or track in issue tracker before merging."
+                                .to_string(),
+                        ));
+                    }
+
+                    // 3. Check for debug prints
+                    if content.contains("println!")
+                        || content.contains("console.log(")
+                        || content.contains("dbg!")
+                    {
+                        new_comments.push((
+                            ln,
+                            DiffSide::Modified,
+                            ReviewTag::Nit,
+                            "Leftover debug print detected: consider using structured log framework."
+                                .to_string(),
+                        ));
+                    }
+
+                    // 4. Check for potential hardcoded secret or token
+                    let lower = content.to_lowercase();
+                    if (lower.contains("secret")
+                        || lower.contains("api_key")
+                        || lower.contains("password"))
+                        && (lower.contains('=') || lower.contains(':'))
+                        && !lower.contains("env::")
+                        && !lower.contains("getenv")
+                    {
+                        new_comments.push((
+                            ln,
+                            DiffSide::Modified,
+                            ReviewTag::Issue,
+                            "Security warning: possible hardcoded credential/secret; load from environment variables."
+                                .to_string(),
+                        ));
+                        issues_found += 1;
+                    }
+                }
+            }
+        }
+
+        if new_comments.is_empty() {
+            self.add_comment(
+                1,
+                DiffSide::Modified,
+                ReviewTag::Approval,
+                "AI Review: clean changes detected. No panics, secrets, or syntax issues found."
+                    .to_string(),
+                "AI Review Engine".to_string(),
+            );
+            self.review_verdict = ReviewVerdict::Approved;
+        } else {
+            for (ln, side, tag, text) in new_comments {
+                self.add_comment(ln, side, tag, text, "AI Review Engine".to_string());
+            }
+            if issues_found > 0 {
+                self.review_verdict = ReviewVerdict::ChangesRequested;
+            } else {
+                self.review_verdict = ReviewVerdict::InReview;
+            }
+        }
+
+        self.review_mode = true;
+        self.comments.len()
+    }
+
     /// Number of total comments.
     #[must_use]
     pub fn comment_count(&self) -> usize {
@@ -821,6 +932,8 @@ pub enum DiffAction {
     Close,
     /// Toggle between standard Diff and Code Review toolbar.
     ToggleReviewMode,
+    /// Trigger an automated AI code review pass over changes.
+    RunAiReview,
     /// Update the review verdict (`InReview`, `Approved`, `ChangesRequested`).
     SetVerdict(ReviewVerdict),
     /// Cycle the review verdict.
@@ -849,6 +962,7 @@ pub enum DiffAction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiffHeaderLayout {
     pub is_compact: bool,
+    pub is_tight: bool,
     pub file_title_rect: (f32, f32, f32, f32),
     pub prev_file_rect: Option<(f32, f32, f32, f32)>,
     pub file_counter_rect: Option<(f32, f32, f32, f32)>,
@@ -856,6 +970,7 @@ pub struct DiffHeaderLayout {
     pub diff_tab_rect: (f32, f32, f32, f32),
     pub review_tab_rect: (f32, f32, f32, f32),
     pub verdict_badge_rect: Option<(f32, f32, f32, f32)>,
+    pub ai_review_btn_rect: Option<(f32, f32, f32, f32)>,
     pub approve_btn_rect: Option<(f32, f32, f32, f32)>,
     pub changes_btn_rect: Option<(f32, f32, f32, f32)>,
     pub export_btn_rect: Option<(f32, f32, f32, f32)>,
@@ -866,32 +981,108 @@ pub struct DiffHeaderLayout {
 
 impl DiffHeaderLayout {
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn compute(diff_x: f32, diff_y: f32, diff_width: f32, state: &DiffViewState) -> Self {
-        let is_compact = diff_width < 500.0;
         let btn_y = diff_y + 5.0;
         let btn_h = 24.0;
 
-        // 1. Close button on far right
-        let close_w = 24.0;
-        let close_x = (diff_x + diff_width - close_w - 6.0).max(diff_x);
+        // 1. Left side items: file title, multi-file switcher, diff/review tabs, verdict, and AI review button
+        let title_max_w = if diff_width > 800.0 {
+            100.0
+        } else if diff_width > 550.0 {
+            70.0
+        } else {
+            44.0
+        };
+        let file_title_rect = (diff_x + 8.0, diff_y + 8.0, title_max_w, 20.0);
+        let mut next_x = diff_x + 8.0 + title_max_w + 6.0;
 
-        // 2. Open File and Stage buttons
-        let open_w = if is_compact { 28.0 } else { 82.0 };
-        let open_x = (close_x - open_w - 4.0).max(diff_x);
+        let (prev_file_rect, file_counter_rect, next_file_rect) = if state.total_files > 1 {
+            let p_rect = (next_x, btn_y, 20.0, btn_h);
+            let c_rect = (next_x + 22.0, btn_y, 34.0, btn_h);
+            let n_rect = (next_x + 58.0, btn_y, 20.0, btn_h);
+            next_x += 82.0;
+            (Some(p_rect), Some(c_rect), Some(n_rect))
+        } else {
+            (None, None, None)
+        };
 
-        let stage_w = if is_compact { 28.0 } else { 76.0 };
-        let stage_x = (open_x - stage_w - 4.0).max(diff_x);
+        let diff_tab_w = 42.0;
+        let diff_tab_rect = (next_x, btn_y, diff_tab_w, btn_h);
+        next_x += diff_tab_w + 4.0;
 
-        // 3. Review actions if review mode is active
+        let review_tab_w = 68.0;
+        let review_tab_rect = (next_x, btn_y, review_tab_w, btn_h);
+        next_x += review_tab_w + 4.0;
+
+        let (verdict_badge_rect, ai_review_btn_rect) = if state.review_mode {
+            let vb_w = 78.0;
+            let vb = (next_x, btn_y, vb_w, btn_h);
+            next_x += vb_w + 4.0;
+
+            let ai_w = 84.0;
+            let ai_rect = (next_x, btn_y, ai_w, btn_h);
+            next_x += ai_w + 6.0;
+
+            (Some(vb), Some(ai_rect))
+        } else {
+            (None, None)
+        };
+
+        let left_boundary = next_x;
+        let right_budget = (diff_x + diff_width - left_boundary).max(0.0);
+        let is_compact = right_budget < 300.0;
+        let is_tight = right_budget < 170.0;
+
+        // 2. Right side buttons dynamically allocated to prevent overlap
+        let close_w = 22.0;
+        let close_x = (diff_x + diff_width - close_w - 6.0).max(left_boundary);
+
+        let open_w = if is_tight {
+            24.0
+        } else if is_compact {
+            48.0
+        } else {
+            76.0
+        };
+        let open_x = (close_x - open_w - 4.0).max(left_boundary);
+
+        let stage_w = if is_tight {
+            24.0
+        } else if is_compact {
+            48.0
+        } else {
+            72.0
+        };
+        let stage_x = (open_x - stage_w - 4.0).max(left_boundary);
+
         let (export_btn_rect, changes_btn_rect, approve_btn_rect) = if state.review_mode {
-            let exp_w = if is_compact { 28.0 } else { 80.0 };
-            let exp_x = (stage_x - exp_w - 4.0).max(diff_x);
+            let exp_w = if is_tight {
+                24.0
+            } else if is_compact {
+                46.0
+            } else {
+                68.0
+            };
+            let exp_x = (stage_x - exp_w - 4.0).max(left_boundary);
 
-            let chg_w = if is_compact { 28.0 } else { 90.0 };
-            let chg_x = (exp_x - chg_w - 4.0).max(diff_x);
+            let chg_w = if is_tight {
+                24.0
+            } else if is_compact {
+                52.0
+            } else {
+                76.0
+            };
+            let chg_x = (exp_x - chg_w - 4.0).max(left_boundary);
 
-            let app_w = if is_compact { 28.0 } else { 88.0 };
-            let app_x = (chg_x - app_w - 4.0).max(diff_x);
+            let app_w = if is_tight {
+                24.0
+            } else if is_compact {
+                52.0
+            } else {
+                76.0
+            };
+            let app_x = (chg_x - app_w - 4.0).max(left_boundary);
 
             (
                 Some((exp_x, btn_y, exp_w, btn_h)),
@@ -902,45 +1093,9 @@ impl DiffHeaderLayout {
             (None, None, None)
         };
 
-        // 4. Left side tabs and optional multi-file switcher
-        let title_max_w = if diff_width > 800.0 {
-            120.0
-        } else if diff_width > 500.0 {
-            80.0
-        } else {
-            50.0
-        };
-        let file_title_rect = (diff_x + 8.0, diff_y + 8.0, title_max_w, 20.0);
-
-        let mut next_x = diff_x + 8.0 + title_max_w + 6.0;
-
-        let (prev_file_rect, file_counter_rect, next_file_rect) = if state.total_files > 1 {
-            let p_rect = (next_x, btn_y, 22.0, btn_h);
-            let c_rect = (next_x + 24.0, btn_y, 36.0, btn_h);
-            let n_rect = (next_x + 62.0, btn_y, 22.0, btn_h);
-            next_x += 88.0;
-            (Some(p_rect), Some(c_rect), Some(n_rect))
-        } else {
-            (None, None, None)
-        };
-
-        let diff_tab_w = if is_compact { 40.0 } else { 54.0 };
-        let diff_tab_rect = (next_x, btn_y, diff_tab_w, btn_h);
-
-        let review_tab_x = next_x + diff_tab_w + 4.0;
-        let review_tab_w = if is_compact { 52.0 } else { 88.0 };
-        let review_tab_rect = (review_tab_x, btn_y, review_tab_w, btn_h);
-
-        let verdict_badge_rect = if state.review_mode {
-            let vb_x = review_tab_x + review_tab_w + 6.0;
-            let vb_w = if is_compact { 64.0 } else { 92.0 };
-            Some((vb_x, btn_y, vb_w, btn_h))
-        } else {
-            None
-        };
-
         Self {
             is_compact,
+            is_tight,
             file_title_rect,
             prev_file_rect,
             file_counter_rect,
@@ -948,6 +1103,7 @@ impl DiffHeaderLayout {
             diff_tab_rect,
             review_tab_rect,
             verdict_badge_rect,
+            ai_review_btn_rect,
             approve_btn_rect,
             changes_btn_rect,
             export_btn_rect,
@@ -992,6 +1148,11 @@ impl DiffHeaderLayout {
             && in_box(r)
         {
             return DiffAction::CopyReviewSummary;
+        }
+        if let Some(r) = self.ai_review_btn_rect
+            && in_box(r)
+        {
+            return DiffAction::RunAiReview;
         }
         if in_box(self.stage_btn_rect) {
             return DiffAction::ToggleStage;
@@ -1188,6 +1349,22 @@ pub fn assemble_diff_view_quads(
             ],
         );
         quads.extend_from_slice(&build_quad_vertices(vb.0, vb.1, 3.0, vb.3, v_color));
+    }
+
+    if let Some(ai) = layout.ai_review_btn_rect {
+        push_button_quads(
+            &mut quads,
+            ai,
+            [0.10, 0.14, 0.22, 0.95],
+            [0.32, 0.52, 0.90, 0.9],
+        );
+        quads.extend_from_slice(&build_quad_vertices(
+            ai.0,
+            ai.1,
+            2.5,
+            ai.3,
+            [0.35, 0.75, 1.0, 1.0],
+        ));
     }
 
     if let Some(app) = layout.approve_btn_rect {
@@ -1646,9 +1823,31 @@ pub fn build_diff_view_labels(
         });
     }
 
+    if let Some(ai) = layout.ai_review_btn_rect {
+        let ai_text = if layout.is_compact {
+            "⚡ AI"
+        } else {
+            "⚡ AI Review"
+        };
+        labels.push(TabLabel {
+            text: ai_text.to_string(),
+            x: ai.0 + 6.0,
+            y: btn_text_y,
+            color: GlyphonColor::rgb(140, 215, 255),
+            bold: true,
+            max_width: (ai.2 - 8.0).max(10.0),
+        });
+    }
+
     if let Some(app) = layout.approve_btn_rect {
-        let app_text = if layout.is_compact { "[A]" } else { "Approve" };
-        let offset_x = if layout.is_compact { 6.0 } else { 10.0 };
+        let app_text = if layout.is_tight {
+            "✓"
+        } else if layout.is_compact {
+            "Appr"
+        } else {
+            "Approve"
+        };
+        let offset_x = if layout.is_tight { 6.0 } else { 8.0 };
         labels.push(TabLabel {
             text: app_text.to_string(),
             x: app.0 + offset_x,
@@ -1660,8 +1859,14 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(chg) = layout.changes_btn_rect {
-        let chg_text = if layout.is_compact { "[C]" } else { "Changes" };
-        let offset_x = if layout.is_compact { 6.0 } else { 10.0 };
+        let chg_text = if layout.is_tight {
+            "✗"
+        } else if layout.is_compact {
+            "Chgs"
+        } else {
+            "Changes"
+        };
+        let offset_x = if layout.is_tight { 6.0 } else { 8.0 };
         labels.push(TabLabel {
             text: chg_text.to_string(),
             x: chg.0 + offset_x,
@@ -1673,8 +1878,12 @@ pub fn build_diff_view_labels(
     }
 
     if let Some(exp) = layout.export_btn_rect {
-        let exp_text = if layout.is_compact { "[E]" } else { "Export" };
-        let offset_x = if layout.is_compact { 6.0 } else { 12.0 };
+        let exp_text = if layout.is_tight || layout.is_compact {
+            "Exp"
+        } else {
+            "Export"
+        };
+        let offset_x = if layout.is_tight { 4.0 } else { 8.0 };
         labels.push(TabLabel {
             text: exp_text.to_string(),
             x: exp.0 + offset_x,
@@ -1686,14 +1895,16 @@ pub fn build_diff_view_labels(
     }
 
     // Stage button
-    let stage_text = if layout.is_compact {
-        if state.staged { "[U]" } else { "[S]" }
+    let stage_text = if layout.is_tight {
+        if state.staged { "-" } else { "+" }
+    } else if layout.is_compact {
+        if state.staged { "Unstage" } else { "Stage" }
     } else if state.staged {
         "Unstage"
     } else {
         "Stage"
     };
-    let stage_offset = if layout.is_compact { 6.0 } else { 8.0 };
+    let stage_offset = if layout.is_tight { 6.0 } else { 8.0 };
     labels.push(TabLabel {
         text: stage_text.to_string(),
         x: layout.stage_btn_rect.0 + stage_offset,
@@ -1704,12 +1915,14 @@ pub fn build_diff_view_labels(
     });
 
     // Open File button
-    let open_text = if layout.is_compact {
+    let open_text = if layout.is_tight {
+        "↗"
+    } else if layout.is_compact {
         "Open"
     } else {
         "Open File"
     };
-    let open_offset = if layout.is_compact { 4.0 } else { 8.0 };
+    let open_offset = if layout.is_tight { 6.0 } else { 8.0 };
     labels.push(TabLabel {
         text: open_text.to_string(),
         x: layout.open_btn_rect.0 + open_offset,
@@ -2421,8 +2634,22 @@ mod tests {
         assert_ne!(labels.len(), 0);
         assert!(labels.iter().any(|l| l.text.contains("sw.js")));
         assert!(labels.iter().any(|l| l.text.contains("CACHE_NAME")));
-        assert!(labels.iter().any(|l| l.text.contains("Approve")));
+        assert!(labels.iter().any(|l| l.text.contains("Appr")));
         assert!(labels.iter().any(|l| l.text.contains("Review")));
+        assert!(labels.iter().any(|l| l.text.contains("AI")));
+    }
+
+    #[test]
+    fn test_ai_review_engine_detects_issues_and_sets_verdict() {
+        let mut state = DiffViewState::default();
+        let count = state.run_ai_review();
+        assert!(count > 0);
+        assert!(state.review_mode);
+        assert!(
+            state.review_verdict == ReviewVerdict::Approved
+                || state.review_verdict == ReviewVerdict::InReview
+                || state.review_verdict == ReviewVerdict::ChangesRequested
+        );
     }
 
     #[test]

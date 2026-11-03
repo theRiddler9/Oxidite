@@ -265,6 +265,79 @@ impl Theme {
         palette
     }
 
+    /// Returns whether this theme is considered a light theme based on background luminance.
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        let r = f32::from(self.background.r);
+        let g = f32::from(self.background.g);
+        let b = f32::from(self.background.b);
+        (0.299 * r + 0.587 * g + 0.114 * b) > 130.0
+    }
+
+    /// Background color for the terminal window as an RGBA array.
+    #[must_use]
+    pub fn bg_color(&self) -> [f32; 4] {
+        self.background.to_rgba_array(1.0)
+    }
+
+    /// Background color for UI panels (sidebar, changes panel, diff view).
+    #[must_use]
+    pub fn panel_bg_color(&self) -> [f32; 4] {
+        if self.is_light() {
+            let r = (f32::from(self.background.r) * 0.94) / 255.0;
+            let g = (f32::from(self.background.g) * 0.94) / 255.0;
+            let b = (f32::from(self.background.b) * 0.94) / 255.0;
+            [r, g, b, 0.98]
+        } else {
+            let r = ((f32::from(self.background.r) + 8.0).min(255.0)) / 255.0;
+            let g = ((f32::from(self.background.g) + 9.0).min(255.0)) / 255.0;
+            let b = ((f32::from(self.background.b) + 12.0).min(255.0)) / 255.0;
+            [r, g, b, 0.98]
+        }
+    }
+
+    /// Background color for header bars (tab ribbon, diff header, changes header).
+    #[must_use]
+    pub fn header_bg_color(&self) -> [f32; 4] {
+        if self.is_light() {
+            let r = (f32::from(self.background.r) * 0.90) / 255.0;
+            let g = (f32::from(self.background.g) * 0.90) / 255.0;
+            let b = (f32::from(self.background.b) * 0.90) / 255.0;
+            [r, g, b, 1.0]
+        } else {
+            let r = ((f32::from(self.background.r) + 4.0).min(255.0)) / 255.0;
+            let g = ((f32::from(self.background.g) + 5.0).min(255.0)) / 255.0;
+            let b = ((f32::from(self.background.b) + 7.0).min(255.0)) / 255.0;
+            [r, g, b, 1.0]
+        }
+    }
+
+    /// Border line color between panels.
+    #[must_use]
+    pub fn border_color(&self) -> [f32; 4] {
+        if self.is_light() {
+            [0.72, 0.75, 0.78, 1.0]
+        } else {
+            [0.12, 0.14, 0.19, 1.0]
+        }
+    }
+
+    /// Text primary color for UI labels.
+    #[must_use]
+    pub fn text_primary(&self) -> glyphon::Color {
+        glyphon::Color::rgb(self.foreground.r, self.foreground.g, self.foreground.b)
+    }
+
+    /// Text muted color for secondary UI labels.
+    #[must_use]
+    pub fn text_muted(&self) -> glyphon::Color {
+        if self.is_light() {
+            glyphon::Color::rgb(110, 120, 135)
+        } else {
+            glyphon::Color::rgb(140, 150, 170)
+        }
+    }
+
     /// Built-in default dark theme: pitch black retro phosphor aesthetic.
     #[must_use]
     pub fn default_dark() -> Self {

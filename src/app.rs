@@ -24,9 +24,7 @@ use crate::renderer::gpu::GpuContext;
 use crate::renderer::window::{
     DEFAULT_TITLE, create_window, window_size_to_grid_dimensions, window_size_to_pty_size,
 };
-use crate::tab::{
-    TAB_BAR_HEIGHT, Tab, TabBarAction, assemble_tab_bar_quads, compute_tab_layouts, hit_test,
-};
+use crate::tab::{TAB_BAR_HEIGHT, Tab, TabBarAction, compute_tab_layouts, hit_test};
 use crate::terminal::Terminal;
 use winit::dpi::PhysicalSize;
 use winit::keyboard::ModifiersState;
@@ -354,6 +352,7 @@ impl App {
             active_tab: crate::changes_panel::ChangesTab::Changes,
             changed_files: changed_files.clone(),
             history,
+            history_scroll_offset: 0,
             selected_file_index,
             selected_commit_index: None,
             commit_message: String::new(),
@@ -1141,6 +1140,11 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn handle_mouse_wheel(&mut self, delta: winit::event::MouseScrollDelta, win: &Window) {
         let lines: isize = match delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => {
@@ -1162,11 +1166,49 @@ impl App {
                 }
             }
         };
-        if lines != 0 {
-            self.terminal.grid.scroll_display(lines);
-            self.terminal.mark_all_dirty();
-            win.request_redraw();
+        if lines == 0 {
+            return;
         }
+
+        let win_w = win.inner_size().width as f32;
+        let win_h = win.inner_size().height as f32;
+        let geo = self.compute_pane_geometry(win_w, win_h);
+        let cx = self.cursor_pixel_pos.0 as f32;
+
+        // If hovering over the Changes Panel, scroll commit history
+        if self.changes_panel_open
+            && cx >= geo.panel_x
+            && cx <= geo.panel_x + geo.changes_panel_w
+            && self.changes_panel_state.active_tab == crate::changes_panel::ChangesTab::History
+        {
+            let capacity =
+                (geo.content_h / crate::changes_panel::COMMIT_ROW_HEIGHT).floor() as usize;
+            self.changes_panel_state.scroll_history(lines, capacity);
+            win.request_redraw();
+            return;
+        }
+
+        // If hovering over the Diff View, scroll diff lines
+        if self.diff_view_open && cx >= geo.diff_x && cx <= geo.diff_x + geo.diff_w {
+            let offset_delta = lines.unsigned_abs();
+            if lines > 0 {
+                self.diff_view_state.scroll_offset = self
+                    .diff_view_state
+                    .scroll_offset
+                    .saturating_sub(offset_delta);
+            } else {
+                self.diff_view_state.scroll_offset = self
+                    .diff_view_state
+                    .scroll_offset
+                    .saturating_add(offset_delta);
+            }
+            win.request_redraw();
+            return;
+        }
+
+        self.terminal.grid.scroll_display(lines);
+        self.terminal.mark_all_dirty();
+        win.request_redraw();
     }
 
     /// Copies currently selected text to the system clipboard.
@@ -1389,13 +1431,14 @@ impl App {
 
     /// Builds formatted text labels for tab titles, close buttons, and new-tab button.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn build_tab_labels(&self, window_width: f32) -> Vec<TabLabel> {
         let count = self.tabs.len();
         if count == 0 {
             return Vec::new();
         }
         let (layouts, plus_btn, sidebar_btn) = compute_tab_layouts(count, window_width);
-        let (split_btn, max_btn) = crate::tab::compute_chrome_buttons(window_width);
+        let chrome = crate::tab::compute_chrome_buttons_extended(window_width);
         let mut labels = Vec::new();
 
         // Sidebar toggle button label [◨]
@@ -1474,23 +1517,50 @@ impl App {
             max_width: crate::tab::TAB_BUTTON_SIZE,
         });
 
+        // Upper ribbon right-aligned buttons
+        let btn_color = if self.config.theme.is_light() {
+            glyphon::Color::rgb(70, 80, 95)
+        } else {
+            glyphon::Color::rgb(180, 185, 205)
+        };
+
+        // Settings button [⚙]
+        labels.push(TabLabel {
+            text: "⚙".to_string(),
+            x: chrome.settings_btn.0 + 3.0,
+            y: chrome.settings_btn.1 + 1.0,
+            color: btn_color,
+            bold: false,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
+
         // Split pane button [◫]
         labels.push(TabLabel {
             text: "◫".to_string(),
-            x: split_btn.0 + 3.0,
-            y: split_btn.1 + 1.0,
-            color: glyphon::Color::rgb(180, 185, 200),
-            bold: true,
+            x: chrome.split_btn.0 + 3.0,
+            y: chrome.split_btn.1 + 1.0,
+            color: btn_color,
+            bold: false,
+            max_width: crate::tab::TAB_BUTTON_SIZE,
+        });
+
+        // Fullscreen button [⛶]
+        labels.push(TabLabel {
+            text: "⛶".to_string(),
+            x: chrome.fullscreen_btn.0 + 3.0,
+            y: chrome.fullscreen_btn.1 + 1.0,
+            color: btn_color,
+            bold: false,
             max_width: crate::tab::TAB_BUTTON_SIZE,
         });
 
         // Maximize button [⤢]
         labels.push(TabLabel {
             text: "⤢".to_string(),
-            x: max_btn.0 + 3.0,
-            y: max_btn.1 + 1.0,
-            color: glyphon::Color::rgb(180, 185, 200),
-            bold: true,
+            x: chrome.max_btn.0 + 3.0,
+            y: chrome.max_btn.1 + 1.0,
+            color: btn_color,
+            bold: false,
             max_width: crate::tab::TAB_BUTTON_SIZE,
         });
 
@@ -2048,11 +2118,13 @@ impl App {
         let mut quad_vertices = Vec::new();
 
         // 1. Tab bar quads (background, tab bodies, active indicator, dividers)
-        quad_vertices.extend_from_slice(&assemble_tab_bar_quads(
+        let bg_color = self.config.theme.bg_color();
+        quad_vertices.extend_from_slice(&crate::tab::assemble_tab_bar_quads_themed(
             self.tabs.len(),
             self.active_tab_index,
             screen_size[0],
             accent_color,
+            bg_color,
         ));
 
         // 1.5. Sidebar quads (if expanded)
@@ -2576,6 +2648,14 @@ impl App {
                 label: Some("render-encoder"),
             });
 
+        let bg_rgba = self.config.theme.bg_color();
+        let clear_color = wgpu::Color {
+            r: f64::from(bg_rgba[0]),
+            g: f64::from(bg_rgba[1]),
+            b: f64::from(bg_rgba[2]),
+            a: 1.0,
+        };
+
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("terminal-render-pass"),
@@ -2583,12 +2663,7 @@ impl App {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -3317,7 +3392,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.handle_resize(win.inner_size());
                                 self.terminal.mark_all_dirty();
                             }
-                            TabBarAction::ToggleMaximize => {
+                            TabBarAction::ToggleFullscreen => {
                                 let is_fullscreen = win.fullscreen().is_some();
                                 if is_fullscreen {
                                     win.set_fullscreen(None);
@@ -3326,6 +3401,12 @@ impl ApplicationHandler<AppEvent> for App {
                                         winit::window::Fullscreen::Borderless(None),
                                     ));
                                 }
+                            }
+                            TabBarAction::ToggleMaximize => {
+                                win.set_maximized(!win.is_maximized());
+                            }
+                            TabBarAction::OpenSettings => {
+                                self.settings_open = true;
                             }
                             TabBarAction::None => {}
                         }
@@ -3640,6 +3721,11 @@ impl ApplicationHandler<AppEvent> for App {
                             crate::diff_view::DiffAction::ToggleReviewMode => {
                                 self.diff_view_state.review_mode =
                                     !self.diff_view_state.review_mode;
+                                win.request_redraw();
+                            }
+                            crate::diff_view::DiffAction::RunAiReview => {
+                                let findings = self.diff_view_state.run_ai_review();
+                                log::info!("AI Review completed: {findings} comments generated");
                                 win.request_redraw();
                             }
                             crate::diff_view::DiffAction::SetVerdict(verdict) => {
@@ -4216,16 +4302,18 @@ mod tests {
         app.create_tab(Some("Workspaces".to_string()));
 
         let labels = app.build_tab_labels(800.0);
-        // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button + 2 chrome buttons = 8 labels
-        assert_eq!(labels.len(), 8);
+        // 1 sidebar button + 2 tabs * 2 labels (title + close) + 1 plus button + 4 chrome buttons = 10 labels
+        assert_eq!(labels.len(), 10);
         assert_eq!(labels[0].text, "◨");
         assert_eq!(labels[1].text, "Tab 1");
         assert_eq!(labels[2].text, "×");
         assert_eq!(labels[3].text, "Workspaces");
         assert_eq!(labels[4].text, "×");
         assert_eq!(labels[5].text, "+");
-        assert_eq!(labels[6].text, "◫");
-        assert_eq!(labels[7].text, "⤢");
+        assert_eq!(labels[6].text, "⚙");
+        assert_eq!(labels[7].text, "◫");
+        assert_eq!(labels[8].text, "⛶");
+        assert_eq!(labels[9].text, "⤢");
 
         // Verify agent detection badge formatting
         app.create_tab(Some("claude-code".to_string()));

@@ -47,6 +47,8 @@ pub struct ChangesPanelState {
     pub changed_files: Vec<ChangedFile>,
     /// Commit history log.
     pub history: Vec<crate::git::GitCommit>,
+    /// Scroll offset in commit rows for the History tab.
+    pub history_scroll_offset: usize,
     /// Selected file index for diff preview.
     pub selected_file_index: Option<usize>,
     /// Selected commit index for history preview.
@@ -99,6 +101,7 @@ impl Default for ChangesPanelState {
                     message: "feat(git): add real workspace project inspection".to_string(),
                 },
             ],
+            history_scroll_offset: 0,
             selected_file_index: Some(0),
             selected_commit_index: Some(0),
             commit_message: String::new(),
@@ -107,6 +110,23 @@ impl Default for ChangesPanelState {
             branch_picker_open: false,
             branch_list: Vec::new(),
             remote_status: None,
+        }
+    }
+}
+
+impl ChangesPanelState {
+    /// Scrolls the commit history up or down by `delta` rows.
+    pub fn scroll_history(&mut self, delta: isize, visible_capacity: usize) {
+        if self.history.is_empty() {
+            self.history_scroll_offset = 0;
+            return;
+        }
+        let max_offset = self.history.len().saturating_sub(visible_capacity.max(1));
+        let d = delta.unsigned_abs();
+        if delta < 0 {
+            self.history_scroll_offset = (self.history_scroll_offset + d).min(max_offset);
+        } else {
+            self.history_scroll_offset = self.history_scroll_offset.saturating_sub(d);
         }
     }
 }
@@ -163,7 +183,12 @@ fn push_bordered_rect(
 /// Builds quads for rendering the changes panel: pure pitch-black background, 1px left divider,
 /// tabs, checkboxes, file highlights, and commit area.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
+)]
 pub fn assemble_changes_panel_quads(
     panel_x: f32,
     panel_y: f32,
@@ -388,21 +413,30 @@ pub fn assemble_changes_panel_quads(
             );
         }
         ChangesTab::History => {
-            // Commit history rows
+            // Commit history rows with scroll offset and scrollbar
             let list_start_y = panel_y + CHANGES_HEADER_HEIGHT + 36.0;
-            for (idx, _commit) in state.history.iter().enumerate() {
-                let row_y = list_start_y + (idx as f32 * COMMIT_ROW_HEIGHT);
+            let available_height = (panel_y + panel_height - list_start_y).max(0.0);
+            let visible_capacity = (available_height / COMMIT_ROW_HEIGHT).floor() as usize;
+
+            for (display_idx, (real_idx, _commit)) in state
+                .history
+                .iter()
+                .enumerate()
+                .skip(state.history_scroll_offset)
+                .enumerate()
+            {
+                let row_y = list_start_y + (display_idx as f32 * COMMIT_ROW_HEIGHT);
                 if row_y + COMMIT_ROW_HEIGHT > panel_y + panel_height {
                     break;
                 }
 
-                let is_selected = state.selected_commit_index == Some(idx);
+                let is_selected = state.selected_commit_index == Some(real_idx);
                 if is_selected {
                     // Highlight selected commit row
                     quads.extend_from_slice(&build_quad_vertices(
                         panel_x + 4.0,
                         row_y,
-                        panel_width - 8.0,
+                        panel_width - 16.0,
                         COMMIT_ROW_HEIGHT - 2.0,
                         [0.07, 0.09, 0.13, 0.95],
                     ));
@@ -420,9 +454,51 @@ pub fn assemble_changes_panel_quads(
                 quads.extend_from_slice(&build_quad_vertices(
                     panel_x + 10.0,
                     row_y + COMMIT_ROW_HEIGHT - 1.0,
-                    panel_width - 20.0,
+                    panel_width - 24.0,
                     1.0,
                     [0.06, 0.07, 0.09, 0.6],
+                ));
+            }
+
+            // Draw vertical scrollbar track and thumb if commits overflow visible capacity
+            if state.history.len() > visible_capacity && visible_capacity > 0 {
+                let track_x = panel_x + panel_width - 7.0;
+                let track_y = list_start_y;
+                let track_h = available_height.max(20.0);
+                let track_w = 4.0;
+
+                // Track background
+                quads.extend_from_slice(&build_quad_vertices(
+                    track_x,
+                    track_y,
+                    track_w,
+                    track_h,
+                    [0.05, 0.06, 0.08, 0.8],
+                ));
+
+                // Thumb height proportional to visible ratio
+                let ratio = (visible_capacity as f32 / state.history.len() as f32).clamp(0.08, 1.0);
+                let thumb_h = (track_h * ratio).max(18.0);
+                let max_offset = (state.history.len() - visible_capacity) as f32;
+                let scroll_ratio = if max_offset > 0.0 {
+                    (state.history_scroll_offset as f32 / max_offset).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let thumb_y = track_y + scroll_ratio * (track_h - thumb_h);
+
+                // Scrollbar thumb quad
+                quads.extend_from_slice(&build_quad_vertices(
+                    track_x,
+                    thumb_y,
+                    track_w,
+                    thumb_h,
+                    [
+                        accent_color[0] * 0.7,
+                        accent_color[1] * 0.7,
+                        accent_color[2] * 0.7,
+                        0.85,
+                    ],
                 ));
             }
         }
@@ -705,10 +781,16 @@ pub fn build_changes_panel_labels(
                 max_width: panel_width - 20.0,
             });
 
-            // Render commit rows
+            // Render commit rows with history_scroll_offset
             let list_start_y = panel_y + CHANGES_HEADER_HEIGHT + 36.0;
-            for (idx, commit) in state.history.iter().enumerate() {
-                let row_y = list_start_y + (idx as f32 * COMMIT_ROW_HEIGHT);
+            for (display_idx, (_real_idx, commit)) in state
+                .history
+                .iter()
+                .enumerate()
+                .skip(state.history_scroll_offset)
+                .enumerate()
+            {
+                let row_y = list_start_y + (display_idx as f32 * COMMIT_ROW_HEIGHT);
                 if row_y + COMMIT_ROW_HEIGHT > panel_y + panel_height {
                     break;
                 }
@@ -730,7 +812,7 @@ pub fn build_changes_panel_labels(
                     y: row_y + 3.0,
                     color: GlyphonColor::rgb(130, 140, 160),
                     bold: false,
-                    max_width: panel_width - 86.0,
+                    max_width: panel_width - 92.0,
                 });
 
                 // Line 2: commit subject message
@@ -740,7 +822,7 @@ pub fn build_changes_panel_labels(
                     y: row_y + 22.0,
                     color: GlyphonColor::rgb(220, 225, 240),
                     bold: false,
-                    max_width: panel_width - 24.0,
+                    max_width: panel_width - 28.0,
                 });
             }
         }
@@ -888,9 +970,10 @@ pub fn hit_test_changes_panel(
             let list_start_y = panel_y + CHANGES_HEADER_HEIGHT + 36.0;
             if y >= list_start_y {
                 let relative_y = y - list_start_y;
-                let index = (relative_y / COMMIT_ROW_HEIGHT) as usize;
-                if index < state.history.len() {
-                    return ChangesAction::SelectCommit(index);
+                let display_index = (relative_y / COMMIT_ROW_HEIGHT) as usize;
+                let real_index = state.history_scroll_offset + display_index;
+                if real_index < state.history.len() {
+                    return ChangesAction::SelectCommit(real_index);
                 }
             }
         }
@@ -1106,5 +1189,38 @@ mod tests {
             &picker_state,
         );
         assert_eq!(item_action, ChangesAction::SwitchBranch("main".to_string()));
+    }
+
+    #[test]
+    fn test_history_scroll_and_scrollbar_quads() {
+        let mut state = ChangesPanelState {
+            active_tab: ChangesTab::History,
+            history: (0..30)
+                .map(|i| crate::git::GitCommit {
+                    hash: format!("abc{i:04x}"),
+                    author: "Tester".to_string(),
+                    relative_time: "1m ago".to_string(),
+                    message: format!("Commit #{i}"),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        // Scroll down 5 rows
+        state.scroll_history(-5, 10);
+        assert_eq!(state.history_scroll_offset, 5);
+
+        // Scroll up 2 rows
+        state.scroll_history(2, 10);
+        assert_eq!(state.history_scroll_offset, 3);
+
+        let quads =
+            assemble_changes_panel_quads(500.0, 36.0, 300.0, 500.0, [0.0, 1.0, 0.5, 1.0], &state);
+        assert!(!quads.is_empty());
+
+        let labels = build_changes_panel_labels(500.0, 36.0, 300.0, 500.0, &state);
+        assert!(!labels.is_empty());
+        // First visible commit should be commit #3
+        assert!(labels.iter().any(|l| l.text.contains("Commit #3")));
     }
 }
