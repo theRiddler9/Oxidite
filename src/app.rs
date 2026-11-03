@@ -3642,6 +3642,11 @@ impl ApplicationHandler<AppEvent> for App {
                                     !self.diff_view_state.review_mode;
                                 win.request_redraw();
                             }
+                            crate::diff_view::DiffAction::RunAiReview => {
+                                let findings = self.diff_view_state.run_ai_review();
+                                log::info!("AI Review completed: {findings} comments generated");
+                                win.request_redraw();
+                            }
                             crate::diff_view::DiffAction::SetVerdict(verdict) => {
                                 self.diff_view_state.set_verdict(verdict);
                                 // Auto-advance to next file in review queue if available
