@@ -36,10 +36,13 @@ Our current phased plan progresses through three focus areas in sequence:
 ### Focus 3: Workspace Cockpit & UI/Diff Refinements
 - **Objective**: Perfect the modern developer cockpit inspired by `DESIGN.md`.
 - **Key Tasks**:
-  - **Side-by-Side Diff Viewer** `[DONE]`: File diff syntax highlighting with token-level language categorization (Rust, JS/TS, Python, C/C++, Config), inline review annotations with `CommentDraft` interactive tag selection and keyboard comment entry, and multi-file review queue navigation (`< Prev` / `Next >`) with auto-advance upon review verdict.
-  - **Git Changes Panel** `[DONE]`: Polished stage/unstage toggle UX with Stage All and Unstage All controls, interactive branch switching with floating branch picker popover, and remote fetch/pull status indicators (ahead/behind upstream counts, one-click Fetch & Pull).
-  - **Theme & Appearance Customizer** `[DONE]`: Rich live preview in the settings modal with real-time terminal preview card (window chrome, colored syntax sample, shape-accurate live cursor, and 16-color ANSI palette swatch strip), interactive theme chip switching, font family selection, and cursor style controls.
+  - **Side-by-Side Diff Viewer** `[DONE]`: File diff syntax highlighting with token-level language categorization (Rust, JS/TS, Python, C/C++, Config), inline review annotations with `CommentDraft` interactive tag selection and keyboard comment entry, multi-file review queue navigation (`< Prev` / `Next >`) with auto-advance upon review verdict, and dynamic header button layout budgeting preventing visual clipping or overlapping.
+  - **Built-in & Cloud AI Review Engine** `[DONE]`: Automated inspection scanning diff hunks for unhandled `.unwrap()` / `.expect()`, leftover debug logs (`println!`, `dbg!`, `console.log`), forgotten TODOs/FIXMEs, and accidentally committed credentials/tokens. Configurable to connect to NVIDIA NIM (`build.nvidia.com`) OpenAI-compatible models (e.g. `meta/llama-3.1-70b-instruct`) via `NVIDIA_API_KEY`.
+  - **Git Changes Panel** `[DONE]`: Polished stage/unstage toggle UX with Stage All and Unstage All controls, interactive branch switching with floating branch picker popover, remote fetch/pull status indicators, and full vertical commit history scrollbar with smooth mouse-wheel support.
+  - **Theme & Appearance Customizer** `[DONE]`: Rich live preview in the settings modal with real-time terminal preview card (window chrome, colored syntax sample, shape-accurate live cursor, and 16-color ANSI palette swatch strip), interactive theme chip switching, font family selection, cursor style controls, and global theme chrome synchronizing window background, sidebar, tabs, and diff views with selected light/dark themes.
   - **Splitter & Layout Smoothness** `[DONE]`: Fluid multi-pane divider dragging and window resize handling with debounced PTY notifications, early-exit grid bounds caching to eliminate ConPTY throttling and sub-pixel allocation jitter.
+  - **Upper Ribbon & Window Controls** `[DONE]`: Smooth top toolbar controls supporting settings modal toggle `[⚙]`, split pane `[◫]`, fullscreen toggle `[⛶]`, and window maximize `[⤢]`.
+  - **Exact Cursor Alignment** `[DONE]`: Fixed cursor alignment gap by averaging sub-pixel advance across standard numeric glyphs, ensuring the terminal cursor aligns precisely beside prompts and paths without jitter or spacing drift.
 
 ---
 
@@ -116,6 +119,44 @@ Shell process
 | [`src/status_bar.rs`](src/status_bar.rs) | Bottom status bar with session metrics and quick toggles |
 | [`src/config.rs`](src/config.rs) | TOML configuration parser with `notify` hot-reload |
 | [`src/theme.rs`](src/theme.rs) | Theme loader, built-in color presets, hex RGB parsing |
+
+---
+
+## AI Code Review & NVIDIA NIM Integration
+
+Oxidite includes a built-in AI review engine in the side-by-side diff viewer (`[⚡ AI Review]` button) that immediately performs static security and code quality checks:
+- Catches unhandled `.unwrap()` / `.expect()` in non-test contexts.
+- Detects forgotten `TODO`, `FIXME`, or `HACK` tags.
+- Flags stray debugging prints (`println!`, `dbg!`, `console.log`).
+- Alerts on potential hardcoded secrets or API tokens.
+
+### Connecting an NVIDIA NIM API Key
+
+To enable LLM-powered comprehensive code reviews using NVIDIA NIM microservices:
+
+1. **Obtain an API Key**:
+   - Visit [build.nvidia.com](https://build.nvidia.com).
+   - Sign up / log in with your NVIDIA account.
+   - Choose a leading code-intelligence model (e.g. `meta/llama-3.1-70b-instruct`, `mistralai/mixtral-8x22b-instruct`, or `nvidia/nemotron-4-340b-instruct`).
+   - Click **Get API Key** and generate a key starting with `nvapi-...`.
+
+2. **Set the Environment Variable**:
+   - **Windows (PowerShell)**:
+     ```powershell
+     [System.Environment]::SetEnvironmentVariable('NVIDIA_API_KEY', 'nvapi-YOUR_KEY_HERE', 'User')
+     # or for the current session:
+     $env:NVIDIA_API_KEY = "nvapi-YOUR_KEY_HERE"
+     ```
+   - **Linux / macOS**:
+     ```bash
+     export NVIDIA_API_KEY="nvapi-YOUR_KEY_HERE"
+     ```
+
+3. **API Endpoint & Parameters**:
+   - Base URL: `https://integrate.api.nvidia.com/v1`
+   - Format: Standard OpenAI-compatible Chat Completions API (`POST /v1/chat/completions`)
+   - Header: `Authorization: Bearer nvapi-...`
+   - Default recommended model: `meta/llama-3.1-70b-instruct`
 
 ---
 
