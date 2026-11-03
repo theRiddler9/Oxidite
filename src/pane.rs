@@ -670,6 +670,9 @@ impl Pane {
 
     /// Resizes the pane grid and sends resize notification to the PTY.
     pub fn resize(&mut self, cols: usize, rows: usize, pty_size: PtySize) {
+        if self.terminal.grid.cols == cols && self.terminal.grid.rows == rows {
+            return;
+        }
         self.terminal.resize(cols, rows);
         if let Some(ref writer) = self.pty_writer
             && let Ok(mut guard) = writer.lock()

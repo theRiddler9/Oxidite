@@ -233,6 +233,8 @@ pub struct App {
     pub tab_rename_state: Option<crate::tab::TabRenameState>,
     /// Active close tab confirmation modal dialog state if closing an active tab.
     pub tab_close_confirm: Option<crate::tab::CloseConfirmState>,
+    /// Last applied PTY size to debounce redundant resize notifications.
+    pub last_pty_size: Option<crate::pty::PtySize>,
 }
 
 /// Precomputed geometric dimensions for all GUI panes across rendering, labels, and hit testing.
@@ -445,6 +447,7 @@ impl App {
             last_tab_click: None,
             tab_rename_state: None,
             tab_close_confirm: None,
+            last_pty_size: None,
         }
     }
 
@@ -1295,28 +1298,28 @@ impl App {
             }
         }
 
-        // 3. PTY master
-        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+        // 3. PTY master debounced resize
+        let target_pty_size = if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
             let active_cols = active_tab.terminal.grid.cols;
             let active_rows = active_tab.terminal.grid.rows;
             self.terminal.resize(active_cols, active_rows);
-            let active_pty_size = crate::pty::PtySize {
+            crate::pty::PtySize {
                 rows: u16::try_from(active_rows).unwrap_or(24),
                 cols: u16::try_from(active_cols).unwrap_or(80),
                 px_w: (active_cols as f32 * self.cell_metrics.cell_width) as u16,
                 px_h: (active_rows as f32 * self.cell_metrics.cell_height) as u16,
-            };
-            if let Some(ref writer) = self.pty_writer
-                && let Ok(mut guard) = writer.lock()
-            {
-                let _ = guard.resize(active_pty_size);
             }
         } else {
             self.terminal.resize(cols as usize, rows as usize);
+            pty_size
+        };
+
+        if self.last_pty_size != Some(target_pty_size) {
+            self.last_pty_size = Some(target_pty_size);
             if let Some(ref writer) = self.pty_writer
                 && let Ok(mut guard) = writer.lock()
             {
-                let _ = guard.resize(pty_size);
+                let _ = guard.resize(target_pty_size);
             }
         }
     }
