@@ -530,6 +530,7 @@ impl App {
             is_open: self.settings_open,
             active_theme: self.config.theme.name.clone(),
             font_size: self.base_font_size,
+            font_family: self.config.font_family.clone(),
             zoom_pct,
             cursor_shape: shape,
             cursor_blink: self.cursor_blink_visible,
@@ -3106,6 +3107,10 @@ impl ApplicationHandler<AppEvent> for App {
                                     self.terminal.mark_all_dirty();
                                     win.request_redraw();
                                 }
+                            }
+                            crate::settings_modal::SettingsAction::SelectFontFamily(family) => {
+                                self.config.font_family = family;
+                                win.request_redraw();
                             }
                             crate::settings_modal::SettingsAction::DecreaseFontSize => {
                                 self.zoom_out();
