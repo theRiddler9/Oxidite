@@ -354,6 +354,7 @@ impl App {
             active_tab: crate::changes_panel::ChangesTab::Changes,
             changed_files: changed_files.clone(),
             history,
+            history_scroll_offset: 0,
             selected_file_index,
             selected_commit_index: None,
             commit_message: String::new(),
@@ -1162,11 +1163,41 @@ impl App {
                 }
             }
         };
-        if lines != 0 {
-            self.terminal.grid.scroll_display(lines);
-            self.terminal.mark_all_dirty();
-            win.request_redraw();
+        if lines == 0 {
+            return;
         }
+
+        let win_w = win.inner_size().width as f32;
+        let win_h = win.inner_size().height as f32;
+        let geo = self.compute_pane_geometry(win_w, win_h);
+        let cx = self.cursor_pixel_pos.0 as f32;
+
+        // If hovering over the Changes Panel, scroll commit history
+        if self.changes_panel_open && cx >= geo.panel_x && cx <= geo.panel_x + geo.changes_panel_w {
+            if self.changes_panel_state.active_tab == crate::changes_panel::ChangesTab::History {
+                let capacity = (geo.content_h / crate::changes_panel::COMMIT_ROW_HEIGHT).floor() as usize;
+                self.changes_panel_state.scroll_history(lines, capacity);
+                win.request_redraw();
+                return;
+            }
+        }
+
+        // If hovering over the Diff View, scroll diff lines
+        if self.diff_view_open && cx >= geo.diff_x && cx <= geo.diff_x + geo.diff_w {
+            if lines > 0 {
+                self.diff_view_state.scroll_offset =
+                    self.diff_view_state.scroll_offset.saturating_sub(lines as usize);
+            } else {
+                self.diff_view_state.scroll_offset =
+                    self.diff_view_state.scroll_offset.saturating_add((-lines) as usize);
+            }
+            win.request_redraw();
+            return;
+        }
+
+        self.terminal.grid.scroll_display(lines);
+        self.terminal.mark_all_dirty();
+        win.request_redraw();
     }
 
     /// Copies currently selected text to the system clipboard.
