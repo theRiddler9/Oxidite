@@ -900,7 +900,8 @@ pub fn build_changes_panel_labels(
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
 )]
 pub fn hit_test_changes_panel(
     x: f32,
@@ -983,20 +984,17 @@ pub fn hit_test_changes_panel(
             let branch_btn_w = 118.0;
 
             if y >= commit_y + 2.0 && y <= commit_y + 28.0 {
-                if x >= panel_x + 8.0 && x <= panel_x + 8.0 + branch_btn_w {
-                    if state.git_branch != "--" {
-                        return ChangesAction::ToggleBranchPicker;
-                    }
+                if x >= panel_x + 8.0
+                    && x <= panel_x + 8.0 + branch_btn_w
+                    && state.git_branch != "--"
+                {
+                    return ChangesAction::ToggleBranchPicker;
                 }
-                if x >= fetch_btn_x && x <= fetch_btn_x + fetch_btn_w {
-                    if state.git_branch != "--" {
-                        return ChangesAction::FetchRemote;
-                    }
+                if x >= fetch_btn_x && x <= fetch_btn_x + fetch_btn_w && state.git_branch != "--" {
+                    return ChangesAction::FetchRemote;
                 }
-                if x >= pull_btn_x && x <= pull_btn_x + pull_btn_w {
-                    if state.git_branch != "--" {
-                        return ChangesAction::PullRemote;
-                    }
+                if x >= pull_btn_x && x <= pull_btn_x + pull_btn_w && state.git_branch != "--" {
+                    return ChangesAction::PullRemote;
                 }
             }
 

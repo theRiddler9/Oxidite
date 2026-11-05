@@ -1502,7 +1502,17 @@ impl App {
             let display_title = if let Some(ref custom) = tab.custom_title {
                 custom.clone()
             } else if agent == crate::tab::AgentKind::Shell {
-                tab.title.clone()
+                let clean = crate::tab::clean_shell_title(&tab.title);
+                if clean == tab.title {
+                    tab.title.clone()
+                } else if let Some(cwd) = tab.detect_cwd()
+                    && let Some(folder) = cwd.file_name().and_then(|f| f.to_str())
+                    && !folder.is_empty()
+                {
+                    format!("{clean} — {folder}")
+                } else {
+                    clean
+                }
             } else {
                 format!("{agent_icon} {agent_name}")
             };

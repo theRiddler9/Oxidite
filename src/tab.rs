@@ -657,6 +657,54 @@ pub fn extract_path_from_prompt_line(line: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Cleans raw executable paths (e.g. from PowerShell or shell startup) into concise, human-friendly titles.
+#[must_use]
+pub fn clean_shell_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "Shell".to_string();
+    }
+    let has_exe_ext = std::path::Path::new(trimmed)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+    let is_path = trimmed.contains('\\') || trimmed.starts_with('/') || has_exe_ext;
+    if !is_path {
+        return trimmed.to_string();
+    }
+
+    let filename = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(trimmed);
+
+    let lower = filename.to_lowercase();
+    if lower.starts_with("pwsh") || lower.starts_with("powershell") {
+        "PowerShell".to_string()
+    } else if lower.starts_with("cmd") {
+        "Command Prompt".to_string()
+    } else if lower.starts_with("bash") {
+        "Bash".to_string()
+    } else if lower.starts_with("zsh") {
+        "Zsh".to_string()
+    } else if lower.starts_with("fish") {
+        "Fish".to_string()
+    } else if lower.starts_with("cargo") {
+        "Cargo".to_string()
+    } else if lower.starts_with("git") {
+        "Git".to_string()
+    } else if lower.starts_with("wsl") {
+        "WSL".to_string()
+    } else if has_exe_ext {
+        filename
+            .strip_suffix(".exe")
+            .or_else(|| filename.strip_suffix(".EXE"))
+            .unwrap_or(filename)
+            .to_string()
+    } else {
+        filename.to_string()
+    }
+}
+
 /// Bounding box layout for a tab in the top tab bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabRect {
@@ -906,25 +954,74 @@ pub fn assemble_tab_bar_quads_themed(
         sidebar_btn.3,
         btn_bg,
     ));
+    quads.extend_from_slice(&build_quad_vertices(
+        sidebar_btn.0,
+        sidebar_btn.1,
+        sidebar_btn.2,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        sidebar_btn.0,
+        sidebar_btn.1 + sidebar_btn.3 - 1.0,
+        sidebar_btn.2,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        sidebar_btn.0,
+        sidebar_btn.1,
+        1.0,
+        sidebar_btn.3,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        sidebar_btn.0 + sidebar_btn.2 - 1.0,
+        sidebar_btn.1,
+        1.0,
+        sidebar_btn.3,
+        border_color,
+    ));
 
     for (idx, layout) in layouts.iter().enumerate() {
         let is_active = idx == active_index;
-        let tab_bg = if is_active {
-            bg_color // Active tab matches terminal background
+        let (tab_bg, tab_border) = if is_active {
+            if is_light {
+                (
+                    [bg_color[0], bg_color[1], bg_color[2], 1.0],
+                    [0.65, 0.68, 0.72, 1.0],
+                )
+            } else {
+                (
+                    [
+                        (bg_color[0] + 0.08).min(1.0),
+                        (bg_color[1] + 0.085).min(1.0),
+                        (bg_color[2] + 0.11).min(1.0),
+                        1.0,
+                    ],
+                    [0.22, 0.28, 0.40, 0.85],
+                )
+            }
         } else if is_light {
-            [
-                bg_color[0] * 0.95,
-                bg_color[1] * 0.95,
-                bg_color[2] * 0.95,
-                1.0,
-            ]
+            (
+                [
+                    bg_color[0] * 0.95,
+                    bg_color[1] * 0.95,
+                    bg_color[2] * 0.95,
+                    1.0,
+                ],
+                [0.78, 0.80, 0.84, 0.5],
+            )
         } else {
-            [
-                (bg_color[0] + 0.045).min(1.0),
-                (bg_color[1] + 0.048).min(1.0),
-                (bg_color[2] + 0.065).min(1.0),
-                1.0,
-            ]
+            (
+                [
+                    (bg_color[0] + 0.02).min(1.0),
+                    (bg_color[1] + 0.022).min(1.0),
+                    (bg_color[2] + 0.035).min(1.0),
+                    0.8,
+                ],
+                [0.14, 0.16, 0.22, 0.5],
+            )
         };
 
         // Tab body quad
@@ -936,11 +1033,34 @@ pub fn assemble_tab_bar_quads_themed(
             tab_bg,
         ));
 
-        // Active tab indicator accent line at bottom
+        // Tab card borders (left, top, right)
+        quads.extend_from_slice(&build_quad_vertices(
+            layout.x,
+            layout.y,
+            1.0,
+            layout.height,
+            tab_border,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            layout.x,
+            layout.y,
+            layout.width,
+            1.0,
+            tab_border,
+        ));
+        quads.extend_from_slice(&build_quad_vertices(
+            layout.x + layout.width - 1.0,
+            layout.y,
+            1.0,
+            layout.height,
+            tab_border,
+        ));
+
+        // Active tab top illuminated accent line (modern IDE pill indicator)
         if is_active {
             quads.extend_from_slice(&build_quad_vertices(
                 layout.x,
-                layout.y + layout.height - 2.5,
+                layout.y,
                 layout.width,
                 2.5,
                 accent_color,
@@ -956,14 +1076,86 @@ pub fn assemble_tab_bar_quads_themed(
             if is_light {
                 [0.85, 0.85, 0.88, 0.6]
             } else {
-                [0.12, 0.13, 0.18, 0.6]
+                [0.16, 0.18, 0.24, 0.6]
             },
         ));
     }
 
-    // Plus button '+' background quad
+    // Plus button '+' background quad with border
     quads.extend_from_slice(&build_quad_vertices(
         plus_btn.0, plus_btn.1, plus_btn.2, plus_btn.3, btn_bg,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        plus_btn.0,
+        plus_btn.1,
+        plus_btn.2,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        plus_btn.0,
+        plus_btn.1 + plus_btn.3 - 1.0,
+        plus_btn.2,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        plus_btn.0,
+        plus_btn.1,
+        1.0,
+        plus_btn.3,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        plus_btn.0 + plus_btn.2 - 1.0,
+        plus_btn.1,
+        1.0,
+        plus_btn.3,
+        border_color,
+    ));
+
+    // Right-aligned upper ribbon buttons: unified segmented pill toolbar
+    let toolbar_x = chrome.settings_btn.0 - 4.0;
+    let toolbar_w = (chrome.max_btn.0 + chrome.max_btn.2) - toolbar_x + 4.0;
+    let toolbar_y = chrome.settings_btn.1 - 2.0;
+    let toolbar_h = chrome.settings_btn.3 + 4.0;
+    let track_bg = if is_light {
+        [0.84, 0.86, 0.90, 0.95]
+    } else {
+        [0.07, 0.08, 0.11, 0.95]
+    };
+    // Toolbar capsule track background
+    quads.extend_from_slice(&build_quad_vertices(
+        toolbar_x, toolbar_y, toolbar_w, toolbar_h, track_bg,
+    ));
+    // 1px border around toolbar capsule
+    quads.extend_from_slice(&build_quad_vertices(
+        toolbar_x,
+        toolbar_y,
+        toolbar_w,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        toolbar_x,
+        toolbar_y + toolbar_h - 1.0,
+        toolbar_w,
+        1.0,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        toolbar_x,
+        toolbar_y,
+        1.0,
+        toolbar_h,
+        border_color,
+    ));
+    quads.extend_from_slice(&build_quad_vertices(
+        toolbar_x + toolbar_w - 1.0,
+        toolbar_y,
+        1.0,
+        toolbar_h,
+        border_color,
     ));
 
     // Right-aligned upper ribbon buttons: Settings [⚙], Split [◫], Fullscreen [⛶], Maximize [⤢]
@@ -1921,5 +2113,23 @@ mod tests {
         assert!(!quads.is_empty());
         let labels = build_close_confirm_labels(&confirm, 800.0, 600.0);
         assert_eq!(labels.len(), 5);
+    }
+
+    #[test]
+    fn test_clean_shell_title_cleans_executable_paths() {
+        assert_eq!(
+            clean_shell_title(
+                r"C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.9.0_x64_8wekyb3d8bbwe\pwsh.exe"
+            ),
+            "PowerShell"
+        );
+        assert_eq!(
+            clean_shell_title(r"C:\Windows\System32\cmd.exe"),
+            "Command Prompt"
+        );
+        assert_eq!(clean_shell_title("/bin/zsh"), "Zsh");
+        assert_eq!(clean_shell_title("/usr/bin/bash"), "Bash");
+        assert_eq!(clean_shell_title("Tab 1"), "Tab 1");
+        assert_eq!(clean_shell_title("Workspaces"), "Workspaces");
     }
 }
