@@ -137,9 +137,32 @@ pub fn detect_project_type(root: &Path) -> ProjectInfo {
     }
 }
 
+/// Returns true if and only if `cwd` is inside an active, initialized git repository.
+#[must_use]
+pub fn is_git_repository(cwd: &Path) -> bool {
+    if !cwd.is_dir() {
+        return false;
+    }
+
+    let output = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(cwd)
+        .output();
+
+    if let Ok(out) = output {
+        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
+    } else {
+        false
+    }
+}
+
 /// Detects the active git branch name in `cwd`.
 #[must_use]
 pub fn detect_git_branch(cwd: &Path) -> Option<String> {
+    if !is_git_repository(cwd) {
+        return None;
+    }
+
     let output = Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(cwd)
@@ -177,6 +200,10 @@ pub fn detect_git_branch(cwd: &Path) -> Option<String> {
 /// so that the review UI displays real repository files instead of empty mocks.
 #[must_use]
 pub fn query_git_status(cwd: &Path) -> Vec<ChangedFile> {
+    if !is_git_repository(cwd) {
+        return Vec::new();
+    }
+
     let mut files = Vec::new();
     let numstat_map = query_numstat(cwd);
 
@@ -344,6 +371,10 @@ fn query_latest_commit_files(cwd: &Path) -> Vec<ChangedFile> {
 /// Queries commit history log up to `limit` entries.
 #[must_use]
 pub fn query_git_history(cwd: &Path, limit: usize) -> Vec<GitCommit> {
+    if !is_git_repository(cwd) {
+        return Vec::new();
+    }
+
     let mut commits = Vec::new();
     let limit_arg = format!("-n{limit}");
 
@@ -763,6 +794,10 @@ pub fn restore_file(cwd: &Path, file_path: &str) -> std::io::Result<()> {
 /// Lists local branch names via `git branch --list`.
 #[must_use]
 pub fn list_branches(cwd: &Path) -> Vec<String> {
+    if !is_git_repository(cwd) {
+        return Vec::new();
+    }
+
     let output = Command::new("git")
         .args(["branch", "--list", "--format=%(refname:short)"])
         .current_dir(cwd)
@@ -811,6 +846,10 @@ pub struct RemoteStatus {
 /// Returns `None` if there is no upstream tracking branch configured.
 #[must_use]
 pub fn query_remote_status(cwd: &Path) -> Option<RemoteStatus> {
+    if !is_git_repository(cwd) {
+        return None;
+    }
+
     let output = Command::new("git")
         .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
         .current_dir(cwd)
@@ -914,5 +953,17 @@ mod tests {
         let (left, right) = parse_hunk_header("@@ -42,10 +88,15 @@ fn test()");
         assert_eq!(left, 42);
         assert_eq!(right, 88);
+    }
+
+    #[test]
+    fn test_is_git_repository_distinguishes_repo_and_non_repo() {
+        let repo_cwd = std::env::current_dir().expect("cwd exists");
+        assert!(is_git_repository(&repo_cwd));
+
+        let temp_dir = std::env::temp_dir();
+        let non_repo = temp_dir.join("oxidite_dummy_non_git_dir_12345");
+        let _ = std::fs::create_dir_all(&non_repo);
+        assert!(!is_git_repository(&non_repo));
+        let _ = std::fs::remove_dir(&non_repo);
     }
 }

@@ -322,7 +322,7 @@ pub fn assemble_changes_panel_quads(
             // Branch selector button
             let branch_btn_x = panel_x + 8.0;
             let branch_btn_y = commit_y + 4.0;
-            let branch_btn_w = 126.0;
+            let branch_btn_w = 118.0;
             let branch_btn_h = 22.0;
             push_bordered_rect(
                 &mut quads,
@@ -334,16 +334,18 @@ pub fn assemble_changes_panel_quads(
                 [0.18, 0.24, 0.36, 0.8],
             );
 
-            // Fetch & Pull action buttons
-            let fetch_btn_x = panel_x + panel_width - 86.0;
-            let pull_btn_x = panel_x + panel_width - 44.0;
+            // Fetch & Pull action buttons - comfortably sized so "Fetch" is never clipped
+            let pull_btn_w = 44.0;
+            let fetch_btn_w = 52.0;
+            let pull_btn_x = panel_x + panel_width - pull_btn_w - 8.0;
+            let fetch_btn_x = pull_btn_x - fetch_btn_w - 6.0;
             let git_act_y = commit_y + 4.0;
             let git_act_h = 22.0;
             push_bordered_rect(
                 &mut quads,
                 fetch_btn_x,
                 git_act_y,
-                38.0,
+                fetch_btn_w,
                 git_act_h,
                 [0.07, 0.09, 0.13, 0.95],
                 [0.20, 0.26, 0.38, 0.8],
@@ -352,7 +354,7 @@ pub fn assemble_changes_panel_quads(
                 &mut quads,
                 pull_btn_x,
                 git_act_y,
-                38.0,
+                pull_btn_w,
                 git_act_h,
                 [0.07, 0.09, 0.13, 0.95],
                 [0.20, 0.26, 0.38, 0.8],
@@ -642,6 +644,22 @@ pub fn build_changes_panel_labels(
 
             // Changed file rows
             let list_start_y = panel_y + CHANGES_HEADER_HEIGHT + 56.0;
+            if state.changed_files.is_empty() {
+                let empty_text = if state.git_branch == "--" {
+                    "No git repository"
+                } else {
+                    "No changes (clean)"
+                };
+                labels.push(TabLabel {
+                    text: empty_text.to_string(),
+                    x: panel_x + 14.0,
+                    y: list_start_y + 6.0,
+                    color: GlyphonColor::rgb(115, 120, 135),
+                    bold: false,
+                    max_width: panel_width - 28.0,
+                });
+            }
+
             for (idx, file) in state.changed_files.iter().enumerate() {
                 let row_y = list_start_y + (idx as f32 * FILE_ROW_HEIGHT);
                 if row_y + FILE_ROW_HEIGHT > panel_y + panel_height - COMMIT_AREA_HEIGHT {
@@ -694,13 +712,21 @@ pub fn build_changes_panel_labels(
             // Commit Area controls
             let commit_y = panel_y + panel_height - COMMIT_AREA_HEIGHT;
             let branch_btn_x = panel_x + 8.0;
-            let branch_btn_w = 126.0;
-            let branch_text = format!("⎇ {} ▾", state.git_branch);
+            let branch_btn_w = 118.0;
+            let branch_text = if state.git_branch == "--" {
+                "⎇ --".to_string()
+            } else {
+                format!("⎇ {} ▾", state.git_branch)
+            };
             labels.push(TabLabel {
                 text: branch_text,
                 x: branch_btn_x + 6.0,
                 y: commit_y + 8.0,
-                color: GlyphonColor::rgb(0, 240, 255), // Retro electric cyan
+                color: if state.git_branch == "--" {
+                    GlyphonColor::rgb(135, 140, 155)
+                } else {
+                    GlyphonColor::rgb(0, 240, 255) // Retro electric cyan
+                },
                 bold: true,
                 max_width: branch_btn_w - 12.0,
             });
@@ -718,24 +744,34 @@ pub fn build_changes_panel_labels(
                 });
             }
 
-            // Fetch & Pull button labels
-            let fetch_btn_x = panel_x + panel_width - 86.0;
-            let pull_btn_x = panel_x + panel_width - 44.0;
+            // Fetch & Pull button labels - widened so "Fetch" is completely visible
+            let pull_btn_w = 44.0;
+            let fetch_btn_w = 52.0;
+            let pull_btn_x = panel_x + panel_width - pull_btn_w - 8.0;
+            let fetch_btn_x = pull_btn_x - fetch_btn_w - 6.0;
             labels.push(TabLabel {
                 text: "Fetch".to_string(),
-                x: fetch_btn_x + 4.0,
+                x: fetch_btn_x + 6.0,
                 y: commit_y + 8.0,
-                color: GlyphonColor::rgb(200, 210, 230),
+                color: if state.git_branch == "--" {
+                    GlyphonColor::rgb(100, 105, 120)
+                } else {
+                    GlyphonColor::rgb(200, 210, 230)
+                },
                 bold: false,
-                max_width: 32.0,
+                max_width: 42.0,
             });
             labels.push(TabLabel {
                 text: "Pull".to_string(),
                 x: pull_btn_x + 7.0,
                 y: commit_y + 8.0,
-                color: GlyphonColor::rgb(200, 210, 230),
+                color: if state.git_branch == "--" {
+                    GlyphonColor::rgb(100, 105, 120)
+                } else {
+                    GlyphonColor::rgb(200, 210, 230)
+                },
                 bold: false,
-                max_width: 30.0,
+                max_width: 32.0,
             });
 
             // Commit message or placeholder
@@ -940,15 +976,27 @@ pub fn hit_test_changes_panel(
             }
 
             // Branch selector, Fetch, Pull buttons
+            let pull_btn_w = 44.0;
+            let fetch_btn_w = 52.0;
+            let pull_btn_x = panel_x + panel_width - pull_btn_w - 8.0;
+            let fetch_btn_x = pull_btn_x - fetch_btn_w - 6.0;
+            let branch_btn_w = 118.0;
+
             if y >= commit_y + 2.0 && y <= commit_y + 28.0 {
-                if x >= panel_x + 8.0 && x <= panel_x + 134.0 {
-                    return ChangesAction::ToggleBranchPicker;
+                if x >= panel_x + 8.0 && x <= panel_x + 8.0 + branch_btn_w {
+                    if state.git_branch != "--" {
+                        return ChangesAction::ToggleBranchPicker;
+                    }
                 }
-                if x >= panel_x + panel_width - 86.0 && x <= panel_x + panel_width - 48.0 {
-                    return ChangesAction::FetchRemote;
+                if x >= fetch_btn_x && x <= fetch_btn_x + fetch_btn_w {
+                    if state.git_branch != "--" {
+                        return ChangesAction::FetchRemote;
+                    }
                 }
-                if x >= panel_x + panel_width - 44.0 && x <= panel_x + panel_width - 6.0 {
-                    return ChangesAction::PullRemote;
+                if x >= pull_btn_x && x <= pull_btn_x + pull_btn_w {
+                    if state.git_branch != "--" {
+                        return ChangesAction::PullRemote;
+                    }
                 }
             }
 
@@ -1148,7 +1196,7 @@ mod tests {
 
         // Fetch button click
         let fetch_action = hit_test_changes_panel(
-            panel_x + w - 60.0,
+            panel_x + w - 80.0,
             commit_y + 10.0,
             panel_x,
             panel_y,
@@ -1160,7 +1208,7 @@ mod tests {
 
         // Pull button click
         let pull_action = hit_test_changes_panel(
-            panel_x + w - 20.0,
+            panel_x + w - 25.0,
             commit_y + 10.0,
             panel_x,
             panel_y,
