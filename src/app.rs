@@ -302,10 +302,19 @@ impl App {
         let next_tab_id = 1;
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let is_git = crate::git::is_git_repository(&cwd);
         let proj_info = crate::git::detect_project_type(&cwd);
         let workspace_name = proj_info.name.clone();
-        let git_branch = crate::git::detect_git_branch(&cwd);
-        let changed_files = crate::git::query_git_status(&cwd);
+        let git_branch = if is_git {
+            crate::git::detect_git_branch(&cwd)
+        } else {
+            None
+        };
+        let changed_files = if is_git {
+            crate::git::query_git_status(&cwd)
+        } else {
+            Vec::new()
+        };
         let total_adds: usize = changed_files.iter().map(|f| f.additions).sum();
         let total_dels: usize = changed_files.iter().map(|f| f.deletions).sum();
 
@@ -313,16 +322,20 @@ impl App {
         let sidebar_state = crate::sidebar::SidebarState {
             workspace_name: workspace_name.clone(),
             git_branch: git_branch.clone(),
-            git_status: Some(if changed_files.is_empty() {
-                "clean".to_string()
+            git_status: if is_git {
+                Some(if changed_files.is_empty() {
+                    "clean".to_string()
+                } else {
+                    "modified".to_string()
+                })
             } else {
-                "modified".to_string()
-            }),
+                None
+            },
             tab_titles: vec!["Tab 1".to_string()],
             active_tab_index: 0,
             workspaces: vec![crate::sidebar::WorkspaceEntry {
                 name: format!("{} ({})", proj_info.name, proj_info.kind),
-                branch: git_branch.clone().unwrap_or_else(|| "main".to_string()),
+                branch: git_branch.clone().unwrap_or_else(|| "--".to_string()),
                 sessions_count: 1,
                 modified_count: changed_files.len(),
                 diff_stat: Some((total_adds, total_dels)),
@@ -347,7 +360,11 @@ impl App {
         } else {
             Some(0)
         };
-        let history = crate::git::query_git_history(&cwd, 30);
+        let history = if is_git {
+            crate::git::query_git_history(&cwd, 30)
+        } else {
+            Vec::new()
+        };
         let changes_panel_state = crate::changes_panel::ChangesPanelState {
             active_tab: crate::changes_panel::ChangesTab::Changes,
             changed_files: changed_files.clone(),
@@ -359,8 +376,16 @@ impl App {
             commit_input_focused: false,
             git_branch: git_branch.clone().unwrap_or_else(|| "--".to_string()),
             branch_picker_open: false,
-            branch_list: Vec::new(),
-            remote_status: None,
+            branch_list: if is_git {
+                crate::git::list_branches(&cwd)
+            } else {
+                Vec::new()
+            },
+            remote_status: if is_git {
+                crate::git::query_remote_status(&cwd)
+            } else {
+                None
+            },
         };
 
         let diff_view_state = if let Some(first_file) = changed_files.first() {
@@ -1477,7 +1502,17 @@ impl App {
             let display_title = if let Some(ref custom) = tab.custom_title {
                 custom.clone()
             } else if agent == crate::tab::AgentKind::Shell {
-                tab.title.clone()
+                let clean = crate::tab::clean_shell_title(&tab.title);
+                if clean == tab.title {
+                    tab.title.clone()
+                } else if let Some(cwd) = tab.detect_cwd()
+                    && let Some(folder) = cwd.file_name().and_then(|f| f.to_str())
+                    && !folder.is_empty()
+                {
+                    format!("{clean} — {folder}")
+                } else {
+                    clean
+                }
             } else {
                 format!("{agent_icon} {agent_name}")
             };
@@ -1732,19 +1767,55 @@ impl App {
     /// Refreshes git status, changes panel list, and diff view from repository.
     pub fn refresh_git_status(&mut self) {
         let cwd = self.active_cwd();
+        let is_git = crate::git::is_git_repository(&cwd);
         let proj_info = crate::git::detect_project_type(&cwd);
-        self.git_branch = crate::git::detect_git_branch(&cwd);
-        let changed_files = crate::git::query_git_status(&cwd);
+        self.git_branch = if is_git {
+            crate::git::detect_git_branch(&cwd)
+        } else {
+            None
+        };
+        let changed_files = if is_git {
+            crate::git::query_git_status(&cwd)
+        } else {
+            Vec::new()
+        };
         let total_adds: usize = changed_files.iter().map(|f| f.additions).sum();
         let total_dels: usize = changed_files.iter().map(|f| f.deletions).sum();
 
         self.changes_panel_state
             .changed_files
             .clone_from(&changed_files);
-        self.changes_panel_state.history = crate::git::query_git_history(&cwd, 30);
+        self.changes_panel_state.history = if is_git {
+            crate::git::query_git_history(&cwd, 30)
+        } else {
+            Vec::new()
+        };
         self.changes_panel_state.git_branch =
             self.git_branch.clone().unwrap_or_else(|| "--".to_string());
-        self.changes_panel_state.remote_status = crate::git::query_remote_status(&cwd);
+        self.changes_panel_state.remote_status = if is_git {
+            crate::git::query_remote_status(&cwd)
+        } else {
+            None
+        };
+        self.changes_panel_state.branch_list = if is_git {
+            crate::git::list_branches(&cwd)
+        } else {
+            Vec::new()
+        };
+        if !is_git {
+            self.changes_panel_state.branch_picker_open = false;
+        }
+
+        self.sidebar_state.git_branch = self.git_branch.clone();
+        self.sidebar_state.git_status = if is_git {
+            Some(if changed_files.is_empty() {
+                "clean".to_string()
+            } else {
+                "modified".to_string()
+            })
+        } else {
+            None
+        };
 
         if let Some(ws) = self.sidebar_state.workspaces.first_mut() {
             ws.name = format!("{} ({})", proj_info.name, proj_info.kind);
@@ -3646,43 +3717,57 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             crate::changes_panel::ChangesAction::UnstageAll => {
                                 self.changes_panel_state.commit_input_focused = false;
-                                let cwd = std::env::current_dir().unwrap_or_default();
-                                let _ = crate::git::unstage_all(&cwd);
-                                self.refresh_git_status();
+                                let cwd = self.active_cwd();
+                                if crate::git::is_git_repository(&cwd) {
+                                    let _ = crate::git::unstage_all(&cwd);
+                                    self.refresh_git_status();
+                                }
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::ToggleBranchPicker => {
                                 self.changes_panel_state.commit_input_focused = false;
-                                if !self.changes_panel_state.branch_picker_open {
-                                    let cwd = std::env::current_dir().unwrap_or_default();
-                                    self.changes_panel_state.branch_list =
-                                        crate::git::list_branches(&cwd);
+                                let cwd = self.active_cwd();
+                                if crate::git::is_git_repository(&cwd) {
+                                    if !self.changes_panel_state.branch_picker_open {
+                                        self.changes_panel_state.branch_list =
+                                            crate::git::list_branches(&cwd);
+                                    }
+                                    self.changes_panel_state.branch_picker_open =
+                                        !self.changes_panel_state.branch_picker_open;
+                                } else {
+                                    self.changes_panel_state.branch_list.clear();
+                                    self.changes_panel_state.branch_picker_open = false;
+                                    self.changes_panel_state.git_branch = "--".to_string();
                                 }
-                                self.changes_panel_state.branch_picker_open =
-                                    !self.changes_panel_state.branch_picker_open;
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::SwitchBranch(ref name) => {
                                 self.changes_panel_state.commit_input_focused = false;
                                 self.changes_panel_state.branch_picker_open = false;
-                                let cwd = std::env::current_dir().unwrap_or_default();
-                                let _ = crate::git::checkout_branch(&cwd, name);
-                                self.refresh_git_status();
+                                let cwd = self.active_cwd();
+                                if crate::git::is_git_repository(&cwd) {
+                                    let _ = crate::git::checkout_branch(&cwd, name);
+                                    self.refresh_git_status();
+                                }
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::FetchRemote => {
                                 self.changes_panel_state.commit_input_focused = false;
-                                let cwd = std::env::current_dir().unwrap_or_default();
-                                let _ = crate::git::fetch_remote(&cwd);
-                                self.changes_panel_state.remote_status =
-                                    crate::git::query_remote_status(&cwd);
+                                let cwd = self.active_cwd();
+                                if crate::git::is_git_repository(&cwd) {
+                                    let _ = crate::git::fetch_remote(&cwd);
+                                    self.changes_panel_state.remote_status =
+                                        crate::git::query_remote_status(&cwd);
+                                }
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::PullRemote => {
                                 self.changes_panel_state.commit_input_focused = false;
-                                let cwd = std::env::current_dir().unwrap_or_default();
-                                let _ = crate::git::pull_remote(&cwd);
-                                self.refresh_git_status();
+                                let cwd = self.active_cwd();
+                                if crate::git::is_git_repository(&cwd) {
+                                    let _ = crate::git::pull_remote(&cwd);
+                                    self.refresh_git_status();
+                                }
                                 win.request_redraw();
                             }
                             crate::changes_panel::ChangesAction::None => {
