@@ -213,20 +213,62 @@ describe("mobile-kbd-bar", () => {
     bar.destroy();
   });
 
-  test("IME composition in rawProxy waits until compositionend before flushing", () => {
+  test("IME composition in rawProxy streams live and commits exactly the final text", () => {
     const { bar, sentRaw } = setup(true);
     const proxy = bar.rawProxy as unknown as FakeElement;
 
     proxy.dispatch("compositionstart");
     proxy.value = "ni";
     proxy.dispatch("input", { isComposing: true, data: "ni" });
-    expect(sentRaw).toEqual([]);
-    expect(proxy.value).toBe("ni");
+    expect(sentRaw).toEqual(["ni"]); // not delayed until the word ends
 
     proxy.value = "nihao";
+    proxy.dispatch("input", { isComposing: true, data: "nihao" });
+    expect(sentRaw).toEqual(["ni", "hao"]);
+
     proxy.dispatch("compositionend", { data: "nihao" });
-    expect(sentRaw).toEqual(["nihao"]);
+    expect(sentRaw.join("")).toBe("nihao"); // nothing sent twice
     expect(proxy.value).toBe("");
+    bar.destroy();
+  });
+
+  test("IME autocorrect rewrites are erased with DEL and retyped", () => {
+    const { bar, sentRaw } = setup(true);
+    const proxy = bar.rawProxy as unknown as FakeElement;
+    proxy.dispatch("compositionstart");
+    proxy.value = "teh";
+    proxy.dispatch("input", { isComposing: true, data: "teh" });
+    proxy.dispatch("compositionend", { data: "the" });
+    expect(sentRaw).toEqual(["teh", "\x7f\x7f\x7fthe"]);
+    bar.destroy();
+  });
+
+  test("Gboard Backspace/Enter without usable key events are sent from beforeinput inputType", () => {
+    const { bar, sentRaw } = setup(true);
+    const proxy = bar.rawProxy as unknown as FakeElement;
+    proxy.dispatch("beforeinput", { inputType: "deleteContentBackward", data: null });
+    proxy.dispatch("beforeinput", { inputType: "insertLineBreak", data: null });
+    expect(sentRaw).toEqual(["\x7f", "\r"]);
+
+    // While composing, Backspace edits the composition instead of deleting in the terminal.
+    proxy.dispatch("compositionstart");
+    proxy.dispatch("beforeinput", { inputType: "deleteContentBackward", data: null, isComposing: true });
+    expect(sentRaw).toEqual(["\x7f", "\r"]);
+    bar.destroy();
+  });
+
+  test("sticky Ctrl with a multi-character IME commit drops the latch without corrupting text", () => {
+    const { bar, findBtn, sentRaw } = setup(true);
+    const proxy = bar.rawProxy as unknown as FakeElement;
+    findBtn("Ctrl").dispatch("click");
+    proxy.dispatch("compositionstart");
+    proxy.value = "hello";
+    proxy.dispatch("input", { isComposing: true, data: "hello" });
+    expect(sentRaw).toEqual([]); // Ctrl latched: composition is held until commit
+    proxy.dispatch("compositionend", { data: "hello" });
+    expect(bar.isCtrlLatched()).toBe(false);
+    expect(sentRaw).not.toContain("\x08"); // no Ctrl-H from the first letter
+    expect(sentRaw.join("")).toBe("hello");
     bar.destroy();
   });
 });

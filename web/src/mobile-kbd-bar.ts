@@ -291,10 +291,28 @@ export function createMobileKbdBar(opts: MobileKbdBarOptions): MobileKbdBarHandl
   const attachCtrlInterceptor = (el: HTMLTextAreaElement, isProxy: boolean) => {
     let handledInBeforeInput = false;
     let isComposing = false;
+    // Text already forwarded to the PTY for the in-flight IME composition (raw proxy only).
+    let composingSent = "";
+
+    // Gboard keeps a word "composing" until a space, which would delay raw-mode typing (vim, REPLs).
+    // Forward composition text as it grows; if the IME rewrites it (autocorrect), erase what was sent
+    // with DEL and retype, so the PTY always ends up with the committed text.
+    const forwardComposition = (current: string) => {
+      if (scrollLocked || current === composingSent) return;
+      if (current.startsWith(composingSent)) {
+        opts.sendRaw(current.slice(composingSent.length));
+      } else {
+        opts.sendRaw("\x7f".repeat([...composingSent].length) + current);
+      }
+      composingSent = current;
+    };
 
     const processCommittedCtrlOrFlush = (inserted: string): boolean => {
       if (!ctrlLatched) return false;
       setCtrlLatched(false);
+      // A multi-character commit (a whole IME word) has no single control character; applying Ctrl to
+      // its first letter while deleting one char would corrupt the text, so just drop the latch.
+      if ([...inserted].length !== 1) return false;
       const ctrlByte = applyStickyCtrl(inserted);
       if (!ctrlByte) return false;
       if (isProxy) {
@@ -312,6 +330,20 @@ export function createMobileKbdBar(opts: MobileKbdBarOptions): MobileKbdBarHandl
 
     const onBeforeInput = (e: InputEvent) => {
       handledInBeforeInput = false;
+      // Gboard often reports Backspace/Enter as key "Unidentified" (keydown never matches) and sends no
+      // `input` for Backspace on an empty proxy; the standardized inputType is reliable.
+      if (isProxy && !scrollLocked && !isComposing && !e.isComposing) {
+        if (e.inputType === "deleteContentBackward") {
+          e.preventDefault();
+          opts.sendRaw("\x7f");
+          return;
+        }
+        if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+          e.preventDefault();
+          opts.sendRaw("\r");
+          return;
+        }
+      }
       if (!ctrlLatched || !e.data || e.data.length === 0) return;
 
       if (e.isComposing || isComposing) return;
@@ -330,7 +362,9 @@ export function createMobileKbdBar(opts: MobileKbdBarOptions): MobileKbdBarHandl
     const onInput = (e: Event) => {
       const ie = e as InputEvent;
       if (ie.isComposing || isComposing) {
-        // Wait for compositionend so Android Gboard / IME composition is never garbled
+        // Sticky Ctrl needs the committed text, so it still waits for compositionend; otherwise the
+        // raw proxy streams the composition live so typing is not delayed until the word ends.
+        if (isProxy && !ctrlLatched) forwardComposition(el.value);
         return;
       }
       if (ctrlLatched && !handledInBeforeInput) {
@@ -358,6 +392,13 @@ export function createMobileKbdBar(opts: MobileKbdBarOptions): MobileKbdBarHandl
     const onCompositionEnd = (e: CompositionEvent) => {
       isComposing = false;
       const committed = e.data || el.value;
+      if (isProxy && !ctrlLatched && !scrollLocked && (composingSent !== "" || committed)) {
+        forwardComposition(committed);
+        composingSent = "";
+        el.value = "";
+        return;
+      }
+      composingSent = "";
       if (ctrlLatched && committed && processCommittedCtrlOrFlush(committed)) {
         return;
       }
