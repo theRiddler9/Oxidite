@@ -61,3 +61,24 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run build
+
+  e2e:
+    name: Browser E2E (headless Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - name: Install Playwright + Chromium
+        run: |
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Run UI smoke test against a real gateway
+        run: bash scripts/e2e/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: e2e-out/
+          if-no-files-found: ignore

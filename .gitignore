@@ -23,3 +23,4 @@ tests/benchmarks/evidence/
 *.ndjson
 oxidite.db*
 
+e2e-out/
