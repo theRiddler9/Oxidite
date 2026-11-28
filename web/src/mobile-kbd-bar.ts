@@ -415,6 +415,10 @@ export function createMobileKbdBar(opts: MobileKbdBarOptions): MobileKbdBarHandl
     setScrollLocked,
     focusActiveInput,
     destroy: () => {
+      if (repeatTimer !== null) window.clearTimeout(repeatTimer);
+      if (repeatInterval !== null) window.clearInterval(repeatInterval);
+      repeatTimer = null;
+      repeatInterval = null;
       cleanupPrimary();
       cleanupProxy();
       bar.remove();

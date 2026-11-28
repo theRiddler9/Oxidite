@@ -97,3 +97,12 @@
   background: #12151b;
   color: #a1a1aa;
 }
+
+/* iOS Safari zooms the page when a focused field's font-size is below 16px; keep touch inputs at 16px. */
+@media (pointer: coarse) {
+  .oxidite-raw-kbd-proxy,
+  .composer textarea,
+  #cmsg {
+    font-size: 16px;
+  }
+}
