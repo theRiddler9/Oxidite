@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 #[cfg(unix)]
 const MAX_CMDLINE_BYTES: usize = 8192;
@@ -101,6 +102,17 @@ pub fn detect_agent_from_argv_and_title(
     None
 }
 
+/// Script runtimes whose `argv[1]`-ish token names the program actually being run. Linux `comm`
+/// is truncated to 15 bytes and carries version suffixes (`python3.12`), so match by family.
+fn is_runtime_wrapper(base_lower: &str) -> bool {
+    let stem = base_lower.strip_suffix(".exe").unwrap_or(base_lower);
+    if matches!(stem, "node" | "nodejs" | "bun" | "deno") {
+        return true;
+    }
+    stem.strip_prefix("python")
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
 fn basename_lower(path: &str) -> String {
     let trimmed = path.trim().trim_matches('"');
     let name = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed);
@@ -118,7 +130,8 @@ fn match_token(base_lower: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         "claude" | "claude-code" => Some(AgentKind::ClaudeCode),
         "devin" => Some(AgentKind::Devin),
-        "cursor" | "cursor-agent" => Some(AgentKind::Cursor),
+        // Plain `cursor` is the IDE launcher, not the agent CLI: only `cursor-agent` counts.
+        "cursor-agent" => Some(AgentKind::Cursor),
         "antigravity" | "agy" => Some(AgentKind::Antigravity),
         _ => None,
     }
@@ -146,10 +159,10 @@ fn match_script_path(argv1: &str) -> Option<AgentKind> {
     if norm.contains("/devin/") || norm.ends_with("/devin") || norm.ends_with("/devin.js") {
         return Some(AgentKind::Devin);
     }
-    if norm.contains("cursor-agent") || norm.contains("/cursor/") {
+    if norm.contains("cursor-agent") {
         return Some(AgentKind::Cursor);
     }
-    if norm.contains("antigravity") {
+    if norm.contains("/antigravity/") || norm.ends_with("/antigravity") || norm.ends_with("/agy") {
         return Some(AgentKind::Antigravity);
     }
     None
@@ -224,12 +237,12 @@ fn has_standalone_word(haystack: &str, needle: &str) -> bool {
         let before_ok = haystack[..idx]
             .chars()
             .next_back()
-            .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/' && c != '\\');
+            .is_none_or(|c| !c.is_alphanumeric() && !"_-/\\@.".contains(c));
         let after_idx = idx + needle.len();
         let after_ok = haystack[after_idx..]
             .chars()
             .next()
-            .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/' && c != '\\');
+            .is_none_or(|c| !c.is_alphanumeric() && !"_-/\\@.".contains(c));
         if before_ok && after_ok {
             return true;
         }
@@ -238,34 +251,59 @@ fn has_standalone_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
-/// Extracts only the first two command-line tokens (`argv[0]`, `argv[1]`) so API keys
-/// or secret flags passed later on the command line are never inspected or retained.
+/// Max command-line tokens ever examined: `argv[0]`, runtime flags, then the script path.
+const MAX_ARG_TOKENS: usize = 6;
+
+/// Picks `argv[0]` and the first non-flag token (the script, so `node --inspect cli.js` works) out of
+/// at most [`MAX_ARG_TOKENS`] leading tokens. Nothing after that window is ever inspected or retained,
+/// so API keys or secret flags later on the command line stay unread.
+pub fn extract_argv0_and_script<'a>(
+    tokens: impl Iterator<Item = &'a str>,
+) -> (Option<String>, Option<String>) {
+    let mut a0 = None;
+    let mut script = None;
+    for (idx, tok) in tokens.take(MAX_ARG_TOKENS).enumerate() {
+        if idx == 0 {
+            a0 = Some(tok.to_string());
+        } else if !tok.starts_with('-') {
+            script = Some(tok.to_string());
+            break;
+        }
+    }
+    (a0, script)
+}
+
+/// Splits a Windows-style command line (double quotes group tokens) and runs
+/// [`extract_argv0_and_script`] over its leading tokens.
 pub fn extract_first_two_args(cmdline: &str) -> (Option<String>, Option<String>) {
-    let mut args = Vec::with_capacity(2);
+    let mut tokens: Vec<String> = Vec::with_capacity(MAX_ARG_TOKENS);
     let mut current = String::new();
     let mut in_quotes = false;
+    let flush = |cur: &mut String, toks: &mut Vec<String>| {
+        if !cur.is_empty() {
+            toks.push(std::mem::take(cur));
+        }
+    };
 
     for ch in cmdline.chars() {
         match ch {
             '"' => in_quotes = !in_quotes,
             c if c.is_whitespace() && !in_quotes => {
-                if !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
-                    if args.len() == 2 {
-                        break;
-                    }
+                flush(&mut current, &mut tokens);
+                if tokens.len() >= MAX_ARG_TOKENS {
+                    break;
                 }
             }
             c => current.push(c),
         }
     }
-    if args.len() < 2 && !current.is_empty() {
-        args.push(current);
+    flush(&mut current, &mut tokens);
+    let out = extract_argv0_and_script(tokens.iter().map(String::as_str));
+    for t in &mut tokens {
+        t.zeroize();
     }
-
-    let a0 = args.first().cloned();
-    let a1 = args.get(1).cloned();
-    (a0, a1)
+    current.zeroize();
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -316,7 +354,9 @@ impl ProcessProbeCache {
         // ephemeral leaf utilities like `rg.exe` or `git.exe`.
         for node in descendants {
             let base = node.exe_name.to_ascii_lowercase();
-            if OPAQUE_CONTAINERS.contains(&base.as_str()) {
+            // Linux `comm` for tmux is "tmux: server" / "tmux: client".
+            let opaque_name = base.split(':').next().unwrap_or(&base).trim();
+            if OPAQUE_CONTAINERS.contains(&opaque_name) {
                 has_opaque_child = true;
             }
             if IGNORED_UTILITIES.contains(&base.as_str()) {
@@ -328,24 +368,20 @@ impl ProcessProbeCache {
                 return Some(agent);
             }
             // Runtime wrapper path (`node.exe`, `bun.exe`, `python.exe`): inspect argv[0..2] via PEB.
-            if matches!(
-                base.as_str(),
-                "node.exe"
-                    | "bun.exe"
-                    | "deno.exe"
-                    | "python.exe"
-                    | "python3.exe"
-                    | "node"
-                    | "bun"
-                    | "python3"
-            ) && let Some((a0, a1)) = read_process_argv01(node.pid)
-                && let Some(agent) = detect_agent_from_argv_and_title(
+            if is_runtime_wrapper(&base)
+                && let Some((mut a0, mut a1)) = read_process_argv01(node.pid)
+            {
+                let found = detect_agent_from_argv_and_title(
                     a0.as_deref().or(Some(&node.exe_name)),
                     a1.as_deref(),
                     None,
-                )
-            {
-                return Some(agent);
+                );
+                // The script slot can hold a flag value (e.g. `--api-key sk-...`); never keep it around.
+                a0.zeroize();
+                a1.zeroize();
+                if found.is_some() {
+                    return found;
+                }
             }
         }
 
@@ -484,19 +520,23 @@ fn take_process_snapshot() -> Vec<ProcNode> {
 #[cfg(unix)]
 fn read_process_argv01(pid: u32) -> Option<(Option<String>, Option<String>)> {
     use std::io::Read;
-    use zeroize::Zeroize;
     let file = std::fs::File::open(format!("/proc/{pid}/cmdline")).ok()?;
     let mut bytes = Vec::with_capacity(256);
     file.take(MAX_CMDLINE_BYTES as u64)
         .read_to_end(&mut bytes)
         .ok()?;
-    let mut parts = bytes
+    let tokens: Vec<String> = bytes
         .split(|&b| b == 0)
         .filter(|s| !s.is_empty())
-        .take(2)
-        .map(|s| String::from_utf8_lossy(s).into_owned());
-    let pair = (parts.next(), parts.next());
+        .take(MAX_ARG_TOKENS)
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
     bytes.zeroize();
+    let mut tokens = tokens;
+    let pair = extract_argv0_and_script(tokens.iter().map(String::as_str));
+    for t in &mut tokens {
+        t.zeroize();
+    }
     Some(pair)
 }
 
@@ -869,5 +909,105 @@ mod tests {
         let (a0, a1) = extract_first_two_args(cmd);
         assert_eq!(a0.as_deref(), Some(r"C:\Program Files\nodejs\node.exe"));
         assert_eq!(a1.as_deref(), Some(r"C:\npm\@openai\codex\bin\codex.js"));
+    }
+
+    #[test]
+    fn plain_cursor_ide_and_unrelated_paths_are_not_agents() {
+        // The `cursor` launcher is the IDE, not the agent CLI.
+        assert_eq!(
+            detect_agent_from_argv_and_title(Some("/usr/bin/cursor"), None, None),
+            None
+        );
+        assert_eq!(
+            detect_agent_from_argv_and_title(Some("cursor-agent"), None, None),
+            Some(AgentKind::Cursor)
+        );
+        // Paths that merely contain the words.
+        assert_eq!(
+            detect_agent_from_argv_and_title(
+                Some("node"),
+                Some("/home/u/cursor/app/server.js"),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            detect_agent_from_argv_and_title(
+                Some("node"),
+                Some("/srv/antigravity-docs/build.js"),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            detect_agent_from_argv_and_title(
+                Some("node"),
+                Some("/opt/antigravity/bin/cli.js"),
+                None
+            ),
+            Some(AgentKind::Antigravity)
+        );
+    }
+
+    #[test]
+    fn user_at_host_prompt_titles_are_not_agent_titles() {
+        for t in [
+            "devin@buildbox:~/src",
+            "codex@host",
+            "me@devin.example.com",
+            "devin.local",
+        ] {
+            assert_eq!(
+                detect_agent_from_argv_and_title(None, None, Some(t)),
+                None,
+                "{t}"
+            );
+        }
+        assert_eq!(
+            detect_agent_from_argv_and_title(None, None, Some("Devin CLI")),
+            Some(AgentKind::Devin)
+        );
+    }
+
+    #[test]
+    fn runtime_wrapper_names_cover_linux_comm_and_versions() {
+        for n in [
+            "node",
+            "nodejs",
+            "bun",
+            "deno",
+            "python",
+            "python3",
+            "python3.12",
+            "node.exe",
+            "python.exe",
+        ] {
+            assert!(is_runtime_wrapper(n), "{n}");
+        }
+        for n in ["nodemon", "pythonista", "bash", "claude", "denoise"] {
+            assert!(!is_runtime_wrapper(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn script_token_skips_runtime_flags_but_never_reads_past_the_window() {
+        let toks = [
+            "node",
+            "--inspect",
+            "--max-old-space-size=4096",
+            "/x/@openai/codex/bin/codex.js",
+            "--api-key",
+            "sk-1",
+        ];
+        let (a0, script) = extract_argv0_and_script(toks.into_iter());
+        assert_eq!(a0.as_deref(), Some("node"));
+        assert_eq!(script.as_deref(), Some("/x/@openai/codex/bin/codex.js"));
+        // A script placed beyond the 6-token window is not examined.
+        let far = ["node", "-a", "-b", "-c", "-d", "-e", "script.js"];
+        assert_eq!(extract_argv0_and_script(far.into_iter()).1, None);
+        let (_, s2) = extract_first_two_args(
+            r#"node.exe --trace-warnings "C:\npm\@openai\codex\bin\codex.js" --api-key sk-x"#,
+        );
+        assert_eq!(s2.as_deref(), Some(r"C:\npm\@openai\codex\bin\codex.js"));
     }
 }
