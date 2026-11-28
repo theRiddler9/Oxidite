@@ -105,6 +105,7 @@ describe("Connection", () => {
       created: (id) => calls.push(`created:${id}`),
       error: (m) => calls.push(`error:${m}`),
       presence: (w, v) => calls.push(`presence:${w}:${v}`),
+      attached: (id) => calls.push(`attached:${id}`),
       unauthorized: () => calls.push("unauthorized"),
       exit: (c) => calls.push(`exit:${c}`),
       ...extra,
@@ -133,9 +134,10 @@ describe("Connection", () => {
     expect(conn.id).toBe("01020304-0506-0708-090a-0b0c0d0e0f10");
 
     ws.triggerServerMsg({
-      Attached: { session: rawId, mode: "Writer", start: { Snapshot: { at: 0 } } },
+      Attached: { session: rawId, mode: "Writer", start: { Snapshot: { at: 0 } }, client_id: "42" },
     });
     expect(calls).toContain("reset");
+    expect(calls).toContain("attached:42");
 
     ws.triggerServerMsg({
       Output: { offset: 0, bytes: new TextEncoder().encode("hello") },
@@ -149,6 +151,18 @@ describe("Connection", () => {
 
     conn.takeoverWriter();
     expect(decode(ws.sent.at(-1)!)).toBe("TakeoverWriter");
+    conn.detach();
+  });
+
+  test("older servers omit client_id: attached() receives null", () => {
+    const { conn, calls } = makeConn();
+    conn.open({ id: "01020304-0506-0708-090a-0b0c0d0e0f10" });
+    const ws = MockWebSocket.instances.at(-1)!;
+    ws.triggerOpen();
+    ws.triggerServerMsg({ Welcome: { server_version: "0.1.0" } });
+    const rawId = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
+    ws.triggerServerMsg({ Attached: { session: rawId, mode: "Writer", start: { Replay: { from: 0 } } } });
+    expect(calls).toContain("attached:null");
     conn.detach();
   });
 

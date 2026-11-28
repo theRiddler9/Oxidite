@@ -13,6 +13,8 @@ export interface Handlers {
   error(msg: string): void;
   unauthorized?(): void;
   presence?(writerId: string | null, viewersCount: number): void;
+  /** This connection's own id as assigned by the server, to compare against `presence` writer ids. */
+  attached?(clientId: string | null): void;
   exit(code: number | null): void;
 }
 
@@ -139,6 +141,7 @@ export class Connection {
         break;
       case "Created": this.id = idStr(m.session); this.h.created(this.id); this.attach(); break;
       case "Attached": if ((m.start as Record<string, unknown>)["Snapshot"]) this.h.reset();
+        this.h.attached?.(typeof m.client_id === "string" ? m.client_id : null);
         this.h.state("Running"); break;
       case "Snapshot": { const b = bytesOf(m.bytes); this.offset = m.offset as number; this.h.output(b, () => this.ackTo(this.offset)); break; }
       case "Output": {

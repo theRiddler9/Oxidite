@@ -75,6 +75,8 @@ interface Tab {
   agentLabel: string | null;
   shellKind: string | null;
   hasWriterControl: boolean;
+  /** Server-assigned id of this tab's current connection; null until `Attached` (or on older servers). */
+  myClientId: string | null;
 }
 
 /** Git facts for the open session, shared by the changes panel and the input bar chips. */
@@ -447,6 +449,7 @@ function openTab(t: { id: string } | { spec: BackendSpec }, label: string, host:
     agentLabel: null,
     shellKind: initialShellKind,
     hasWriterControl: true,
+    myClientId: null,
     pair: null,
     blocks,
     banner,
@@ -552,7 +555,12 @@ function openTab(t: { id: string } | { spec: BackendSpec }, label: string, host:
       logEvent(tab, stateText(s));
       void refresh();
     },
+    attached: (clientId) => {
+      tab.myClientId = clientId;
+    },
     presence: (writerId) => {
+      // Older servers never report our id; fall back to "someone holds control" as before.
+      const mine = writerId !== null && (tab.myClientId === null || writerId === tab.myClientId);
       if (writerId === null && tab.b !== "down") {
         tab.hasWriterControl = false;
         tab.b = "warn";
@@ -560,10 +568,20 @@ function openTab(t: { id: string } | { spec: BackendSpec }, label: string, host:
         renderTabs();
         paint();
         logEvent(tab, "Write control paused");
-      } else if (writerId !== null && !tab.hasWriterControl) {
+      } else if (writerId !== null && !mine && tab.b !== "down") {
+        if (tab.hasWriterControl) {
+          tab.hasWriterControl = false;
+          tab.b = "warn";
+          tab.msg = "Another device has write control. Click here to take over.";
+          renderTabs();
+          paint();
+          logEvent(tab, "Another device took write control");
+        }
+      } else if (mine && !tab.hasWriterControl) {
         tab.hasWriterControl = true;
         if (tab.b === "warn") tab.b = "ok";
-        if (tab.msg.startsWith("Write control paused")) tab.msg = "Running";
+        if (tab.msg.startsWith("Write control paused") || tab.msg.startsWith("Another device") || tab.msg.startsWith("Reclaiming"))
+          tab.msg = "Running";
         renderTabs();
         paint();
       }
@@ -2046,9 +2064,8 @@ document.addEventListener("visibilitychange", () => {
 
 $("#msg").onclick = () => {
   if (cur && !cur.hasWriterControl && cur.b !== "down") {
+    // Do not mark control as regained yet: the server's Presence message confirms (or denies) it.
     cur.conn.takeoverWriter();
-    cur.hasWriterControl = true;
-    cur.b = "ok";
     cur.msg = "Reclaiming write control...";
     renderTabs();
     paint();

@@ -1585,6 +1585,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                                     session,
                                     mode: actual_mode,
                                     start: attach_res.start.clone(),
+                                    client_id: Some(client_id.to_string()),
                                 })
                                 .await;
 

@@ -195,6 +195,10 @@ pub enum ServerMsg {
         session: SessionId,
         mode: AttachMode,
         start: ReplayStart,
+        /// This connection's own id, the same value later reported as `Presence::writer_id` when
+        /// this connection holds write control. Optional so older peers still decode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     Snapshot {
         offset: Offset,
@@ -316,10 +320,22 @@ mod tests {
             session: sid,
             mode: AttachMode::Writer,
             start: ReplayStart::Snapshot { at: 1024 },
+            client_id: Some("7".into()),
         };
         let bytes = pack_server_msg(&msg).unwrap();
         let decoded = unpack_server_msg(&bytes).unwrap();
         assert_eq!(msg, decoded);
+
+        // A peer that predates `client_id` omits the field; it must still decode as None.
+        let legacy = ServerMsg::Attached {
+            session: sid,
+            mode: AttachMode::Viewer,
+            start: ReplayStart::Snapshot { at: 1 },
+            client_id: None,
+        };
+        let legacy_bytes = pack_server_msg(&legacy).unwrap();
+        assert!(!legacy_bytes.windows(9).any(|w| w == b"client_id"));
+        assert_eq!(unpack_server_msg(&legacy_bytes).unwrap(), legacy);
 
         let out = ServerMsg::Output {
             offset: 42,
