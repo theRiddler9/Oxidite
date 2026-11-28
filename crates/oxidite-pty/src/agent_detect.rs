@@ -359,7 +359,10 @@ impl ProcessProbeCache {
     }
 
     fn descendants_of(&self, root_pid: u32) -> Vec<ProcNode> {
-        let mut guard = self.cache.lock().expect("ProcessProbeCache poisoned");
+        let mut guard = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let needs_refresh = guard
             .as_ref()
             .is_none_or(|snap| snap.taken_at.elapsed() >= self.ttl);
@@ -457,8 +460,12 @@ fn take_process_snapshot() -> Vec<ProcNode> {
             continue;
         };
         if let (Some(l), Some(r)) = (stat.find('('), stat.rfind(')')) {
-            let exe_name = stat[l + 1..r].to_string();
-            let rest: Vec<&str> = stat[r + 2..].split_whitespace().collect();
+            // A truncated read can end at the closing paren; skip the entry instead of panicking.
+            let (Some(exe), Some(tail)) = (stat.get(l + 1..r), stat.get(r + 1..)) else {
+                continue;
+            };
+            let exe_name = exe.to_string();
+            let rest: Vec<&str> = tail.split_whitespace().collect();
             if let Some(ppid) = rest.get(1).and_then(|s| s.parse::<u32>().ok()) {
                 // `/proc/<pid>/stat` field 22 (index 19 after comm/state) is process starttime.
                 let start_time = rest.get(19).and_then(|s| s.parse::<u64>().ok());
@@ -847,7 +854,7 @@ mod tests {
 
     #[test]
     fn stale_osc_title_ignored_when_local_shell_has_no_opaque_children() {
-        let cache = ProcessProbeCache::new(Duration::from_secs(60));
+        let cache = ProcessProbeCache::new(Duration::from_mins(1));
         let self_pid = std::process::id();
         // Current test process has no ssh/wsl child; a lingering "Antigravity CLI" title must not report active.
         assert_eq!(

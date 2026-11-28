@@ -178,6 +178,18 @@ impl SessionActor {
         }
     }
 
+    /// Records the writer's new unacked byte count. An ack that makes forward progress restarts the
+    /// stall window, so only a writer that stops acking entirely is demoted by the watchdog; a slow
+    /// but live client (e.g. on cellular) is not.
+    fn apply_writer_ack(&mut self, unacked: usize) {
+        let progressed = unacked < self.writer_unacked_bytes;
+        self.writer_unacked_bytes = unacked;
+        if progressed {
+            self.stalled_since = None;
+        }
+        self.update_stall_timer();
+    }
+
     fn reset_writer_backpressure(&mut self) {
         self.writer_unacked_bytes = 0;
         self.stalled_since = None;
@@ -416,13 +428,11 @@ impl SessionActor {
                                     }
                                 }
                                 if self.active_writer == Some(cid) {
-                                    self.writer_unacked_bytes = (head.saturating_sub(offset)) as usize;
-                                    self.update_stall_timer();
+                                    self.apply_writer_ack((head.saturating_sub(offset)) as usize);
                                 }
                             } else {
                                 // Default / legacy fallback
-                                self.writer_unacked_bytes = (head.saturating_sub(offset)) as usize;
-                                self.update_stall_timer();
+                                self.apply_writer_ack((head.saturating_sub(offset)) as usize);
                             }
                         }
                         ActorCmd::Detach { client_id } => {
@@ -781,6 +791,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrx2.await.unwrap(), None);
+
+        cmd_tx.send(ActorCmd::Kill).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_but_progressing_writer_is_not_demoted() {
+        let (backend, btx, _) = DummyBackend::new();
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (mut actor, _) = SessionActor::new(
+            SessionId::new_v4(),
+            TermSize { rows: 24, cols: 80 },
+            Box::new(backend),
+            cmd_rx,
+        );
+        actor.high_watermark = 16;
+        tokio::spawn(actor.run());
+
+        let (rtx, rrx) = oneshot::channel();
+        cmd_tx
+            .send(ActorCmd::Attach {
+                mode: AttachMode::Writer,
+                last_offset: None,
+                client_id: Some(9),
+                resp: rtx,
+            })
+            .await
+            .unwrap();
+        let _ = rrx.await.unwrap();
+
+        btx.send(BackendEvent::Output(vec![b'x'; 32]))
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(20)).await;
+        tokio::task::yield_now().await;
+
+        // A partial ack (32 -> 24 unacked, still above the 16-byte watermark) is forward progress.
+        cmd_tx
+            .send(ActorCmd::Ack {
+                client_id: Some(9),
+                offset: 8,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        // 20s later the original stall began 40s ago, but the last ack was only 20s ago.
+        tokio::time::advance(Duration::from_secs(20)).await;
+        tokio::task::yield_now().await;
+        let (w1, r1) = oneshot::channel();
+        cmd_tx
+            .send(ActorCmd::GetActiveWriter { resp: w1 })
+            .await
+            .unwrap();
+        assert_eq!(r1.await.unwrap(), Some(9), "progressing writer was demoted");
+
+        // With no further acks the window expires and the writer is demoted.
+        tokio::time::advance(Duration::from_secs(20)).await;
+        tokio::task::yield_now().await;
+        let (w2, r2) = oneshot::channel();
+        cmd_tx
+            .send(ActorCmd::GetActiveWriter { resp: w2 })
+            .await
+            .unwrap();
+        assert_eq!(r2.await.unwrap(), None);
 
         cmd_tx.send(ActorCmd::Kill).await.unwrap();
     }
