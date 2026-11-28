@@ -137,18 +137,7 @@ function logEvent(tab: Tab, text: string): void {
   if (events[0]?.tab === tab && events[0].text === text) return;
   events.unshift({ at: new Date(), tab, text, b: tab.b });
   events.length = Math.min(events.length, 20);
-  $("#msg").onclick = () => {
-  if (cur && !cur.hasWriterControl && cur.b !== "down") {
-    cur.conn.takeoverWriter();
-    cur.hasWriterControl = true;
-    cur.b = "ok";
-    cur.msg = "Reclaiming write control...";
-    renderTabs();
-    paint();
-  }
-};
-
-renderActivity();
+  renderActivity();
 }
 function renderActivity(): void {
   $("#actsum").textContent = "";
@@ -333,18 +322,7 @@ function removeTabUi(t: Tab): void {
   t.el.remove();
   tabs.splice(tabs.indexOf(t), 1);
   for (const x of tabs) if (x.pair === t) x.pair = null;
-  $("#msg").onclick = () => {
-  if (cur && !cur.hasWriterControl && cur.b !== "down") {
-    cur.conn.takeoverWriter();
-    cur.hasWriterControl = true;
-    cur.b = "ok";
-    cur.msg = "Reclaiming write control...";
-    renderTabs();
-    paint();
-  }
-};
-
-renderActivity();
+  renderActivity();
   select(cur === t ? (tabs.at(-1) ?? null) : cur);
   void refresh();
 }
@@ -921,18 +899,7 @@ async function refresh(): Promise<void> {
       $("#empty-ws").hidden = list.length > 0;
       if (tabsDirty) {
         renderTabs();
-        $("#msg").onclick = () => {
-  if (cur && !cur.hasWriterControl && cur.b !== "down") {
-    cur.conn.takeoverWriter();
-    cur.hasWriterControl = true;
-    cur.b = "ok";
-    cur.msg = "Reclaiming write control...";
-    renderTabs();
-    paint();
-  }
-};
-
-renderActivity();
+        renderActivity();
       }
       paint();
       void probeShellCapabilities();
